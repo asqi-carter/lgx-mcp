@@ -1,0 +1,85 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<RSLogix5000Content SchemaRevision="1.0" SoftwareRevision="36.1" TargetName="DemoController" TargetType="Controller" ContainsContext="false">
+  <Controller Name="DemoController" MajorRev="36" MinorRev="1" ProcessorType="1756-L84E">
+    <DataTypes>
+      <DataType Name="MotorCmd" Family="NoFamily" Class="User">
+        <Members>
+          <Member Name="Enable" DataType="BOOL" Dimension="0" Radix="NullType" ExternalAccess="Read/Write" Hidden="false" />
+          <Member Name="Speed" DataType="REAL" Dimension="0" Radix="NullType" ExternalAccess="Read/Write" Hidden="false">
+            <Description><![CDATA[range 0..100]]></Description>
+          </Member>
+        </Members>
+      </DataType>
+    </DataTypes>
+    <Modules />
+    <AddOnInstructionDefinitions />
+    <Tags>
+      <Tag Name="Cmd_MotorStart" TagType="Base" ExternalAccess="Read/Write" Constant="false" DataType="BOOL" Radix="Decimal">
+        <Data Format="Decorated">
+          <DataValue DataType="BOOL" Radix="Decimal" Value="0" />
+        </Data>
+      </Tag>
+      <Tag Name="Cmd_SpeedSetpoint" TagType="Base" ExternalAccess="Read/Write" Constant="false" DataType="REAL" Radix="Float">
+        <Description><![CDATA[range 0..1000]]></Description>
+        <Data Format="Decorated">
+          <DataValue DataType="REAL" Radix="Float" Value="0.0" />
+        </Data>
+      </Tag>
+      <Tag Name="Sim_LineSpeed" TagType="Base" ExternalAccess="Read/Write" Constant="false" DataType="REAL" Radix="Float">
+        <Data Format="Decorated">
+          <DataValue DataType="REAL" Radix="Float" Value="0.0" />
+        </Data>
+      </Tag>
+      <Tag Name="Safety_OK" TagType="Base" ExternalAccess="Read/Write" Constant="false" DataType="BOOL" Radix="Decimal">
+        <Data Format="Decorated">
+          <DataValue DataType="BOOL" Radix="Decimal" Value="0" />
+        </Data>
+      </Tag>
+      <Tag Name="Motor_Run" TagType="Base" ExternalAccess="Read/Write" Constant="false" DataType="BOOL" Radix="Decimal">
+        <Data Format="Decorated">
+          <DataValue DataType="BOOL" Radix="Decimal" Value="0" />
+        </Data>
+      </Tag>
+      <Tag Name="Cmd_Motor" TagType="Base" ExternalAccess="Read/Write" Constant="false" DataType="MotorCmd">
+        <Data Format="Decorated">
+          <Structure DataType="MotorCmd" />
+        </Data>
+      </Tag>
+      <Tag Name="SomeRandomTag" TagType="Base" ExternalAccess="Read/Write" Constant="false" DataType="BOOL" Radix="Decimal">
+        <Data Format="Decorated">
+          <DataValue DataType="BOOL" Radix="Decimal" Value="0" />
+        </Data>
+      </Tag>
+    </Tags>
+    <Programs>
+      <Program Name="MainProgram" Type="Normal" TestEdits="false" Disabled="false" UseAsFolder="false" MainRoutineName="MainRoutine">
+        <Tags />
+        <Routines>
+          <Routine Name="MainRoutine" Type="RLL">
+            <RLLContent>
+              <Rung Number="0" Type="N">
+                <Comment><![CDATA[Interlock: Motor_Run coil energized when Cmd_MotorStart AND Safety_OK]]></Comment>
+                <Text><![CDATA[XIC(Cmd_MotorStart)XIC(Safety_OK)OTE(Motor_Run);]]></Text>
+              </Rung>
+              <Rung Number="1" Type="N">
+                <Comment><![CDATA[Trivial rung]]></Comment>
+                <Text><![CDATA[NOP();]]></Text>
+              </Rung>
+            </RLLContent>
+          </Routine>
+        </Routines>
+      </Program>
+    </Programs>
+    <!-- MainTask (CONTINUOUS) schedules MainProgram so it executes. Do not remove the task. -->
+<Tasks>
+      <Task Name="MainTask" Type="CONTINUOUS" Priority="10" Watchdog="500" DisableUpdateOutputs="false" InhibitTask="false">
+        <ScheduledPrograms>
+          <ScheduledProgram Name="MainProgram"/>
+        </ScheduledPrograms>
+      </Task>
+    </Tasks>
+    <ParameterConnections />
+    <Trends />
+    <QuickWatchLists />
+  </Controller>
+</RSLogix5000Content>

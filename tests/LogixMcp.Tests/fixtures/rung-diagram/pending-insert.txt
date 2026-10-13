@@ -1,0 +1,7 @@
+Rung 1 [pending insert, untested]  Line_A/Edits
+// New latch rung.
+║                 Guard door                ║
+║ Operator start  closed and  Fill sequence ║
+║   pushbutton      locked     latched on   ║
+║   Cmd_Start    Guard_Closed  Fill_Latch   ║
+╟──────┤ ├───────────┤ ├───────────(L)──────╢

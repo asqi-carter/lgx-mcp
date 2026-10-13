@@ -1,0 +1,9 @@
+Rung 5  Line_A/Main
+║ Fill valve Fill_Timer: Fill      ║
+║  solenoid  time-out timer        ║
+║ Fill_Valve ┌───────────────────┐ ║
+╟────┤ ├─────┤ TON               ├─╢
+║            │ Timer  Fill_Timer │ ║
+║            │ Preset 5000       │ ║
+║            │ Accum  0          │ ║
+║            └───────────────────┘ ║

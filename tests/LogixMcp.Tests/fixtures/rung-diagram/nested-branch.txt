@@ -1,0 +1,19 @@
+Rung 4  Line_A/Main
+║ Operator start   Fill sequence                    Drain valve ║
+║   pushbutton      latched on                       solenoid   ║
+║   Cmd_Start       Fill_Latch                      Drain_Valve ║
+╟──────┤ ├───────┬──────┤ ├───────────────────────┬─────( )─────╢
+║                │                                │             ║
+║                │                Operator stop   │             ║
+║                │    Guard door   pushbutton,    │             ║
+║                │    closed and    normally      │             ║
+║                │      locked       closed       │             ║
+║                │   Guard_Closed   Cmd_Stop      │             ║
+║                └─┬─────┤ ├───────────┤/├──────┬─┘             ║
+║                  │                            │               ║
+║                  │  Line status               │               ║
+║                  │     word                   │               ║
+║                  │   .1: Line                 │               ║
+║                  │    faulted                 │               ║
+║                  │ Status_Word.1              │               ║
+║                  └──────┤ ├───────────────────┘               ║

@@ -1,0 +1,14 @@
+Rung 3  Line_A/Main
+║                                  Operator stop            ║
+║                                   pushbutton,             ║
+║ Operator start   Fill sequence     normally    Fill valve ║
+║   pushbutton      latched on        closed      solenoid  ║
+║   Cmd_Start       Fill_Latch       Cmd_Stop    Fill_Valve ║
+╟──────┤ ├───────┬──────┤ ├──────┬──────┤/├─────────( )─────╢
+║                │               │                          ║
+║                │  Line status  │                          ║
+║                │     word      │                          ║
+║                │   .0: Line    │                          ║
+║                │    running    │                          ║
+║                │ Status_Word.0 │                          ║
+║                └──────┤ ├──────┘                          ║

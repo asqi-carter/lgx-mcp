@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<!-- Mnemonic-set fixture (legacy): labelled 35.1, so its rungs use the pre-v36 mnemonic spellings
+     (MOV, GRT, SQR). See MnemonicFixtureTests. -->
+<RSLogix5000Content SchemaRevision="1.0" SoftwareRevision="35.1" TargetName="Legacy35A" TargetType="Controller" ContainsContext="false">
+  <Controller Name="Legacy35A" MajorRev="35" MinorRev="1" ProcessorType="1756-L84E">
+    <DataTypes />
+    <Modules />
+    <AddOnInstructionDefinitions />
+    <Tags>
+      <Tag Name="Src" TagType="Base" ExternalAccess="Read/Write" Constant="false" DataType="DINT" Radix="Decimal">
+        <Data Format="Decorated"><DataValue DataType="DINT" Radix="Decimal" Value="0" /></Data>
+      </Tag>
+      <Tag Name="Dst" TagType="Base" ExternalAccess="Read/Write" Constant="false" DataType="DINT" Radix="Decimal">
+        <Data Format="Decorated"><DataValue DataType="DINT" Radix="Decimal" Value="0" /></Data>
+      </Tag>
+      <Tag Name="Run" TagType="Base" ExternalAccess="Read/Write" Constant="false" DataType="BOOL" Radix="Decimal">
+        <Data Format="Decorated"><DataValue DataType="BOOL" Radix="Decimal" Value="0" /></Data>
+      </Tag>
+    </Tags>
+    <Programs>
+      <Program Name="MainProgram" Type="Normal" TestEdits="false" Disabled="false" UseAsFolder="false" MainRoutineName="Main">
+        <Tags />
+        <Routines>
+          <Routine Name="Main" Type="RLL">
+            <RLLContent>
+              <Rung Number="0" Type="N">
+                <Text><![CDATA[XIC(Run)MOV(Src,Dst);]]></Text>
+              </Rung>
+              <Rung Number="1" Type="N">
+                <Text><![CDATA[GRT(Src,10)OTE(Run);]]></Text>
+              </Rung>
+              <Rung Number="2" Type="N">
+                <Text><![CDATA[XIC(Run)SQR(Src,Dst);]]></Text>
+              </Rung>
+            </RLLContent>
+          </Routine>
+        </Routines>
+      </Program>
+    </Programs>
+    <Tasks />
+    <ParameterConnections />
+    <Trends />
+    <QuickWatchLists />
+  </Controller>
+</RSLogix5000Content>

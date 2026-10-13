@@ -1,0 +1,7 @@
+Rung 4 [pending delete, untested]  Line_A/Edits
+║ Operator stop             ║
+║  pushbutton,              ║
+║   normally    Drain valve ║
+║    closed      solenoid   ║
+║   Cmd_Stop    Drain_Valve ║
+╟──────┤ ├──────────( )─────╢

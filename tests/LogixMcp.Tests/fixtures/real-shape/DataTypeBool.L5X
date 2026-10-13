@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!-- Structure copied from a real Studio 5000 export; all names invented. -->
+<RSLogix5000Content SchemaRevision="1.0" SoftwareRevision="36.01" TargetName="Plant_Ctl" TargetType="Controller" ContainsContext="false" Owner="tester" ExportDate="Mon Jan 05 08:00:00 2026" ExportOptions="NoRawData L5KData DecoratedData ForceProtectedEncoding AllProjDocTrans">
+<Controller Use="Target" Name="Plant_Ctl" ProcessorType="1756-L83E" MajorRev="36" MinorRev="1">
+<DataTypes>
+<DataType Name="Pump_Cfg" Family="NoFamily" Class="User">
+<Members>
+<Member Name="Label" DataType="STRING" Dimension="0" Radix="NullType" Hidden="false" ExternalAccess="Read/Write"/>
+<Member Name="Setpoint" DataType="REAL" Dimension="0" Radix="Float" Hidden="false" ExternalAccess="Read Only"/>
+<Member Name="Codes" DataType="SINT" Dimension="8" Radix="ASCII" Hidden="false" ExternalAccess="None"/>
+<Member Name="ZZZZZZZZZZPump_Cfg0" DataType="SINT" Dimension="0" Radix="Decimal" Hidden="true" ExternalAccess="Read/Write"/>
+<Member Name="Run" DataType="BOOL" Dimension="0" Radix="Decimal" Hidden="false" Target="ZZZZZZZZZZPump_Cfg0" BitNumber="0" ExternalAccess="Read/Write"/>
+<Member Name="Fault" DataType="BOOL" Dimension="0" Radix="Decimal" Hidden="false" Target="ZZZZZZZZZZPump_Cfg0" BitNumber="1" ExternalAccess="Read Only"/>
+<Member Name="Count" DataType="DINT" Dimension="0" Radix="Hex" Hidden="false" ExternalAccess="Read/Write"/>
+</Members>
+</DataType>
+</DataTypes>
+<Modules />
+<AddOnInstructionDefinitions />
+<Tags />
+<Programs />
+<Tasks />
+<ParameterConnections />
+</Controller>
+</RSLogix5000Content>

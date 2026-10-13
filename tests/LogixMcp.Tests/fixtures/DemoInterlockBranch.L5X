@@ -1,0 +1,141 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<!--
+  DemoInterlockBranch.L5X — series-versus-branch fixture for VerifyInterlockHandler tests.
+  Condition tag is Cond. One output per rung (Out_LegWrite is written twice, inside two legs of one branch):
+    Out_Series     XIC(Cond) in series                       -> verified
+    Out_Bypass     [XIC(Cond),XIC(Bypass)]OTE                -> bypassed (leg 2)
+    Out_XioBypass  [XIO(Cond),XIC(Bypass)]OTE                -> bypassed (leg 2)
+    Out_XioSeries  XIO(Cond) in series                       -> verified
+    Out_BothLegs   contact in both legs                      -> verified
+    Out_Nested     contact before a branch                   -> verified
+    Out_LegWrite   write inside both legs, one lacks Cond    -> bypassed (leg 2)
+    Out_EmptyLeg   [XIC(Cond),]OTE (empty wire leg)          -> bypassed
+    Out_After      OTE(Out_After)XIC(Cond)                   -> bypassed/not verified (contact after output)
+-->
+<RSLogix5000Content SchemaRevision="1.0" SoftwareRevision="36.1" TargetName="InterlockBranchCtrl" TargetType="Controller" ContainsContext="false">
+  <Controller Name="InterlockBranchCtrl" MajorRev="36" MinorRev="1" ProcessorType="1756-L84E">
+    <DataTypes />
+    <Modules />
+    <AddOnInstructionDefinitions />
+    <Tags>
+      <Tag Name="Out_Series" TagType="Base" ExternalAccess="Read/Write" Constant="false" DataType="BOOL" Radix="Decimal">
+        <Data Format="Decorated">
+          <DataValue DataType="BOOL" Radix="Decimal" Value="0" />
+        </Data>
+      </Tag>
+      <Tag Name="Out_Bypass" TagType="Base" ExternalAccess="Read/Write" Constant="false" DataType="BOOL" Radix="Decimal">
+        <Data Format="Decorated">
+          <DataValue DataType="BOOL" Radix="Decimal" Value="0" />
+        </Data>
+      </Tag>
+      <Tag Name="Out_XioBypass" TagType="Base" ExternalAccess="Read/Write" Constant="false" DataType="BOOL" Radix="Decimal">
+        <Data Format="Decorated">
+          <DataValue DataType="BOOL" Radix="Decimal" Value="0" />
+        </Data>
+      </Tag>
+      <Tag Name="Out_XioSeries" TagType="Base" ExternalAccess="Read/Write" Constant="false" DataType="BOOL" Radix="Decimal">
+        <Data Format="Decorated">
+          <DataValue DataType="BOOL" Radix="Decimal" Value="0" />
+        </Data>
+      </Tag>
+      <Tag Name="Out_BothLegs" TagType="Base" ExternalAccess="Read/Write" Constant="false" DataType="BOOL" Radix="Decimal">
+        <Data Format="Decorated">
+          <DataValue DataType="BOOL" Radix="Decimal" Value="0" />
+        </Data>
+      </Tag>
+      <Tag Name="Out_Nested" TagType="Base" ExternalAccess="Read/Write" Constant="false" DataType="BOOL" Radix="Decimal">
+        <Data Format="Decorated">
+          <DataValue DataType="BOOL" Radix="Decimal" Value="0" />
+        </Data>
+      </Tag>
+      <Tag Name="Out_LegWrite" TagType="Base" ExternalAccess="Read/Write" Constant="false" DataType="BOOL" Radix="Decimal">
+        <Data Format="Decorated">
+          <DataValue DataType="BOOL" Radix="Decimal" Value="0" />
+        </Data>
+      </Tag>
+      <Tag Name="Out_EmptyLeg" TagType="Base" ExternalAccess="Read/Write" Constant="false" DataType="BOOL" Radix="Decimal">
+        <Data Format="Decorated">
+          <DataValue DataType="BOOL" Radix="Decimal" Value="0" />
+        </Data>
+      </Tag>
+      <Tag Name="Out_After" TagType="Base" ExternalAccess="Read/Write" Constant="false" DataType="BOOL" Radix="Decimal">
+        <Data Format="Decorated">
+          <DataValue DataType="BOOL" Radix="Decimal" Value="0" />
+        </Data>
+      </Tag>
+      <Tag Name="Cond" TagType="Base" ExternalAccess="Read/Write" Constant="false" DataType="BOOL" Radix="Decimal">
+        <Data Format="Decorated">
+          <DataValue DataType="BOOL" Radix="Decimal" Value="0" />
+        </Data>
+      </Tag>
+      <Tag Name="Other" TagType="Base" ExternalAccess="Read/Write" Constant="false" DataType="BOOL" Radix="Decimal">
+        <Data Format="Decorated">
+          <DataValue DataType="BOOL" Radix="Decimal" Value="0" />
+        </Data>
+      </Tag>
+      <Tag Name="Bypass" TagType="Base" ExternalAccess="Read/Write" Constant="false" DataType="BOOL" Radix="Decimal">
+        <Data Format="Decorated">
+          <DataValue DataType="BOOL" Radix="Decimal" Value="0" />
+        </Data>
+      </Tag>
+      <Tag Name="A" TagType="Base" ExternalAccess="Read/Write" Constant="false" DataType="BOOL" Radix="Decimal">
+        <Data Format="Decorated">
+          <DataValue DataType="BOOL" Radix="Decimal" Value="0" />
+        </Data>
+      </Tag>
+      <Tag Name="B" TagType="Base" ExternalAccess="Read/Write" Constant="false" DataType="BOOL" Radix="Decimal">
+        <Data Format="Decorated">
+          <DataValue DataType="BOOL" Radix="Decimal" Value="0" />
+        </Data>
+      </Tag>
+    </Tags>
+    <Programs>
+      <Program Name="MainProgram" Type="Normal" TestEdits="false" Disabled="false" UseAsFolder="false" MainRoutineName="MainRoutine">
+        <Tags />
+        <Routines>
+          <Routine Name="MainRoutine" Type="RLL">
+            <RLLContent>
+              <Rung Number="0" Type="N">
+                <Text><![CDATA[XIC(Cond)XIC(Other)OTE(Out_Series);]]></Text>
+              </Rung>
+              <Rung Number="1" Type="N">
+                <Text><![CDATA[[XIC(Cond),XIC(Bypass)]OTE(Out_Bypass);]]></Text>
+              </Rung>
+              <Rung Number="2" Type="N">
+                <Text><![CDATA[[XIO(Cond),XIC(Bypass)]OTE(Out_XioBypass);]]></Text>
+              </Rung>
+              <Rung Number="3" Type="N">
+                <Text><![CDATA[XIO(Cond)XIC(Other)OTE(Out_XioSeries);]]></Text>
+              </Rung>
+              <Rung Number="4" Type="N">
+                <Text><![CDATA[[XIC(Cond)XIC(A),XIC(Cond)XIC(B)]OTE(Out_BothLegs);]]></Text>
+              </Rung>
+              <Rung Number="5" Type="N">
+                <Text><![CDATA[XIC(Cond)[XIC(A),XIC(B)]OTE(Out_Nested);]]></Text>
+              </Rung>
+              <Rung Number="6" Type="N">
+                <Text><![CDATA[[XIC(Cond)OTE(Out_LegWrite),XIC(Bypass)OTE(Out_LegWrite)];]]></Text>
+              </Rung>
+              <Rung Number="7" Type="N">
+                <Text><![CDATA[[XIC(Cond),]OTE(Out_EmptyLeg);]]></Text>
+              </Rung>
+              <Rung Number="8" Type="N">
+                <Text><![CDATA[OTE(Out_After)XIC(Cond);]]></Text>
+              </Rung>
+            </RLLContent>
+          </Routine>
+        </Routines>
+      </Program>
+    </Programs>
+    <Tasks>
+      <Task Name="MainTask" Type="CONTINUOUS" Priority="10" Watchdog="500" DisableUpdateOutputs="false" InhibitTask="false">
+        <ScheduledPrograms>
+          <ScheduledProgram Name="MainProgram"/>
+        </ScheduledPrograms>
+      </Task>
+    </Tasks>
+    <ParameterConnections />
+    <Trends />
+    <QuickWatchLists />
+  </Controller>
+</RSLogix5000Content>

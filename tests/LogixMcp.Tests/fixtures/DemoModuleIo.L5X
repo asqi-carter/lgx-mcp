@@ -1,0 +1,106 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<RSLogix5000Content SchemaRevision="1.0" SoftwareRevision="36.01" TargetName="ModuleIoController" TargetType="Controller" ContainsContext="false" Owner="test" ExportDate="Thu Oct 08 2026 00:00:00">
+  <Controller Name="ModuleIoController" ProcessorType="1756-L84E" MajorRev="36" MinorRev="1">
+    <DataTypes />
+    <Modules>
+      <Module Name="Local" CatalogNumber="1756-L84E" Vendor="1" ProductType="14" ProductCode="166" Major="36" Minor="1" ParentModule="Local" ParentModPortId="1" Inhibited="false" MajorFault="true">
+        <Ports>
+          <Port Id="1" Address="0" Type="5069" Upstream="false"><Bus Size="4" /></Port>
+        </Ports>
+      </Module>
+      <!-- Chassis module in slot 1: decorated input structure with per-point members -->
+      <Module Name="DI_Card" CatalogNumber="5069-IB16" Vendor="1" ProductType="7" ProductCode="1" Major="1" Minor="1" ParentModule="Local" ParentModPortId="1" Inhibited="false" MajorFault="false">
+        <Ports>
+          <Port Id="1" Address="1" Type="5069" Upstream="true" />
+        </Ports>
+        <Communications>
+          <ConfigTag ConfigSize="0" ExternalAccess="Read/Write">
+            <Data>00 00</Data>
+          </ConfigTag>
+          <Connections>
+            <Connection Name="Data" RPI="20000" Type="Input" EventID="0" ProgrammaticallySendEventTrigger="false">
+              <InputTag Name="Local:1:I" ExternalAccess="Read/Write">
+                <Data Format="Decorated">
+                  <Structure DataType="AB:5000_DI16:I:0">
+                    <DataValueMember Name="Fault" DataType="DINT" Radix="Binary" Value="2#0000_0000" />
+                    <StructureMember Name="Pt00" DataType="AB:5000_DI_Pt:I:0">
+                      <DataValueMember Name="Data" DataType="BOOL" Value="0" />
+                      <DataValueMember Name="Fault" DataType="BOOL" Value="0" />
+                    </StructureMember>
+                    <StructureMember Name="Pt01" DataType="AB:5000_DI_Pt:I:0">
+                      <DataValueMember Name="Data" DataType="BOOL" Value="0" />
+                      <DataValueMember Name="Fault" DataType="BOOL" Value="0" />
+                    </StructureMember>
+                  </Structure>
+                </Data>
+              </InputTag>
+            </Connection>
+          </Connections>
+        </Communications>
+      </Module>
+      <!-- Remote drive: input and output structures, array member -->
+      <Module Name="VFD_MainDrive" CatalogNumber="PowerFlex 755" Vendor="1" ProductType="143" ProductCode="1" Major="1" Minor="1" ParentModule="Local" ParentModPortId="2" Inhibited="false" MajorFault="false">
+        <Ports>
+          <Port Id="1" Address="10.0.0.20" Type="Ethernet" Upstream="true" />
+        </Ports>
+        <Communications>
+          <ConfigTag ConfigSize="0" ExternalAccess="Read/Write">
+            <Data>00 00</Data>
+          </ConfigTag>
+          <Connections>
+            <Connection Name="Data" RPI="20000" Type="Output" EventID="0" ProgrammaticallySendEventTrigger="false">
+              <InputTag Name="VFD_MainDrive:I" ExternalAccess="Read/Write">
+                <Data Format="Decorated">
+                  <Structure DataType="AB:PF755_Drive:I:0">
+                    <DataValueMember Name="Ready" DataType="BOOL" Value="0" />
+                    <DataValueMember Name="Active" DataType="BOOL" Value="0" />
+                    <DataValueMember Name="OutputFreq" DataType="REAL" Radix="Float" Value="0.0" />
+                    <DataValueMember Name="Status" DataType="DINT" Radix="Hex" Value="16#0000_0000" />
+                  </Structure>
+                </Data>
+              </InputTag>
+              <OutputTag Name="VFD_MainDrive:O" ExternalAccess="Read/Write">
+                <Data Format="Decorated">
+                  <Structure DataType="AB:PF755_Drive:O:0">
+                    <DataValueMember Name="Start" DataType="BOOL" Value="0" />
+                    <ArrayMember Name="Data" DataType="DINT" Dimensions="4" Radix="Hex">
+                      <Element Index="[0]" Value="16#0000_0000" />
+                      <Element Index="[1]" Value="16#0000_0000" />
+                    </ArrayMember>
+                  </Structure>
+                </Data>
+              </OutputTag>
+            </Connection>
+          </Connections>
+        </Communications>
+      </Module>
+      <!-- Module whose export has only a data blob: no structure -->
+      <Module Name="Legacy_Rack_IO" CatalogNumber="1734-AENTR" Vendor="1" ProductType="12" ProductCode="1" Major="1" Minor="1" ParentModule="Local" ParentModPortId="2" Inhibited="false" MajorFault="false">
+        <Ports>
+          <Port Id="1" Address="10.0.0.30" Type="Ethernet" Upstream="true" />
+        </Ports>
+        <Communications>
+          <Connections>
+            <Connection Name="Data" RPI="20000" Type="Input" EventID="0" ProgrammaticallySendEventTrigger="false">
+              <InputTag Name="Legacy_Rack_IO:I" ExternalAccess="Read/Write">
+                <Data Format="Input">00 00 00 00 00 00 00 00</Data>
+              </InputTag>
+              <OutputTag Name="Legacy_Rack_IO:O" ExternalAccess="Read/Write">
+                <Data Format="Output">00 00 00 00</Data>
+              </OutputTag>
+            </Connection>
+          </Connections>
+        </Communications>
+      </Module>
+    </Modules>
+    <AddOnInstructionDefinitions />
+    <Tags>
+      <Tag Name="Run_Cmd" TagType="Base" DataType="BOOL" Radix="Decimal" Constant="false" ExternalAccess="Read/Write">
+        <Data Format="L5K"><![CDATA[0]]></Data>
+        <Data Format="Decorated"><DataValue DataType="BOOL" Radix="Decimal" Value="0" /></Data>
+      </Tag>
+    </Tags>
+    <Programs />
+    <Tasks />
+  </Controller>
+</RSLogix5000Content>

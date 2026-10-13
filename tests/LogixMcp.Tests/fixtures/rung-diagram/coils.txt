@@ -1,0 +1,11 @@
+Rung 1  Line_A/Main
+║ Operator start Fill sequence ║
+║   pushbutton    latched on   ║
+║   Cmd_Start     Fill_Latch   ║
+╟──────┤ ├────────────(L)──────╢
+
+Rung 2  Line_A/Main
+║           Fill sequence  ║
+║            latched on    ║
+║ Cmd_Reset  Fill_Latch    ║
+╟────┤ ├─────────(U)───────╢

@@ -1,0 +1,135 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<!-- Offline lint fixture: exactly one trigger instance of each new rule (lint with namingPattern "^[A-Z]").
+     ShadowedControllerTag : program tag SHARED (MainProgram) shadows controller tag Shared; first referenced in Main rung 4.
+     NamingConvention      : controller tag bad_name is the only tag not matching ^[A-Z] (one summary finding).
+     CaseOnlyNameCollision : controller tags Motor / MOTOR.
+     AoiNeverUsed          : Orphan_AOI is defined and called by nothing.
+     NegativeTimerPreset   : Main rung 5 TON on Timer_Neg (stored PRE -5).
+     JsrParameterMismatch  : Main rung 0 passes 1 input to Takes_Two, whose SBR declares 2.
+     RecursiveJsr          : routine Selfie calls itself (rung 0).
+     BackwardJump          : routine Looper rung 1 JMP(Again) to LBL(Again) on rung 0.
+     DuplicateTimerCounter : Timer_Dup is driven by TON in Timers rungs 0 and 1 (one trigger; each occurrence is reported, so two findings).
+     Nothing here is an unused-tag trigger: unused tags are never findings. -->
+<RSLogix5000Content SchemaRevision="1.0" SoftwareRevision="36.1" TargetName="DemoLintRulesController" TargetType="Controller" ContainsContext="false">
+  <Controller Name="DemoLintRulesController" MajorRev="36" MinorRev="1" ProcessorType="1756-L84E">
+    <DataTypes />
+    <Modules />
+    <AddOnInstructionDefinitions>
+      <AddOnInstructionDefinition Name="Orphan_AOI" Revision="1.0" ExecutePrescan="false" ExecutePostscan="false" ExecuteEnableInFalse="false" CreatedDate="2026-01-01T00:00:00.000Z" CreatedBy="fixture" EditedDate="2026-01-01T00:00:00.000Z" EditedBy="fixture" SoftwareRevision="v36.00">
+        <Parameters>
+          <Parameter Name="EnableIn" TagType="Base" DataType="BOOL" Usage="Input" Radix="Decimal" Required="false" Visible="false" ExternalAccess="Read Only" />
+          <Parameter Name="EnableOut" TagType="Base" DataType="BOOL" Usage="Output" Radix="Decimal" Required="false" Visible="false" ExternalAccess="Read Only" />
+          <Parameter Name="Run" TagType="Base" DataType="BOOL" Usage="Input" Radix="Decimal" Required="true" Visible="true" ExternalAccess="Read/Write" />
+          <Parameter Name="Active" TagType="Base" DataType="BOOL" Usage="Output" Radix="Decimal" Required="true" Visible="true" ExternalAccess="Read Only" />
+        </Parameters>
+        <LocalTags />
+        <Routines>
+          <Routine Name="Logic" Type="RLL">
+            <RLLContent>
+              <Rung Number="0" Type="N">
+                <Text><![CDATA[XIC(Run)OTE(Active);]]></Text>
+              </Rung>
+            </RLLContent>
+          </Routine>
+        </Routines>
+      </AddOnInstructionDefinition>
+    </AddOnInstructionDefinitions>
+    <Tags>
+      <Tag Name="Run" TagType="Base" ExternalAccess="Read/Write" Constant="false" DataType="BOOL" Radix="Decimal">
+        <Data Format="Decorated"><DataValue DataType="BOOL" Radix="Decimal" Value="0" /></Data>
+      </Tag>
+      <Tag Name="Shared" TagType="Base" ExternalAccess="Read/Write" Constant="false" DataType="BOOL" Radix="Decimal">
+        <Data Format="Decorated"><DataValue DataType="BOOL" Radix="Decimal" Value="0" /></Data>
+      </Tag>
+      <Tag Name="Out_Shared" TagType="Base" ExternalAccess="Read/Write" Constant="false" DataType="BOOL" Radix="Decimal">
+        <Data Format="Decorated"><DataValue DataType="BOOL" Radix="Decimal" Value="0" /></Data>
+      </Tag>
+      <Tag Name="Motor" TagType="Base" ExternalAccess="Read/Write" Constant="false" DataType="BOOL" Radix="Decimal">
+        <Data Format="Decorated"><DataValue DataType="BOOL" Radix="Decimal" Value="0" /></Data>
+      </Tag>
+      <Tag Name="MOTOR" TagType="Base" ExternalAccess="Read/Write" Constant="false" DataType="BOOL" Radix="Decimal">
+        <Data Format="Decorated"><DataValue DataType="BOOL" Radix="Decimal" Value="0" /></Data>
+      </Tag>
+      <Tag Name="bad_name" TagType="Base" ExternalAccess="Read/Write" Constant="false" DataType="BOOL" Radix="Decimal">
+        <Data Format="Decorated"><DataValue DataType="BOOL" Radix="Decimal" Value="0" /></Data>
+      </Tag>
+      <Tag Name="Timer_Neg" TagType="Base" ExternalAccess="Read/Write" Constant="false" DataType="TIMER">
+        <Data Format="Decorated"><Structure DataType="TIMER"><DataValueMember Name="PRE" DataType="DINT" Radix="Decimal" Value="-5" /><DataValueMember Name="ACC" DataType="DINT" Radix="Decimal" Value="0" /><DataValueMember Name="EN" DataType="BOOL" Value="0" /><DataValueMember Name="TT" DataType="BOOL" Value="0" /><DataValueMember Name="DN" DataType="BOOL" Value="0" /></Structure></Data>
+      </Tag>
+      <Tag Name="Timer_Dup" TagType="Base" ExternalAccess="Read/Write" Constant="false" DataType="TIMER">
+        <Data Format="Decorated"><Structure DataType="TIMER"><DataValueMember Name="PRE" DataType="DINT" Radix="Decimal" Value="100" /><DataValueMember Name="ACC" DataType="DINT" Radix="Decimal" Value="0" /><DataValueMember Name="EN" DataType="BOOL" Value="0" /><DataValueMember Name="TT" DataType="BOOL" Value="0" /><DataValueMember Name="DN" DataType="BOOL" Value="0" /></Structure></Data>
+      </Tag>
+    </Tags>
+    <Programs>
+      <Program Name="MainProgram" Type="Normal" TestEdits="false" Disabled="false" UseAsFolder="false" MainRoutineName="Main">
+        <Tags>
+          <Tag Name="SHARED" TagType="Base" ExternalAccess="Read/Write" Constant="false" DataType="BOOL" Radix="Decimal">
+            <Data Format="Decorated"><DataValue DataType="BOOL" Radix="Decimal" Value="0" /></Data>
+          </Tag>
+        </Tags>
+        <Routines>
+          <Routine Name="Main" Type="RLL">
+            <RLLContent>
+              <Rung Number="0" Type="N">
+                <Text><![CDATA[XIC(Run)JSR(Takes_Two,1,Run);]]></Text>
+              </Rung>
+              <Rung Number="1" Type="N">
+                <Text><![CDATA[XIC(Run)JSR(Selfie,0);]]></Text>
+              </Rung>
+              <Rung Number="2" Type="N">
+                <Text><![CDATA[XIC(Run)JSR(Looper,0);]]></Text>
+              </Rung>
+              <Rung Number="3" Type="N">
+                <Text><![CDATA[XIC(Run)JSR(Timers,0);]]></Text>
+              </Rung>
+              <Rung Number="4" Type="N">
+                <Text><![CDATA[XIC(SHARED)OTE(Out_Shared);]]></Text>
+              </Rung>
+              <Rung Number="5" Type="N">
+                <Text><![CDATA[XIC(Run)TON(Timer_Neg,?,?);]]></Text>
+              </Rung>
+            </RLLContent>
+          </Routine>
+          <Routine Name="Takes_Two" Type="RLL">
+            <RLLContent>
+              <Rung Number="0" Type="N">
+                <Text><![CDATA[SBR(In_A,In_B);]]></Text>
+              </Rung>
+            </RLLContent>
+          </Routine>
+          <Routine Name="Selfie" Type="RLL">
+            <RLLContent>
+              <Rung Number="0" Type="N">
+                <Text><![CDATA[XIC(Run)JSR(Selfie,0);]]></Text>
+              </Rung>
+            </RLLContent>
+          </Routine>
+          <Routine Name="Looper" Type="RLL">
+            <RLLContent>
+              <Rung Number="0" Type="N">
+                <Text><![CDATA[LBL(Again);]]></Text>
+              </Rung>
+              <Rung Number="1" Type="N">
+                <Text><![CDATA[XIC(Run)JMP(Again);]]></Text>
+              </Rung>
+            </RLLContent>
+          </Routine>
+          <Routine Name="Timers" Type="RLL">
+            <RLLContent>
+              <Rung Number="0" Type="N">
+                <Text><![CDATA[XIC(Run)TON(Timer_Dup,?,?);]]></Text>
+              </Rung>
+              <Rung Number="1" Type="N">
+                <Text><![CDATA[XIC(Run)TON(Timer_Dup,?,?);]]></Text>
+              </Rung>
+            </RLLContent>
+          </Routine>
+        </Routines>
+      </Program>
+    </Programs>
+    <Tasks />
+    <ParameterConnections />
+    <Trends />
+    <QuickWatchLists />
+  </Controller>
+</RSLogix5000Content>

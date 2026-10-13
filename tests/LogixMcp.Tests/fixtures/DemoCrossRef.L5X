@@ -1,0 +1,123 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<!--
+  DemoCrossRef.L5X — fixture for CrossReferenceHandler unit tests.
+
+  Tags used:
+    Bit_A   BOOL  — contact/coil target
+    Bit_B   BOOL  — contact/coil target
+    Real_X  REAL  — arithmetic source
+    Real_Y  REAL  — arithmetic source / MOV source
+    Real_Z  REAL  — arithmetic / MOV destination
+    Motor   MotorCmd (UDT: Enable BOOL, Speed REAL)
+
+  Rungs:
+    0: XIC(Bit_A)XIC(Bit_B)OTE(Bit_A);          — Bit_A: read(XIC)+write(OTE); Bit_B: read(XIC)
+    1: XIC(Bit_B)OTL(Bit_A);                     — Bit_B: read(XIC); Bit_A: write(OTL)
+    2: XIC(Bit_A)OTU(Bit_B);                     — Bit_A: read(XIC); Bit_B: write(OTU)
+    3: MOV(Real_Y,Real_Z);                        — Real_Y: read(MOV arg0); Real_Z: write(MOV arg1)
+    4: ADD(Real_X,Real_Y,Real_Z);                 — Real_X/Y: read(ADD args 0,1); Real_Z: write(ADD arg2)
+    5: XIC(Motor.Enable)OTE(Bit_A);              — Motor.Enable member-access → read; Bit_A: write
+    6: TON(Timer1,1000,0);                        — TON not in KindMap → unknown for Timer1
+    7: NOP();                                     — no tag references
+-->
+<RSLogix5000Content SchemaRevision="1.0" SoftwareRevision="35.1" TargetName="CrossRefCtrl" TargetType="Controller" ContainsContext="false">
+  <Controller Name="CrossRefCtrl" MajorRev="35" MinorRev="1" ProcessorType="1756-L84E">
+    <DataTypes>
+      <DataType Name="MotorCmd" Family="NoFamily" Class="User">
+        <Members>
+          <Member Name="Enable" DataType="BOOL" Dimension="0" Radix="NullType" ExternalAccess="Read/Write" Hidden="false" />
+          <Member Name="Speed"  DataType="REAL" Dimension="0" Radix="NullType" ExternalAccess="Read/Write" Hidden="false" />
+        </Members>
+      </DataType>
+      <DataType Name="TIMER" Family="NoFamily" Class="User">
+        <Members>
+          <Member Name="PRE" DataType="DINT" Dimension="0" Radix="NullType" ExternalAccess="Read/Write" Hidden="false" />
+          <Member Name="ACC" DataType="DINT" Dimension="0" Radix="NullType" ExternalAccess="Read/Write" Hidden="false" />
+          <Member Name="EN"  DataType="BOOL" Dimension="0" Radix="NullType" ExternalAccess="Read/Write" Hidden="false" />
+          <Member Name="TT"  DataType="BOOL" Dimension="0" Radix="NullType" ExternalAccess="Read/Write" Hidden="false" />
+          <Member Name="DN"  DataType="BOOL" Dimension="0" Radix="NullType" ExternalAccess="Read/Write" Hidden="false" />
+        </Members>
+      </DataType>
+    </DataTypes>
+    <Modules />
+    <AddOnInstructionDefinitions />
+    <Tags>
+      <Tag Name="Bit_A" TagType="Base" ExternalAccess="Read/Write" Constant="false" DataType="BOOL" Radix="Decimal">
+        <Data Format="Decorated"><DataValue DataType="BOOL" Radix="Decimal" Value="0" /></Data>
+      </Tag>
+      <Tag Name="Bit_B" TagType="Base" ExternalAccess="Read/Write" Constant="false" DataType="BOOL" Radix="Decimal">
+        <Data Format="Decorated"><DataValue DataType="BOOL" Radix="Decimal" Value="0" /></Data>
+      </Tag>
+      <Tag Name="Real_X" TagType="Base" ExternalAccess="Read/Write" Constant="false" DataType="REAL" Radix="Float">
+        <Data Format="Decorated"><DataValue DataType="REAL" Radix="Float" Value="0.0" /></Data>
+      </Tag>
+      <Tag Name="Real_Y" TagType="Base" ExternalAccess="Read/Write" Constant="false" DataType="REAL" Radix="Float">
+        <Data Format="Decorated"><DataValue DataType="REAL" Radix="Float" Value="0.0" /></Data>
+      </Tag>
+      <Tag Name="Real_Z" TagType="Base" ExternalAccess="Read/Write" Constant="false" DataType="REAL" Radix="Float">
+        <Data Format="Decorated"><DataValue DataType="REAL" Radix="Float" Value="0.0" /></Data>
+      </Tag>
+      <Tag Name="Motor" TagType="Base" ExternalAccess="Read/Write" Constant="false" DataType="MotorCmd">
+        <Data Format="Decorated"><Structure DataType="MotorCmd" /></Data>
+      </Tag>
+      <Tag Name="Timer1" TagType="Base" ExternalAccess="Read/Write" Constant="false" DataType="TIMER">
+        <Data Format="Decorated"><Structure DataType="TIMER" /></Data>
+      </Tag>
+    </Tags>
+    <Programs>
+      <Program Name="MainProgram" Type="Normal" TestEdits="false" Disabled="false" UseAsFolder="false" MainRoutineName="MainRoutine">
+        <Tags />
+        <Routines>
+          <Routine Name="MainRoutine" Type="RLL">
+            <RLLContent>
+              <!-- Rung 0: Bit_A is both read (XIC) and written (OTE); Bit_B is read (XIC) -->
+              <Rung Number="0" Type="N">
+                <Comment><![CDATA[Bit_A read by XIC, Bit_B read by XIC, Bit_A written by OTE]]></Comment>
+                <Text><![CDATA[XIC(Bit_A)XIC(Bit_B)OTE(Bit_A);]]></Text>
+              </Rung>
+              <!-- Rung 1: Bit_B read (XIC), Bit_A written (OTL) -->
+              <Rung Number="1" Type="N">
+                <Comment><![CDATA[Bit_B read, Bit_A latched]]></Comment>
+                <Text><![CDATA[XIC(Bit_B)OTL(Bit_A);]]></Text>
+              </Rung>
+              <!-- Rung 2: Bit_A read (XIC), Bit_B written (OTU) -->
+              <Rung Number="2" Type="N">
+                <Comment><![CDATA[Bit_A read, Bit_B unlatched]]></Comment>
+                <Text><![CDATA[XIC(Bit_A)OTU(Bit_B);]]></Text>
+              </Rung>
+              <!-- Rung 3: Real_Y at arg0 (read), Real_Z at arg1 (write) -->
+              <Rung Number="3" Type="N">
+                <Comment><![CDATA[MOV: Real_Y is source (read), Real_Z is dest (write)]]></Comment>
+                <Text><![CDATA[MOV(Real_Y,Real_Z);]]></Text>
+              </Rung>
+              <!-- Rung 4: Real_X/Real_Y at args 0,1 (read), Real_Z at arg2 (write) -->
+              <Rung Number="4" Type="N">
+                <Comment><![CDATA[ADD: Real_X and Real_Y are sources (read), Real_Z is dest (write)]]></Comment>
+                <Text><![CDATA[ADD(Real_X,Real_Y,Real_Z);]]></Text>
+              </Rung>
+              <!-- Rung 5: Motor.Enable member access (read), Bit_A written (OTE) -->
+              <Rung Number="5" Type="N">
+                <Comment><![CDATA[Motor.Enable read via XIC member-access; Bit_A written by OTE]]></Comment>
+                <Text><![CDATA[XIC(Motor.Enable)OTE(Bit_A);]]></Text>
+              </Rung>
+              <!-- Rung 6: TON not in KindMap → unknown for Timer1 -->
+              <Rung Number="6" Type="N">
+                <Comment><![CDATA[TON uses Timer1: instruction not in KindMap, classified as unknown]]></Comment>
+                <Text><![CDATA[TON(Timer1,1000,0);]]></Text>
+              </Rung>
+              <!-- Rung 7: no tag references -->
+              <Rung Number="7" Type="N">
+                <Comment><![CDATA[NOP has no operands]]></Comment>
+                <Text><![CDATA[NOP();]]></Text>
+              </Rung>
+            </RLLContent>
+          </Routine>
+        </Routines>
+      </Program>
+    </Programs>
+    <Tasks />
+    <ParameterConnections />
+    <Trends />
+    <QuickWatchLists />
+  </Controller>
+</RSLogix5000Content>

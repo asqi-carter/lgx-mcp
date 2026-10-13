@@ -1,0 +1,316 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(EnableLogixSdk)' == 'true'">
+    <DefineConstants>$(DefineConstants);LOGIX_SDK</DefineConstants>
+  </PropertyGroup>
+
+  <!--
+    Embed all skill playbook files as assembly resources so the single-file
+    publish carries all skill content and no runtime path lookup can fail.
+
+    The glob picks up any skills/<name>/SKILL.md file automatically — adding
+    a new skill directory requires no csproj or source-code change.
+
+    Link sets a virtual path rooted at "skills\<dir>\SKILL.md" so the
+    manifest resource names are stable and predictable:
+      LogixMcp.skills.<dir>.SKILL.md
+
+    SDK-lane skills (they drive tools that only exist in the SDK adapter:
+    rung proposal, pending-edit state, scripted emulator tests) are embedded
+    only when EnableLogixSdk=true, so the no-SDK binary's logix_list_skills /
+    logix_get_skill never offer a playbook for a tool it does not register.
+    Keep this list in step with SdkOnlySkillNames in the skill tests.
+  -->
+  <PropertyGroup Condition="'$(EnableLogixSdk)' != 'true'">
+    <_SdkOnlySkillExclude>..\..\skills\lgx-propose-rung-change\**;..\..\skills\lgx-read-pending-state\**;..\..\skills\lgx-test-logic\**</_SdkOnlySkillExclude>
+  </PropertyGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="..\..\skills\**\SKILL.md" Exclude="$(_SdkOnlySkillExclude)">
+      <Link>skills\%(RecursiveDir)%(Filename)%(Extension)</Link>
+    </EmbeddedResource>
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Pinned to exact resolved version. A version bump is a release event gated by the cold-install gate, not routine dependency drift. -->
+    <PackageReference Include="L5Sharp" Version="[7.6.2]" />
+    <!-- Pinned to exact resolved version. A version bump is a release event gated by the cold-install gate, not routine dependency drift. -->
+    <PackageReference Include="libplctag" Version="[1.0.0]" />
+    <PackageReference Include="Microsoft.Extensions.Hosting" Version="8.0.1" />
+    <!-- Pinned to exact resolved version. A version bump is a release event gated by the cold-install gate, not routine dependency drift. -->
+    <PackageReference Include="ModelContextProtocol" Version="[2.2.0]" />
+    <!-- MCP Tasks extension: long logix_connect / logix_run_test calls run as pollable tasks. Same exact pin as ModelContextProtocol. -->
+    <PackageReference Include="ModelContextProtocol.Extensions.Tasks" Version="[2.2.0]" />
+  </ItemGroup>
+
+  <!--
+    System.ServiceProcess.ServiceController is referenced by the SDK ADAPTER
+    (reading LdSdkService state) but must be referenced HERE, by the
+    host executable, to actually ship.
+
+    Why: the package's only usable asset is RID-specific
+    (runtimes/win/lib/net8.0/). The adapter is deliberately built RID-less — see
+    IncludeSdkAdapterInPublish, which clears RuntimeIdentifier — so the Windows
+    asset never reaches the adapter's output, and neither the adapter injection
+    nor the Rockwell vendor harvest carries it. Referencing it from the host,
+    which publishes -r win-x64, resolves the Windows asset and bundles it into
+    the single-file executable where the adapter's AssemblyLoadContext can
+    resolve it.
+
+    Observed 2026-08-04 with the assembly absent: logix_connect returned
+    "An error occurred invoking 'logix_connect'." — an escaped exception. The
+    try/catch around the ServiceController call could not help; an assembly that
+    cannot be loaded fails when the enclosing method is JIT-compiled, before the
+    try block is entered. Same class: green tests, dead artifact.
+  -->
+  <ItemGroup Condition="'$(EnableLogixSdk)' == 'true'">
+    <PackageReference Include="System.ServiceProcess.ServiceController" Version="8.0.0" />
+  </ItemGroup>
+
+  <!--
+    Runtime delivery of LogixMcp.SdkAdapter.dll in published output.
+
+    Approach: post-publish MSBuild injection target (fallback from ProjectReference).
+
+    A direct ProjectReference from this project to LogixMcp.SdkAdapter.csproj is
+    not possible because LogixMcp.SdkAdapter already carries a ProjectReference back
+    to this project (for ITagService, ISdkTagServiceFactory, and the other shared
+    seams). The ExcludeAssets="compile" / Private="true" shape
+    would create a circular project dependency that the .NET SDK
+    build-graph resolver rejects even when compile-time binding is suppressed.
+
+    Fallback implemented here:
+    1. A BeforeTargets="ComputeResolvedFilesToPublishList" target invokes the MSBuild
+       task (not a ProjectReference) to build LogixMcp.SdkAdapter, avoiding any
+       build-graph cycle.
+    2. The adapter DLL is then added to ResolvedFileToPublish with
+       ExcludeFromSingleFile=true so that it lands alongside the published executable
+       rather than being bundled into the single-file artifact.  SdkAdapterLoader
+       probes AppContext.BaseDirectory at runtime and loads the DLL from there via
+       AssemblyLoadContext.LoadFromAssemblyPath.
+
+    Note: the RockwellAutomation vendor DLLs are intentionally excluded from the
+    publish output.  They are non-redistributable and must come from the user's
+    licensed Studio 5000 installation.  SdkAdapterLoader probes for them separately
+    via LOGIX_SDK_PATH, the Studio 5000 SDK install path, and .localfeed/.
+
+    Conditioned on EnableLogixSdk=true; Linux/CI non-SDK builds are unaffected.
+  -->
+  <Target Name="IncludeSdkAdapterInPublish"
+          BeforeTargets="ComputeResolvedFilesToPublishList"
+          Condition="'$(EnableLogixSdk)' == 'true'">
+    <!--
+      Build the adapter project explicitly.  Using the MSBuild task rather than a
+      ProjectReference avoids the build-graph cycle described above.
+
+      Restore is included in Targets, not assumed.  `dotnet publish` on a single
+      project restores only THAT project; because the adapter is reached through
+      an MSBuild task rather than a ProjectReference, nothing else ever restores
+      it and the build fails with NETSDK1004 (assets file not found).
+    -->
+    <!--
+      RuntimeIdentifier is cleared deliberately.  Global properties propagate
+      through the MSBuild task, so a `dotnet publish -r win-x64` on THIS project
+      pushes win-x64 into the adapter build.  The adapter was never restored for
+      that RID, so the build fails with:
+
+        NETSDK1047: Assets file '...SdkAdapter\obj\project.assets.json' doesn't
+        have a target for 'net10.0/win-x64'.
+
+      The adapter is a plain managed assembly loaded via AssemblyLoadContext and
+      needs no RID of its own. Clearing it also keeps its output at the
+      RID-less bin\$(Configuration)\$(TargetFramework)\ path that _SdkAdapterDll
+      below expects — with the RID present the output moves under a win-x64
+      subdirectory and the Exists() check silently misses, publishing an
+      artifact whose SDK lane can never activate.
+    -->
+    <MSBuild Projects="$(MSBuildThisFileDirectory)..\LogixMcp.SdkAdapter\LogixMcp.SdkAdapter.csproj"
+             Properties="Configuration=$(Configuration);EnableLogixSdk=true;RuntimeIdentifier=;SelfContained=false;PublishSingleFile=false"
+             Targets="Restore;Build" />
+
+    <PropertyGroup>
+      <_SdkAdapterDll>$(MSBuildThisFileDirectory)..\LogixMcp.SdkAdapter\bin\$(Configuration)\$(TargetFramework)\LogixMcp.SdkAdapter.dll</_SdkAdapterDll>
+    </PropertyGroup>
+
+    <!--
+      Fail loudly rather than silently shipping a crippled artifact.  The
+      original Exists() condition below was the only guard, so when the adapter
+      build failed the publish still "succeeded" and produced an executable
+      whose SDK lane could never activate — the exact defect this guard exists to
+      prevent, and one the cold-install gate did not catch because it only asserts
+      the server starts. A missing adapter under EnableLogixSdk=true is a broken
+      build, not a degraded one.
+    -->
+    <Error Condition="!Exists('$(_SdkAdapterDll)')"
+           Text="EnableLogixSdk=true but the adapter was not produced at $(_SdkAdapterDll). Publishing would emit an executable whose backend=&quot;sdk&quot; can never load. Check the LogixMcp.SdkAdapter build above." />
+
+    <!--
+      Inject the adapter DLL into the publish file list under the sdk/ subdirectory.
+      Placing it under sdk/ keeps it out of the executable's base directory so that
+      the MCP host type-scanner cannot discover it via ambient directory enumeration.
+      ExcludeFromSingleFile ensures it is written as a companion file (not bundled
+      into the single-file artifact), which is required because SdkAdapterLoader
+      loads it via AssemblyLoadContext.LoadFromAssemblyPath at runtime.
+    -->
+    <ItemGroup>
+      <ResolvedFileToPublish Include="$(_SdkAdapterDll)">
+        <RelativePath>sdk/LogixMcp.SdkAdapter.dll</RelativePath>
+        <CopyToPublishDirectory>Always</CopyToPublishDirectory>
+        <ExcludeFromSingleFile>true</ExcludeFromSingleFile>
+      </ResolvedFileToPublish>
+    </ItemGroup>
+
+    <!--
+      Publish the vendor-harvest project to collect the redistributable closure
+      of the Rockwell SDK's transitive runtime dependencies (Grpc.*, Google.Protobuf,
+      and any other packages the SDK depends on at runtime).
+
+      Background: LogixMcp.SdkAdapter uses ExcludeAssets="runtime" on its Rockwell
+      PackageReference so that the non-redistributable Rockwell DLLs are never emitted
+      into the adapter's own build output.  The side-effect is that the transitive
+      runtime dependencies of the Rockwell package (Google.Protobuf, Grpc.Net.Client,
+      etc.) are also suppressed.  The harvest project references the same Rockwell
+      package WITHOUT ExcludeAssets="runtime", making those transitive DLLs available
+      in its publish output so they can be harvested here.
+
+      RuntimeIdentifier is cleared for the same reason as the adapter build above:
+      the harvest project is pure managed code with no RID-specific assets.
+    -->
+    <PropertyGroup>
+      <_VendorHarvestPublishDir>$(MSBuildThisFileDirectory)..\LogixMcp.SdkVendorHarvest\bin\$(Configuration)\$(TargetFramework)\vendor-publish\</_VendorHarvestPublishDir>
+    </PropertyGroup>
+
+    <MSBuild Projects="$(MSBuildThisFileDirectory)..\LogixMcp.SdkVendorHarvest\LogixMcp.SdkVendorHarvest.csproj"
+             Properties="Configuration=$(Configuration);EnableLogixSdk=true;RuntimeIdentifier=;SelfContained=false;PublishSingleFile=false;PublishDir=$(_VendorHarvestPublishDir)"
+             Targets="Restore;Publish" />
+
+    <!--
+      Collect the vendor closure: harvest DLLs minus non-redistributable Rockwell
+      binaries.
+
+      ALC reachability rule: SdkAssemblyLoadContext is a custom AssemblyLoadContext
+      that cannot reach into the single-file bundle.  Assemblies bundled into the
+      core LogixMcp.exe are therefore NOT reachable from the adapter's load context.
+      Any assembly the adapter's closure requires must be present as a companion file
+      under sdk/vendor/ on disk — regardless of whether the core exe also bundles it.
+
+      The only exclusion is:
+        - RockwellAutomation*.dll  — excluded for LICENSING REASONS ONLY, not a
+          reachability assumption.  These DLLs are non-redistributable and must come
+          from the user's licensed Studio 5000 installation; SdkAdapterLoader probes
+          for them separately via LOGIX_SDK_PATH.  The ALC reachability rule still
+          applies to them (they are not in the single-file bundle), but their on-disk
+          source is LOGIX_SDK_PATH rather than sdk/vendor/.
+
+      All other redistributable assemblies (Microsoft.Extensions.*, System.*, Grpc.*,
+      Google.Protobuf, L5Sharp, ModelContextProtocol, etc.) are included so that the
+      SDK assembly load context has the full closure available.
+    -->
+    <ItemGroup>
+      <_SdkVendorDlls Include="$(_VendorHarvestPublishDir)*.dll"
+                      Exclude="$(_VendorHarvestPublishDir)RockwellAutomation*.dll" />
+    </ItemGroup>
+
+  </Target>
+
+  <!--
+    Deliver the vendor closure into sdk/vendor/ using a plain file copy that
+    runs AFTER the Publish target completes.
+
+    Why a Copy task instead of ResolvedFileToPublish:
+    ResolvedFileToPublish items participate in single-file bundling decisions.
+    On Windows, injecting a large batch of DLLs via ResolvedFileToPublish was
+    observed to displace the single-file bundle itself.
+    A Copy task runs after the single-file artifact has already been written and
+    therefore cannot interfere with bundling — it simply places files on disk.
+
+    The _SdkVendorDlls item group is populated by IncludeSdkAdapterInPublish
+    (which runs before ComputeResolvedFilesToPublishList, well before Publish).
+    DependsOnTargets="IncludeSdkAdapterInPublish" is a safety-net that ensures
+    the harvest MSBuild task and item population occur even if the target
+    ordering changes in a future SDK version.
+  -->
+  <Target Name="CopyVendorClosureAfterPublish"
+          AfterTargets="Publish"
+          DependsOnTargets="IncludeSdkAdapterInPublish"
+          Condition="'$(EnableLogixSdk)' == 'true'">
+    <!--
+      Defence-in-depth: explicitly strip any RockwellAutomation* entries that
+      may have been added to _SdkVendorDlls beyond the primary Exclude glob in
+      IncludeSdkAdapterInPublish.  Non-redistributable Rockwell DLLs must never
+      appear in the publish artifact; this Remove makes the Copy below safe even
+      if _SdkVendorDlls is later extended without the Exclude guard.
+    -->
+    <ItemGroup>
+      <_SdkVendorDlls Remove="@(_SdkVendorDlls)"
+                      Condition="$([System.String]::new('%(Filename)').StartsWith('RockwellAutomation'))" />
+    </ItemGroup>
+
+    <Copy SourceFiles="@(_SdkVendorDlls)"
+          DestinationFolder="$(PublishDir)sdk/vendor/" />
+
+
+
+    <!--
+      Post-copy assertion: scan the entire publish output tree (root folder and
+      sdk/vendor/) for any file whose name starts with "RockwellAutomation".
+      Fails the build if any such file escaped the Remove above or the Exclude
+      glob in IncludeSdkAdapterInPublish.  This MSBuild-level guard complements
+      the shell-level guard in scripts/verify-vendor-closure.sh.
+    -->
+    <ItemGroup>
+      <_RockwellInPublish Include="$(PublishDir)**/RockwellAutomation*" />
+    </ItemGroup>
+    <Error Condition="'@(_RockwellInPublish)' != ''"
+           Text="RockwellAutomation binaries found in publish output — these non-redistributable DLLs must never appear in the shipped artifact. Files: @(_RockwellInPublish, ', '). Check the Exclude glob in IncludeSdkAdapterInPublish and the Remove in CopyVendorClosureAfterPublish." />
+  </Target>
+
+  <!--
+    Regression guard: assert that no Microsoft.* assembly is marked
+    ExcludeFromSingleFile=true in ResolvedFileToPublish during a single-file publish.
+
+    Background (root cause):
+    When vendor DLLs were delivered via ResolvedFileToPublish with
+    ExcludeFromSingleFile=true (the earlier approach),
+    the MSBuild publish pipeline deduplicated entries by filename.  The vendor
+    ExcludeFromSingleFile=true entries for Microsoft.Extensions.* "won" the
+    deduplication race against the core application's bundleable entries for the
+    same filenames, causing those assemblies to be PULLED OUT of the single-file
+    bundle and placed on disk instead.  The result was a startup crash:
+
+      System.IO.FileNotFoundException: File name: 'Microsoft.Extensions.Configuration'
+        at Host.CreateApplicationBuilder(String[] args) in Program.cs:line 10
+
+    The current approach replaces ResolvedFileToPublish with a
+    post-publish Copy task so vendor DLLs bypass the deduplication entirely.
+    Microsoft.Extensions.* (and all other core dependencies) are now bundled
+    naturally through the PackageReference graph with nothing marking them
+    ExcludeFromSingleFile.
+
+    This guard ensures the fix cannot silently regress: if any future change
+    re-introduces a Microsoft.* ExcludeFromSingleFile=true entry in
+    ResolvedFileToPublish, this target fails the publish before the broken
+    artifact is written, with a message that names both the affected files and
+    the correct alternative (post-publish Copy task).
+
+    Runs for any single-file publish (PublishSingleFile=true), not just SDK
+    builds, so the guard protects both the Windows and Linux publish paths.
+  -->
+  <Target Name="AssertMicrosoftExtensionsBundled"
+          AfterTargets="ComputeResolvedFilesToPublishList"
+          Condition="'$(PublishSingleFile)' == 'true'">
+    <ItemGroup>
+      <_MicrosoftExcludedFromBundle Include="@(ResolvedFileToPublish)"
+          Condition="$([System.String]::new('%(Filename)').StartsWith('Microsoft.')) AND '%(ResolvedFileToPublish.ExcludeFromSingleFile)' == 'true'" />
+    </ItemGroup>
+    <Error Condition="'@(_MicrosoftExcludedFromBundle)' != ''"
+           Text="Single-file bundle regression: the following Microsoft.* assemblies are marked ExcludeFromSingleFile=true in ResolvedFileToPublish. ResolvedFileToPublish deduplicates by filename; the ExcludeFromSingleFile=true entries will win and pull these assemblies OUT of the single-file bundle, causing startup failures (FileNotFoundException for Microsoft.Extensions.*). Deliver vendor copies via a post-publish Copy task (AfterTargets=&quot;Publish&quot;) instead of ResolvedFileToPublish. Affected: @(_MicrosoftExcludedFromBundle->'%(RelativePath)', ', ')." />
+  </Target>
+
+</Project>

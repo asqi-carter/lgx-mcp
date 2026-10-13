@@ -1,0 +1,11 @@
+Rung 10  Line_A/Main
+║                Fill_Valve: Fill               ║
+║                valve solenoid                 ║
+║ Operator start Batch_Count: Batches  Line run ║
+║   pushbutton   filled since reset     output  ║
+║   Cmd_Start    ┌───────────────────┐ Run_Out  ║
+╟──────┤ ├───────┤ NewVendorBlock    ├───( )────╢
+║                │ Arg 1 Fill_Valve  │          ║
+║                │ Arg 2 42          │          ║
+║                │ Arg 3 Batch_Count │          ║
+║                └───────────────────┘          ║

@@ -1,0 +1,8 @@
+Rung 12  Line_A/Main
+║ Operator start                      ║
+║   pushbutton                        ║
+║   Cmd_Start    ┌──────────────────┐ ║
+╟──────┤ ├───────┤ JSR              ├─╢
+║                │ Routine Fill_Seq │ ║
+║                │ Input 1 0        │ ║
+║                └──────────────────┘ ║

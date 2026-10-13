@@ -1,0 +1,8 @@
+Rung 0  Line_A/Main
+// Start the fill valve when the guard is closed and stop is not pressed.
+║                Operator stop                         ║
+║                 pushbutton,   Guard door             ║
+║ Operator start   normally     closed and  Fill valve ║
+║   pushbutton      closed        locked     solenoid  ║
+║   Cmd_Start      Cmd_Stop    Guard_Closed Fill_Valve ║
+╟──────┤ ├────────────┤/├──────────┤ ├─────────( )─────╢

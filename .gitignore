@@ -1,0 +1,15 @@
+bin/
+obj/
+*.user
+.vs/
+TestResults/
+
+# Rockwell SDK packages copied from a licensed Studio 5000 / Logix Echo install.
+# NOT redistributable — every developer must obtain these from their own install.
+.localfeed/*
+!.localfeed/.gitkeep
+*.binlog
+__pycache__/
+
+# Generated release artifacts (make release-nosdk)
+dist/

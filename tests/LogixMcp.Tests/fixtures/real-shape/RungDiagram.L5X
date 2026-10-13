@@ -1,0 +1,81 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!-- Structure copied from a real Studio 5000 export; all names invented. -->
+<RSLogix5000Content SchemaRevision="1.0" SoftwareRevision="35.01" TargetName="Line_A" TargetType="Program" ContainsContext="true" Owner="tester" ExportDate="Mon Jan 05 08:00:00 2026" ExportOptions="NoRawData L5KData DecoratedData Context Dependencies ForceProtectedEncoding AllProjDocTrans">
+<Controller Use="Context" Name="Plant_Ctl">
+<DataTypes Use="Context">
+<DataType Name="Seq_Type" Family="NoFamily" Class="User"><Description><![CDATA[Sequence data]]></Description><Members>
+<Member Name="ZZZZZZZZZZSeq_Type0" DataType="SINT" Dimension="0" Radix="Decimal" Hidden="true" ExternalAccess="Read/Write"/>
+<Member Name="Step" DataType="DINT" Dimension="0" Radix="Decimal" Hidden="false" ExternalAccess="Read/Write"><Description><![CDATA[Current step number]]></Description></Member>
+</Members></DataType>
+</DataTypes>
+<AddOnInstructionDefinitions Use="Context">
+<AddOnInstructionDefinition Use="Context" Name="Valve_Ctl" Revision="1.0" Vendor="" ExecutePrescanCaseLogic="false" CreatedDate="2026-01-05T08:00:00.000Z" CreatedBy="tester" EditedDate="2026-01-05T08:00:00.000Z" EditedBy="tester" SoftwareRevision="v35.01">
+<Description><![CDATA[Valve controller]]></Description>
+<Parameters>
+<Parameter Name="EnableIn" TagType="Base" DataType="BOOL" Usage="Input" Radix="Decimal" Required="false" Visible="false" ExternalAccess="Read Only"/>
+<Parameter Name="EnableOut" TagType="Base" DataType="BOOL" Usage="Output" Radix="Decimal" Required="false" Visible="false" ExternalAccess="Read Only"/>
+<Parameter Name="OpenCmd" TagType="Base" DataType="BOOL" Usage="Input" Radix="Decimal" Required="true" Visible="true" ExternalAccess="Read Only"><Description><![CDATA[Open command]]></Description></Parameter>
+<Parameter Name="OpenFb" TagType="Base" DataType="BOOL" Usage="Input" Radix="Decimal" Required="true" Visible="true" ExternalAccess="Read Only"><Description><![CDATA[Open feedback]]></Description></Parameter>
+</Parameters>
+</AddOnInstructionDefinition>
+</AddOnInstructionDefinitions>
+<Tags Use="Context">
+<Tag Name="Cmd_Start" TagType="Base" DataType="BOOL" Radix="Decimal" Constant="false" ExternalAccess="Read/Write"><Description><![CDATA[Operator start pushbutton]]></Description><Data Format="L5K"><![CDATA[0]]></Data></Tag>
+<Tag Name="Cmd_Stop" TagType="Base" DataType="BOOL" Radix="Decimal" Constant="false" ExternalAccess="Read/Write"><Description><![CDATA[Operator stop pushbutton, normally closed]]></Description><Data Format="L5K"><![CDATA[0]]></Data></Tag>
+<Tag Name="Cmd_Reset" TagType="Base" DataType="BOOL" Radix="Decimal" Constant="false" ExternalAccess="Read/Write"><Data Format="L5K"><![CDATA[0]]></Data></Tag>
+<Tag Name="Guard_Closed" TagType="Base" DataType="BOOL" Radix="Decimal" Constant="false" ExternalAccess="Read/Write"><Description><![CDATA[Guard door closed and locked]]></Description><Data Format="L5K"><![CDATA[0]]></Data></Tag>
+<Tag Name="Fill_Valve" TagType="Base" DataType="BOOL" Radix="Decimal" Constant="false" ExternalAccess="Read/Write"><Description><![CDATA[Fill valve solenoid]]></Description><Data Format="L5K"><![CDATA[0]]></Data></Tag>
+<Tag Name="Fill_Latch" TagType="Base" DataType="BOOL" Radix="Decimal" Constant="false" ExternalAccess="Read/Write"><Description><![CDATA[Fill sequence latched on]]></Description><Data Format="L5K"><![CDATA[0]]></Data></Tag>
+<Tag Name="Drain_Valve" TagType="Base" DataType="BOOL" Radix="Decimal" Constant="false" ExternalAccess="Read/Write"><Description><![CDATA[Drain valve solenoid]]></Description><Data Format="L5K"><![CDATA[0]]></Data></Tag>
+<Tag Name="Fill_Timer" TagType="Base" DataType="TIMER" Radix="Decimal" Constant="false" ExternalAccess="Read/Write"><Description><![CDATA[Fill time-out timer]]></Description><Data Format="L5K"><![CDATA[0]]></Data></Tag>
+<Tag Name="Batch_Count" TagType="Base" DataType="DINT" Radix="Decimal" Constant="false" ExternalAccess="Read/Write"><Description><![CDATA[Batches filled since reset]]></Description><Data Format="L5K"><![CDATA[0]]></Data></Tag>
+<Tag Name="Last_Count" TagType="Base" DataType="DINT" Radix="Decimal" Constant="false" ExternalAccess="Read/Write"><Data Format="L5K"><![CDATA[0]]></Data></Tag>
+<Tag Name="Avg_Count" TagType="Base" DataType="DINT" Radix="Decimal" Constant="false" ExternalAccess="Read/Write"><Description><![CDATA[Average of the last two counts]]></Description><Data Format="L5K"><![CDATA[0]]></Data></Tag>
+<Tag Name="Recipe_Src" TagType="Base" DataType="DINT" Radix="Decimal" Constant="false" ExternalAccess="Read/Write" Dimensions="10"><Description><![CDATA[Recipe table source]]></Description><Data Format="L5K"><![CDATA[0]]></Data></Tag>
+<Tag Name="Recipe_Dst" TagType="Base" DataType="DINT" Radix="Decimal" Constant="false" ExternalAccess="Read/Write" Dimensions="10"><Data Format="L5K"><![CDATA[0]]></Data></Tag>
+<Tag Name="Status_Word" TagType="Base" DataType="DINT" Radix="Decimal" Constant="false" ExternalAccess="Read/Write"><Description><![CDATA[Line status word]]></Description><Comments><Comment Operand=".0"><![CDATA[Line running]]></Comment><Comment Operand=".1"><![CDATA[Line faulted]]></Comment></Comments><Data Format="L5K"><![CDATA[0]]></Data></Tag>
+<Tag Name="Valve_1" TagType="Base" DataType="Valve_Ctl" Radix="Decimal" Constant="false" ExternalAccess="Read/Write"><Description><![CDATA[Fill valve controller]]></Description><Data Format="L5K"><![CDATA[0]]></Data></Tag>
+<Tag Name="Fb_Open" TagType="Base" DataType="BOOL" Radix="Decimal" Constant="false" ExternalAccess="Read/Write"><Description><![CDATA[Open limit switch feedback]]></Description><Data Format="L5K"><![CDATA[0]]></Data></Tag>
+<Tag Name="Cmd_Open" TagType="Base" DataType="BOOL" Radix="Decimal" Constant="false" ExternalAccess="Read/Write"><Data Format="L5K"><![CDATA[0]]></Data></Tag>
+<Tag Name="Pulse_1" TagType="Base" DataType="BOOL" Radix="Decimal" Constant="false" ExternalAccess="Read/Write"><Description><![CDATA[One-shot storage bit]]></Description><Data Format="L5K"><![CDATA[0]]></Data></Tag>
+<Tag Name="Seq" TagType="Base" DataType="Seq_Type" Radix="Decimal" Constant="false" ExternalAccess="Read/Write"><Description><![CDATA[Sequence data]]></Description><Data Format="L5K"><![CDATA[0]]></Data></Tag>
+</Tags>
+<Programs Use="Context">
+<Program Use="Target" Name="Line_A" TestEdits="false" MainRoutineName="Main" Disabled="false" UseAsFolder="false">
+<Tags><Tag Name="Local_Flag" TagType="Base" DataType="BOOL" Radix="Decimal" Constant="false" ExternalAccess="Read/Write"><Description><![CDATA[Program scope flag]]></Description><Data Format="L5K"><![CDATA[0]]></Data></Tag><Tag Name="Permissive_01" TagType="Base" DataType="BOOL" Radix="Decimal" Constant="false" ExternalAccess="Read/Write"><Description><![CDATA[Permissive number 1 in the start chain]]></Description><Data Format="L5K"><![CDATA[0]]></Data></Tag><Tag Name="Permissive_02" TagType="Base" DataType="BOOL" Radix="Decimal" Constant="false" ExternalAccess="Read/Write"><Description><![CDATA[Permissive number 2 in the start chain]]></Description><Data Format="L5K"><![CDATA[0]]></Data></Tag><Tag Name="Permissive_03" TagType="Base" DataType="BOOL" Radix="Decimal" Constant="false" ExternalAccess="Read/Write"><Description><![CDATA[Permissive number 3 in the start chain]]></Description><Data Format="L5K"><![CDATA[0]]></Data></Tag><Tag Name="Permissive_04" TagType="Base" DataType="BOOL" Radix="Decimal" Constant="false" ExternalAccess="Read/Write"><Description><![CDATA[Permissive number 4 in the start chain]]></Description><Data Format="L5K"><![CDATA[0]]></Data></Tag><Tag Name="Permissive_05" TagType="Base" DataType="BOOL" Radix="Decimal" Constant="false" ExternalAccess="Read/Write"><Description><![CDATA[Permissive number 5 in the start chain]]></Description><Data Format="L5K"><![CDATA[0]]></Data></Tag><Tag Name="Permissive_06" TagType="Base" DataType="BOOL" Radix="Decimal" Constant="false" ExternalAccess="Read/Write"><Description><![CDATA[Permissive number 6 in the start chain]]></Description><Data Format="L5K"><![CDATA[0]]></Data></Tag><Tag Name="Permissive_07" TagType="Base" DataType="BOOL" Radix="Decimal" Constant="false" ExternalAccess="Read/Write"><Description><![CDATA[Permissive number 7 in the start chain]]></Description><Data Format="L5K"><![CDATA[0]]></Data></Tag><Tag Name="Permissive_08" TagType="Base" DataType="BOOL" Radix="Decimal" Constant="false" ExternalAccess="Read/Write"><Description><![CDATA[Permissive number 8 in the start chain]]></Description><Data Format="L5K"><![CDATA[0]]></Data></Tag><Tag Name="Permissive_09" TagType="Base" DataType="BOOL" Radix="Decimal" Constant="false" ExternalAccess="Read/Write"><Description><![CDATA[Permissive number 9 in the start chain]]></Description><Data Format="L5K"><![CDATA[0]]></Data></Tag><Tag Name="Permissive_10" TagType="Base" DataType="BOOL" Radix="Decimal" Constant="false" ExternalAccess="Read/Write"><Description><![CDATA[Permissive number 10 in the start chain]]></Description><Data Format="L5K"><![CDATA[0]]></Data></Tag><Tag Name="Permissive_11" TagType="Base" DataType="BOOL" Radix="Decimal" Constant="false" ExternalAccess="Read/Write"><Description><![CDATA[Permissive number 11 in the start chain]]></Description><Data Format="L5K"><![CDATA[0]]></Data></Tag><Tag Name="Permissive_12" TagType="Base" DataType="BOOL" Radix="Decimal" Constant="false" ExternalAccess="Read/Write"><Description><![CDATA[Permissive number 12 in the start chain]]></Description><Data Format="L5K"><![CDATA[0]]></Data></Tag><Tag Name="Run_Out" TagType="Base" DataType="BOOL" Radix="Decimal" Constant="false" ExternalAccess="Read/Write"><Description><![CDATA[Line run output]]></Description><Data Format="L5K"><![CDATA[0]]></Data></Tag></Tags>
+<Routines>
+<Routine Use="Target" Name="Main" Type="RLL"><RLLContent>
+<Rung Number="0" Type="N"><Comment><![CDATA[Start the fill valve when the guard is closed and stop is not pressed.]]></Comment><Text><![CDATA[XIC(Cmd_Start)XIO(Cmd_Stop)XIC(Guard_Closed)OTE(Fill_Valve);]]></Text></Rung>
+<Rung Number="1" Type="N"><Text><![CDATA[XIC(Cmd_Start)OTL(Fill_Latch);]]></Text></Rung>
+<Rung Number="2" Type="N"><Text><![CDATA[XIC(Cmd_Reset)OTU(Fill_Latch);]]></Text></Rung>
+<Rung Number="3" Type="N"><Text><![CDATA[XIC(Cmd_Start)[XIC(Fill_Latch),XIC(Status_Word.0)]XIO(Cmd_Stop)OTE(Fill_Valve);]]></Text></Rung>
+<Rung Number="4" Type="N"><Text><![CDATA[XIC(Cmd_Start)[XIC(Fill_Latch),[XIC(Guard_Closed)XIO(Cmd_Stop),XIC(Status_Word.1)]]OTE(Drain_Valve);]]></Text></Rung>
+<Rung Number="5" Type="N"><Text><![CDATA[XIC(Fill_Valve)TON(Fill_Timer,5000,0);]]></Text></Rung>
+<Rung Number="6" Type="N"><Text><![CDATA[XIC(Cmd_Start)MOV(Batch_Count,Last_Count)CPT(Avg_Count,(Batch_Count+Last_Count)/2)COP(Recipe_Src[0],Recipe_Dst[0],10);]]></Text></Rung>
+<Rung Number="7" Type="N"><Text><![CDATA[XIC(Cmd_Start)Valve_Ctl(Valve_1,Cmd_Open,Fb_Open);]]></Text></Rung>
+<Rung Number="8" Type="N"><Text><![CDATA[XIC(Cmd_Start)ONS(Pulse_1)OTE(Fill_Latch);]]></Text></Rung>
+<Rung Number="9" Type="N"><Comment><![CDATA[Every permissive in the start chain must be made.]]></Comment><Text><![CDATA[XIC(Local_Flag)XIC(Permissive_01)XIC(Permissive_02)XIC(Permissive_03)XIC(Permissive_04)XIC(Permissive_05)XIC(Permissive_06)XIC(Permissive_07)XIC(Permissive_08)XIC(Permissive_09)XIC(Permissive_10)XIC(Permissive_11)XIC(Permissive_12)OTE(Run_Out);]]></Text></Rung>
+<Rung Number="10" Type="N"><Text><![CDATA[XIC(Cmd_Start)NewVendorBlock(Fill_Valve,42,Batch_Count)OTE(Run_Out);]]></Text></Rung>
+<Rung Number="11" Type="N"><Text><![CDATA[XIC(Cmd_Start)GRT(Batch_Count,10)OTE(Run_Out);]]></Text></Rung>
+<Rung Number="12" Type="N"><Text><![CDATA[XIC(Cmd_Start)JSR(Fill_Seq,0);]]></Text></Rung>
+</RLLContent></Routine>
+<Routine Use="Target" Name="Edits" Type="RLL"><RLLContent>
+<Rung Number="0" Type="N"><Text><![CDATA[XIC(Cmd_Start)OTE(Fill_Valve);]]></Text></Rung>
+<Rung Number="1" Type="I"><Comment><![CDATA[New latch rung.]]></Comment><Text><![CDATA[XIC(Cmd_Start)XIC(Guard_Closed)OTL(Fill_Latch);]]></Text></Rung>
+<Rung Number="2" Type="R"><Comment><![CDATA[Old reset rung.]]></Comment><Text><![CDATA[XIC(Cmd_Reset)OTU(Fill_Latch);]]></Text></Rung>
+<Rung Number="3" Type="IR"><Comment><![CDATA[New reset rung.]]></Comment><Text><![CDATA[XIC(Cmd_Reset)XIC(Guard_Closed)OTU(Fill_Latch);]]></Text></Rung>
+<Rung Number="4" Type="D"><Text><![CDATA[XIC(Cmd_Stop)OTE(Drain_Valve);]]></Text></Rung>
+<Rung Number="5" Type="e"><Text><![CDATA[XIC(Fill_Valve)OTE(Run_Out);]]></Text></Rung>
+<Rung Number="6" Type="dN"><Text><![CDATA[XIC(Fill_Valve)OTE(Fill_Latch);]]></Text></Rung>
+</RLLContent></Routine>
+<Routine Use="Target" Name="Fill_Seq" Type="RLL"><RLLContent>
+<Rung Number="0" Type="N"><Text><![CDATA[XIC(Cmd_Start)OTE(Fill_Valve);]]></Text></Rung>
+</RLLContent></Routine>
+<Routine Use="Target" Name="Calc" Type="ST"><STContent><Line Number="0"><![CDATA[Avg_Count := (Batch_Count + Last_Count) / 2;]]></Line></STContent></Routine>
+<Routine Use="Target" Name="Blocks" Type="FBD"><FBDContent SheetSize="Letter - 8.5 x 11 in" SheetOrientation="Landscape"><Sheet Number="1"/></FBDContent></Routine>
+<Routine Use="Target" Name="Steps" Type="SFC"><SFCContent SheetSize="Letter - 8.5 x 11 in" SheetOrientation="Landscape" StepName="Step" StepType="Step" SFCContentBegin="1"/></Routine>
+</Routines>
+</Program>
+</Programs>
+</Controller>
+</RSLogix5000Content>

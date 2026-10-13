@@ -1,0 +1,8 @@
+Rung 11  Line_A/Main
+║ Operator start Batch_Count: Batches     Line run ║
+║   pushbutton   filled since reset        output  ║
+║   Cmd_Start    ┌──────────────────────┐ Run_Out  ║
+╟──────┤ ├───────┤ GRT                  ├───( )────╢
+║                │ Source A Batch_Count │          ║
+║                │ Source B 10          │          ║
+║                └──────────────────────┘          ║

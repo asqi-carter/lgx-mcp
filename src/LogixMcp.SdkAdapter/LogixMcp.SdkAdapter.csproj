@@ -1,0 +1,119 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Library</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AssemblyName>LogixMcp.SdkAdapter</AssemblyName>
+    <RootNamespace>LogixMcp.SdkAdapter</RootNamespace>
+  </PropertyGroup>
+
+  <!--
+    The entire adapter is conditionally compiled: when EnableLogixSdk is false
+    (Linux CI) the source files are excluded and the project compiles to an
+    empty library, satisfying the EnableLogixSdk guard requirement while
+    keeping the assembly boundary intact.
+  -->
+  <ItemGroup Condition="'$(EnableLogixSdk)' != 'true'">
+    <Compile Remove="AcdProjectOpener.cs" />
+    <Compile Remove="LogixProjectSession.cs" />
+    <Compile Remove="TypedSdkTagService.cs" />
+    <Compile Remove="ExportRungsHandler.cs" />
+    <Compile Remove="PendingEditsHandler.cs" />
+    <Compile Remove="ProposeRungEditHandler.cs" />
+    <Compile Remove="RungFragmentBuilder.cs" />
+    <Compile Remove="LogixSdkTools.cs" />
+    <Compile Remove="SdkConnectFactory.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Pinned to exact resolved version. A version bump is a release event gated by the cold-install gate, not routine dependency drift. -->
+    <PackageReference Include="L5Sharp" Version="[7.6.2]" />
+    <!-- Pinned to exact resolved version. A version bump is a release event gated by the cold-install gate, not routine dependency drift. -->
+    <PackageReference Include="ModelContextProtocol" Version="[2.2.0]" />
+    <!--
+      Required for System.ServiceProcess.ServiceController to query LdSdkService
+      state on Windows.  Only needed when the SDK adapter compiles (EnableLogixSdk).
+    -->
+    <PackageReference Include="System.ServiceProcess.ServiceController" Version="8.0.0"
+                      Condition="'$(EnableLogixSdk)' == 'true'" />
+    <PackageReference Include="RockwellAutomation.LogixDesigner.CSClient" Version="2.2.1109"
+                      Condition="'$(EnableLogixSdk)' == 'true'">
+      <!--
+        ExcludeAssets="runtime" keeps the Rockwell vendor DLLs out of this
+        project's output directory and out of any dotnet publish output.
+        The adapter still compiles against the SDK types (compile assets remain
+        included by default).  At runtime, SdkAdapterLoader probes for the
+        Rockwell assemblies via Studio 5000's install path or LOGIX_SDK_PATH,
+        so they do not need to be shipped alongside the published executable.
+      -->
+      <ExcludeAssets>runtime</ExcludeAssets>
+    </PackageReference>
+  </ItemGroup>
+
+  <!--
+    Reference the core assembly for ITagService, ISdkTagServiceFactory,
+    TagServiceException, TagXPathTranslator, and all other shared seams.
+  -->
+  <ItemGroup>
+    <ProjectReference Include="..\LogixMcp\LogixMcp.csproj" />
+  </ItemGroup>
+
+  <!--
+    After this project builds, copy the adapter DLL into LogixMcp's output
+    directory so Program.cs can load it at runtime via
+    AssemblyLoadContext.Default.LoadFromAssemblyPath.
+
+    A ProjectReference from LogixMcp to this project is not possible because
+    this project already has a ProjectReference back to LogixMcp (for
+    ITagService, ISdkTagServiceFactory, and the other core seams), which would
+    create a circular dependency.  Pushing the copy here — into the adapter's
+    own AfterBuild target — avoids any subprocess or cross-project build task.
+
+    The solution build order guarantees LogixMcp is always built before this
+    project (SdkAdapter depends on it via ProjectReference), so the destination
+    directory exists by the time this target runs.
+  -->
+  <Target Name="CopyToMainOutput" AfterTargets="Build" Condition="'$(EnableLogixSdk)' == 'true'">
+    <PropertyGroup>
+      <_MainExeOutDir>$(MSBuildThisFileDirectory)..\LogixMcp\bin\$(Configuration)\$(TargetFramework)\</_MainExeOutDir>
+      <!--
+        Place the adapter DLL in a sdk/ subdirectory of the core host's output
+        directory, mirroring the publish layout produced by IncludeSdkAdapterInPublish
+        in LogixMcp.csproj.  SdkAdapterLoader probes
+        AppContext.BaseDirectory/sdk/LogixMcp.SdkAdapter.dll at runtime.
+      -->
+      <_MainExeSdkDir>$(_MainExeOutDir)sdk\</_MainExeSdkDir>
+    </PropertyGroup>
+    <!--
+      Ensure the sdk/ subdirectory exists before copying.
+    -->
+    <MakeDir Directories="$(_MainExeSdkDir)" Condition="Exists('$(_MainExeOutDir)')" />
+    <!--
+      Copy the adapter DLL itself into the core host's sdk/ output subdirectory so
+      SdkAdapterLoader can load it at runtime via AssemblyLoadContext.
+    -->
+    <Copy SourceFiles="$(TargetPath)"
+          DestinationFolder="$(_MainExeSdkDir)"
+          SkipUnchangedFiles="true"
+          Condition="Exists('$(_MainExeOutDir)')" />
+    <!--
+      Previously this block copied Rockwell runtime DLLs into the core host's
+      output directory.  Because the PackageReference above now carries
+      ExcludeAssets="runtime", the vendor DLLs are no longer present in
+      $(OutDir), so this glob resolves to an empty set and the Copy is a no-op.
+      Vendor DLLs are resolved at runtime by SdkAdapterLoader, which probes
+      Studio 5000's install path (and LOGIX_SDK_PATH) rather than the publish
+      output directory.
+    -->
+    <ItemGroup>
+      <_RockwellDlls Include="$(OutDir)RockwellAutomation*.dll" />
+    </ItemGroup>
+    <Copy SourceFiles="@(_RockwellDlls)"
+          DestinationFolder="$(_MainExeOutDir)"
+          SkipUnchangedFiles="true"
+          Condition="Exists('$(_MainExeOutDir)')" />
+  </Target>
+
+</Project>

@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<!-- Lint fixture for DivideByPossibleZero. Rungs 0-3 are flagged (literal 0 / unwritten zero tag);
+     rung 4 (divisor written by rung 6) and rung 5 (non-zero value) are clean. -->
+<RSLogix5000Content SchemaRevision="1.0" SoftwareRevision="36.1" TargetName="LintController" TargetType="Controller" ContainsContext="false">
+  <Controller Name="LintController" MajorRev="36" MinorRev="1" ProcessorType="1756-L84E">
+    <DataTypes />
+    <Modules />
+    <AddOnInstructionDefinitions />
+    <Tags>
+      <Tag Name="Go" TagType="Base" ExternalAccess="Read/Write" Constant="false" DataType="BOOL" Radix="Decimal">
+        <Data Format="Decorated"><DataValue DataType="BOOL" Radix="Decimal" Value="0" /></Data>
+      </Tag>
+      <Tag Name="Num" TagType="Base" ExternalAccess="Read/Write" Constant="false" DataType="DINT" Radix="Decimal">
+        <Data Format="Decorated"><DataValue DataType="DINT" Radix="Decimal" Value="10" /></Data>
+      </Tag>
+      <Tag Name="Result" TagType="Base" ExternalAccess="Read/Write" Constant="false" DataType="DINT" Radix="Decimal">
+        <Data Format="Decorated"><DataValue DataType="DINT" Radix="Decimal" Value="0" /></Data>
+      </Tag>
+      <Tag Name="ZeroDen" TagType="Base" ExternalAccess="Read/Write" Constant="false" DataType="DINT" Radix="Decimal">
+        <Data Format="Decorated"><DataValue DataType="DINT" Radix="Decimal" Value="0" /></Data>
+      </Tag>
+      <Tag Name="WrittenDen" TagType="Base" ExternalAccess="Read/Write" Constant="false" DataType="DINT" Radix="Decimal">
+        <Data Format="Decorated"><DataValue DataType="DINT" Radix="Decimal" Value="0" /></Data>
+      </Tag>
+      <Tag Name="NonZeroDen" TagType="Base" ExternalAccess="Read/Write" Constant="false" DataType="DINT" Radix="Decimal">
+        <Data Format="Decorated"><DataValue DataType="DINT" Radix="Decimal" Value="2" /></Data>
+      </Tag>
+    </Tags>
+    <Programs>
+      <Program Name="MainProgram" Type="Normal" TestEdits="false" Disabled="false" UseAsFolder="false" MainRoutineName="MainRoutine">
+        <Tags />
+        <Routines>
+          <Routine Name="MainRoutine" Type="RLL">
+            <RLLContent>
+              <Rung Number="0" Type="N">
+                <Text><![CDATA[DIV(Num,0,Result);]]></Text>
+              </Rung>
+              <Rung Number="1" Type="N">
+                <Text><![CDATA[DIV(Num,ZeroDen,Result);]]></Text>
+              </Rung>
+              <Rung Number="2" Type="N">
+                <Text><![CDATA[MOD(Num,ZeroDen,Result);]]></Text>
+              </Rung>
+              <Rung Number="3" Type="N">
+                <Text><![CDATA[CPT(Result,Num/ZeroDen);]]></Text>
+              </Rung>
+              <Rung Number="4" Type="N">
+                <Text><![CDATA[DIV(Num,WrittenDen,Result);]]></Text>
+              </Rung>
+              <Rung Number="5" Type="N">
+                <Text><![CDATA[DIV(Num,NonZeroDen,Result);]]></Text>
+              </Rung>
+              <Rung Number="6" Type="N">
+                <Text><![CDATA[XIC(Go)MOVE(5,WrittenDen);]]></Text>
+              </Rung>
+            </RLLContent>
+          </Routine>
+        </Routines>
+      </Program>
+    </Programs>
+    <Tasks />
+    <ParameterConnections />
+    <Trends />
+    <QuickWatchLists />
+  </Controller>
+</RSLogix5000Content>

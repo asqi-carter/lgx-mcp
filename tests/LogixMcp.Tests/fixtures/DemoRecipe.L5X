@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<!--
+  DemoRecipe.L5X — fixture for SDK member-read decode tests.
+
+  The RSLogix5000Content / Controller envelope (revision attributes, processor
+  type, trailing Modules/AOI/Tasks/Trends sections) is taken verbatim from
+  DemoInterlock.L5X (only TargetName / Controller Name differ). Do NOT hand-build a
+  new envelope: synthesised envelopes have failed SDK import.
+  scripts/bench/prep_demo.py retargets the revision for the installed Studio.
+
+  Types:
+    STRING_20   StringFamily: LEN DINT, DATA SINT[20]                       (24 bytes)
+    RecipeStep  Name STRING, PRE DINT, Enable BOOL (hidden SINT host), Note STRING_20
+    Recipe      Step RecipeStep, Count INT
+
+  Tag Recipe1 : Recipe (non-default initial values):
+    Step.Name='Mix'  Step.Note='hold 5s'  Step.PRE=1500  Step.Enable=1  Count=3
+-->
+<RSLogix5000Content SchemaRevision="1.0" SoftwareRevision="36.1" TargetName="RecipeCtrl" TargetType="Controller" ContainsContext="false">
+  <Controller Name="RecipeCtrl" MajorRev="36" MinorRev="1" ProcessorType="1756-L84E">
+    <DataTypes>
+      <DataType Name="STRING_20" Family="StringFamily" Class="User">
+        <Members>
+          <Member Name="LEN" DataType="DINT" Dimension="0" Radix="Decimal" Hidden="false" ExternalAccess="Read/Write" />
+          <Member Name="DATA" DataType="SINT" Dimension="20" Radix="ASCII" Hidden="false" ExternalAccess="Read/Write" />
+        </Members>
+      </DataType>
+      <DataType Name="RecipeStep" Family="NoFamily" Class="User">
+        <Members>
+          <Member Name="Name" DataType="STRING" Dimension="0" Radix="NullType" Hidden="false" ExternalAccess="Read/Write" />
+          <Member Name="PRE" DataType="DINT" Dimension="0" Radix="Decimal" Hidden="false" ExternalAccess="Read/Write" />
+          <Member Name="ZZZZZZZZZZRecipeStep0" DataType="SINT" Dimension="0" Radix="Decimal" Hidden="true" ExternalAccess="Read/Write" />
+          <Member Name="Enable" DataType="BOOL" Dimension="0" Radix="Decimal" Hidden="false" Target="ZZZZZZZZZZRecipeStep0" BitNumber="0" ExternalAccess="Read/Write" />
+          <Member Name="Note" DataType="STRING_20" Dimension="0" Radix="NullType" Hidden="false" ExternalAccess="Read/Write" />
+        </Members>
+      </DataType>
+      <DataType Name="Recipe" Family="NoFamily" Class="User">
+        <Members>
+          <Member Name="Step" DataType="RecipeStep" Dimension="0" Radix="NullType" Hidden="false" ExternalAccess="Read/Write" />
+          <Member Name="Count" DataType="INT" Dimension="0" Radix="Decimal" Hidden="false" ExternalAccess="Read/Write" />
+        </Members>
+      </DataType>
+    </DataTypes>
+    <Modules />
+    <AddOnInstructionDefinitions />
+    <Tags>
+      <Tag Name="Recipe1" TagType="Base" DataType="Recipe" Constant="false" ExternalAccess="Read/Write">
+        <Data Format="Decorated">
+          <Structure DataType="Recipe">
+            <StructureMember Name="Step" DataType="RecipeStep">
+              <StructureMember Name="Name" DataType="STRING">
+                <DataValueMember Name="LEN" DataType="DINT" Radix="Decimal" Value="3" />
+                <DataValueMember Name="DATA" DataType="STRING" Radix="ASCII"><![CDATA['Mix']]></DataValueMember>
+              </StructureMember>
+              <DataValueMember Name="PRE" DataType="DINT" Radix="Decimal" Value="1500" />
+              <DataValueMember Name="Enable" DataType="BOOL" Value="1" />
+              <StructureMember Name="Note" DataType="STRING_20">
+                <DataValueMember Name="LEN" DataType="DINT" Radix="Decimal" Value="7" />
+                <DataValueMember Name="DATA" DataType="STRING" Radix="ASCII"><![CDATA['hold 5s']]></DataValueMember>
+              </StructureMember>
+            </StructureMember>
+            <DataValueMember Name="Count" DataType="INT" Radix="Decimal" Value="3" />
+          </Structure>
+        </Data>
+      </Tag>
+    </Tags>
+    <Programs />
+    <Tasks />
+    <ParameterConnections />
+    <Trends />
+    <QuickWatchLists />
+  </Controller>
+</RSLogix5000Content>

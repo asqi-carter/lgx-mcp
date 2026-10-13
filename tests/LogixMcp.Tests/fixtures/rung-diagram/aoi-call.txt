@@ -1,0 +1,11 @@
+Rung 7  Line_A/Main
+║                Valve_1: Fill valve   ║
+║                controller            ║
+║ Operator start Fb_Open: Open limit   ║
+║   pushbutton   switch feedback       ║
+║   Cmd_Start    ┌───────────────────┐ ║
+╟──────┤ ├───────┤ Valve_Ctl (AOI)   ├─╢
+║                │ Instance Valve_1  │ ║
+║                │ OpenCmd  Cmd_Open │ ║
+║                │ OpenFb   Fb_Open  │ ║
+║                └───────────────────┘ ║

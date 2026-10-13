@@ -1,0 +1,97 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<!-- Lint fixture for AoiNeverUsed. Outer_AOI is called from MainProgram rung 0; Inner_AOI is called only from Outer_AOI's logic;
+     Orphan_AOI is called by nothing. Expect exactly one finding: Orphan_AOI. -->
+<RSLogix5000Content SchemaRevision="1.0" SoftwareRevision="36.1" TargetName="LintController" TargetType="Controller" ContainsContext="false">
+  <Controller Name="LintController" MajorRev="36" MinorRev="1" ProcessorType="1756-L84E">
+    <DataTypes />
+    <Modules />
+    <AddOnInstructionDefinitions>
+      <AddOnInstructionDefinition Name="Outer_AOI" Revision="1.0" ExecutePrescan="false" ExecutePostscan="false" ExecuteEnableInFalse="false" CreatedDate="2026-01-01T00:00:00.000Z" CreatedBy="fixture" EditedDate="2026-01-01T00:00:00.000Z" EditedBy="fixture" SoftwareRevision="v36.00">
+        <Parameters>
+          <Parameter Name="EnableIn" TagType="Base" DataType="BOOL" Usage="Input" Radix="Decimal" Required="false" Visible="false" ExternalAccess="Read Only" />
+          <Parameter Name="EnableOut" TagType="Base" DataType="BOOL" Usage="Output" Radix="Decimal" Required="false" Visible="false" ExternalAccess="Read Only" />
+          <Parameter Name="Run" TagType="Base" DataType="BOOL" Usage="Input" Radix="Decimal" Required="true" Visible="true" ExternalAccess="Read/Write" />
+          <Parameter Name="Active" TagType="Base" DataType="BOOL" Usage="Output" Radix="Decimal" Required="true" Visible="true" ExternalAccess="Read Only" />
+        </Parameters>
+        <LocalTags />
+        <Routines>
+          <Routine Name="Logic" Type="RLL">
+            <RLLContent>
+              <Rung Number="0" Type="N">
+                <Text><![CDATA[XIC(Run)Inner_AOI(Inner_Inst,Run,Active);]]></Text>
+              </Rung>
+            </RLLContent>
+          </Routine>
+        </Routines>
+      </AddOnInstructionDefinition>
+      <AddOnInstructionDefinition Name="Inner_AOI" Revision="1.0" ExecutePrescan="false" ExecutePostscan="false" ExecuteEnableInFalse="false" CreatedDate="2026-01-01T00:00:00.000Z" CreatedBy="fixture" EditedDate="2026-01-01T00:00:00.000Z" EditedBy="fixture" SoftwareRevision="v36.00">
+        <Parameters>
+          <Parameter Name="EnableIn" TagType="Base" DataType="BOOL" Usage="Input" Radix="Decimal" Required="false" Visible="false" ExternalAccess="Read Only" />
+          <Parameter Name="EnableOut" TagType="Base" DataType="BOOL" Usage="Output" Radix="Decimal" Required="false" Visible="false" ExternalAccess="Read Only" />
+          <Parameter Name="Run" TagType="Base" DataType="BOOL" Usage="Input" Radix="Decimal" Required="true" Visible="true" ExternalAccess="Read/Write" />
+          <Parameter Name="Active" TagType="Base" DataType="BOOL" Usage="Output" Radix="Decimal" Required="true" Visible="true" ExternalAccess="Read Only" />
+        </Parameters>
+        <LocalTags />
+        <Routines>
+          <Routine Name="Logic" Type="RLL">
+            <RLLContent>
+              <Rung Number="0" Type="N">
+                <Text><![CDATA[XIC(Run)OTE(Active);]]></Text>
+              </Rung>
+            </RLLContent>
+          </Routine>
+        </Routines>
+      </AddOnInstructionDefinition>
+      <AddOnInstructionDefinition Name="Orphan_AOI" Revision="1.0" ExecutePrescan="false" ExecutePostscan="false" ExecuteEnableInFalse="false" CreatedDate="2026-01-01T00:00:00.000Z" CreatedBy="fixture" EditedDate="2026-01-01T00:00:00.000Z" EditedBy="fixture" SoftwareRevision="v36.00">
+        <Parameters>
+          <Parameter Name="EnableIn" TagType="Base" DataType="BOOL" Usage="Input" Radix="Decimal" Required="false" Visible="false" ExternalAccess="Read Only" />
+          <Parameter Name="EnableOut" TagType="Base" DataType="BOOL" Usage="Output" Radix="Decimal" Required="false" Visible="false" ExternalAccess="Read Only" />
+          <Parameter Name="Run" TagType="Base" DataType="BOOL" Usage="Input" Radix="Decimal" Required="true" Visible="true" ExternalAccess="Read/Write" />
+          <Parameter Name="Active" TagType="Base" DataType="BOOL" Usage="Output" Radix="Decimal" Required="true" Visible="true" ExternalAccess="Read Only" />
+        </Parameters>
+        <LocalTags />
+        <Routines>
+          <Routine Name="Logic" Type="RLL">
+            <RLLContent>
+              <Rung Number="0" Type="N">
+                <Text><![CDATA[XIC(Run)OTE(Active);]]></Text>
+              </Rung>
+            </RLLContent>
+          </Routine>
+        </Routines>
+      </AddOnInstructionDefinition>
+    </AddOnInstructionDefinitions>
+    <Tags>
+      <Tag Name="Run" TagType="Base" ExternalAccess="Read/Write" Constant="false" DataType="BOOL" Radix="Decimal">
+        <Data Format="L5K"><![CDATA[0]]></Data>
+      </Tag>
+      <Tag Name="Out" TagType="Base" ExternalAccess="Read/Write" Constant="false" DataType="BOOL" Radix="Decimal">
+        <Data Format="L5K"><![CDATA[0]]></Data>
+      </Tag>
+      <Tag Name="Outer_Inst" TagType="Base" ExternalAccess="Read/Write" Constant="false" DataType="Outer_AOI" Radix="Decimal">
+        <Data Format="L5K"><![CDATA[0]]></Data>
+      </Tag>
+      <Tag Name="Inner_Inst" TagType="Base" ExternalAccess="Read/Write" Constant="false" DataType="Inner_AOI" Radix="Decimal">
+        <Data Format="L5K"><![CDATA[0]]></Data>
+      </Tag>
+    </Tags>
+    <Programs>
+      <Program Name="MainProgram" Type="Normal" TestEdits="false" Disabled="false" UseAsFolder="false" MainRoutineName="Main">
+        <Tags />
+        <Routines>
+          <Routine Name="Main" Type="RLL">
+            <RLLContent>
+              <Rung Number="0" Type="N">
+                <Text><![CDATA[XIC(Run)Outer_AOI(Outer_Inst,Run,Out);]]></Text>
+              </Rung>
+            </RLLContent>
+          </Routine>
+        </Routines>
+      </Program>
+    </Programs>
+    <Tasks />
+    <ParameterConnections />
+    <Trends />
+    <QuickWatchLists />
+  </Controller>
+</RSLogix5000Content>

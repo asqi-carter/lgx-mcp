@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<RSLogix5000Content SchemaRevision="1.0" SoftwareRevision="36.1" TargetName="DataTypeTestController" TargetType="Controller" ContainsContext="false">
+  <Controller Name="DataTypeTestController" MajorRev="36" MinorRev="1" ProcessorType="1756-L84E">
+    <DataTypes>
+      <DataType Name="MotorCmd" Family="NoFamily" Class="User">
+        <Members>
+          <Member Name="Enable" DataType="BOOL" Dimension="0" Radix="NullType" ExternalAccess="Read/Write" Hidden="false" />
+          <Member Name="Speed" DataType="REAL" Dimension="0" Radix="NullType" ExternalAccess="Read/Write" Hidden="false">
+            <Description><![CDATA[range 0..100]]></Description>
+          </Member>
+        </Members>
+      </DataType>
+      <DataType Name="SpeedCmd" Family="NoFamily" Class="User">
+        <Members>
+          <Member Name="Setpoint" DataType="REAL" Dimension="0" Radix="NullType" ExternalAccess="Read/Write" Hidden="false" />
+          <Member Name="Ramp" DataType="REAL" Dimension="0" Radix="NullType" ExternalAccess="Read/Write" Hidden="false" />
+        </Members>
+      </DataType>
+      <DataType Name="SomePredefined" Family="NoFamily" Class="Predefined">
+        <Members />
+      </DataType>
+      <DataType Name="SomeIO" Family="NoFamily" Class="IO">
+        <Members />
+      </DataType>
+    </DataTypes>
+    <Modules />
+    <AddOnInstructionDefinitions />
+    <Tags />
+    <Programs />
+    <Tasks />
+    <ParameterConnections />
+    <Trends />
+    <QuickWatchLists />
+  </Controller>
+</RSLogix5000Content>

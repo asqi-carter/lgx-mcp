@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<!-- Lint fixture for DuplicateTimerCounter. Timer_Dup: TON in Main rung 0 and TON in Second rung 0 (two routines).
+     Counter_Dup: CTU in Main rung 2 and CTD in Main rung 3. Timer_Single / Counter_Single are used once (clean). -->
+<RSLogix5000Content SchemaRevision="1.0" SoftwareRevision="36.1" TargetName="LintController" TargetType="Controller" ContainsContext="false">
+  <Controller Name="LintController" MajorRev="36" MinorRev="1" ProcessorType="1756-L84E">
+    <DataTypes />
+    <Modules />
+    <AddOnInstructionDefinitions />
+    <Tags>
+      <Tag Name="Run" TagType="Base" ExternalAccess="Read/Write" Constant="false" DataType="BOOL" Radix="Decimal">
+        <Data Format="L5K"><![CDATA[0]]></Data>
+      </Tag>
+      <Tag Name="Timer_Dup" TagType="Base" ExternalAccess="Read/Write" Constant="false" DataType="TIMER">
+        <Data Format="Decorated"><Structure DataType="TIMER"><DataValueMember Name="PRE" DataType="DINT" Radix="Decimal" Value="100" /><DataValueMember Name="ACC" DataType="DINT" Radix="Decimal" Value="0" /><DataValueMember Name="EN" DataType="BOOL" Value="0" /><DataValueMember Name="TT" DataType="BOOL" Value="0" /><DataValueMember Name="DN" DataType="BOOL" Value="0" /></Structure></Data>
+      </Tag>
+      <Tag Name="Timer_Single" TagType="Base" ExternalAccess="Read/Write" Constant="false" DataType="TIMER">
+        <Data Format="Decorated"><Structure DataType="TIMER"><DataValueMember Name="PRE" DataType="DINT" Radix="Decimal" Value="100" /><DataValueMember Name="ACC" DataType="DINT" Radix="Decimal" Value="0" /><DataValueMember Name="EN" DataType="BOOL" Value="0" /><DataValueMember Name="TT" DataType="BOOL" Value="0" /><DataValueMember Name="DN" DataType="BOOL" Value="0" /></Structure></Data>
+      </Tag>
+      <Tag Name="Counter_Dup" TagType="Base" ExternalAccess="Read/Write" Constant="false" DataType="COUNTER">
+        <Data Format="Decorated"><Structure DataType="COUNTER"><DataValueMember Name="PRE" DataType="DINT" Radix="Decimal" Value="100" /><DataValueMember Name="ACC" DataType="DINT" Radix="Decimal" Value="0" /><DataValueMember Name="EN" DataType="BOOL" Value="0" /><DataValueMember Name="TT" DataType="BOOL" Value="0" /><DataValueMember Name="DN" DataType="BOOL" Value="0" /></Structure></Data>
+      </Tag>
+      <Tag Name="Counter_Single" TagType="Base" ExternalAccess="Read/Write" Constant="false" DataType="COUNTER">
+        <Data Format="Decorated"><Structure DataType="COUNTER"><DataValueMember Name="PRE" DataType="DINT" Radix="Decimal" Value="100" /><DataValueMember Name="ACC" DataType="DINT" Radix="Decimal" Value="0" /><DataValueMember Name="EN" DataType="BOOL" Value="0" /><DataValueMember Name="TT" DataType="BOOL" Value="0" /><DataValueMember Name="DN" DataType="BOOL" Value="0" /></Structure></Data>
+      </Tag>
+    </Tags>
+    <Programs>
+      <Program Name="MainProgram" Type="Normal" TestEdits="false" Disabled="false" UseAsFolder="false" MainRoutineName="Main">
+        <Tags />
+        <Routines>
+          <Routine Name="Main" Type="RLL">
+            <RLLContent>
+              <Rung Number="0" Type="N">
+                <Text><![CDATA[XIC(Run)TON(Timer_Dup,?,?);]]></Text>
+              </Rung>
+              <Rung Number="1" Type="N">
+                <Text><![CDATA[XIC(Run)TON(Timer_Single,?,?);]]></Text>
+              </Rung>
+              <Rung Number="2" Type="N">
+                <Text><![CDATA[XIC(Run)CTU(Counter_Dup,?,?);]]></Text>
+              </Rung>
+              <Rung Number="3" Type="N">
+                <Text><![CDATA[XIC(Run)CTD(Counter_Dup,?,?);]]></Text>
+              </Rung>
+              <Rung Number="4" Type="N">
+                <Text><![CDATA[XIC(Run)CTU(Counter_Single,?,?);]]></Text>
+              </Rung>
+            </RLLContent>
+          </Routine>
+          <Routine Name="Second" Type="RLL">
+            <RLLContent>
+              <Rung Number="0" Type="N">
+                <Text><![CDATA[XIC(Run)TON(Timer_Dup,?,?);]]></Text>
+              </Rung>
+            </RLLContent>
+          </Routine>
+        </Routines>
+      </Program>
+    </Programs>
+    <Tasks />
+    <ParameterConnections />
+    <Trends />
+    <QuickWatchLists />
+  </Controller>
+</RSLogix5000Content>

@@ -1,0 +1,102 @@
+lgx-mcp
+==============
+
+Not affiliated with or endorsed by Rockwell Automation, Inc.
+
+Allen-Bradley, Logix, Studio 5000, ControlLogix, and FactoryTalk are
+trademarks of Rockwell Automation, Inc. These names, used in this project's
+documentation, code comments, and string literals, refer to Rockwell's
+products for the purpose of describing what this software interoperates with
+(nominative fair use). No claim to those trademarks is asserted.
+
+This software is licensed under the terms in the LICENSE file at the root of
+this repository.
+
+## Third-party components
+
+lgx-mcp is built on the open-source components below. The release archive
+is a self-contained .NET publish: besides the packages in the table it
+carries the .NET runtime libraries, which Microsoft distributes under the MIT
+licence (<https://github.com/dotnet/runtime>; see
+[licenses/MIT-dotnet.txt](licenses/MIT-dotnet.txt)). Every component is used
+unmodified, under its own licence. The licence texts are in the
+[licenses/](licenses/) directory, which is included in every release archive.
+
+The list below is the output of `dotnet list package --include-transitive`
+for the server project (`src/LogixMcp`), with each package's licence and
+source location taken from its package metadata. `NoticeTests` fails if a
+package that ships is missing from this table, so regenerate it whenever a
+dependency changes.
+
+| Package | Version | Licence | Source |
+|---|---|---|---|
+| L5Sharp | 7.6.2 | MIT | <https://github.com/tnunnink/L5Sharp> |
+| libplctag | 1.0.0 | MPL-2.0 | <https://github.com/libplctag/libplctag.NET> |
+| libplctag.NativeImport | 1.0.0 | MPL-2.0 | <https://github.com/libplctag/libplctag.NET> |
+| Microsoft.Extensions.AI.Abstractions | 10.8.3 | MIT | <https://github.com/dotnet/extensions> |
+| Microsoft.Extensions.Caching.Abstractions | 10.0.10 | MIT | <https://github.com/dotnet/dotnet> |
+| Microsoft.Extensions.Configuration | 8.0.0 | MIT | <https://github.com/dotnet/runtime> |
+| Microsoft.Extensions.Configuration.Abstractions | 10.0.10 | MIT | <https://github.com/dotnet/dotnet> |
+| Microsoft.Extensions.Configuration.Binder | 8.0.2 | MIT | <https://github.com/dotnet/runtime> |
+| Microsoft.Extensions.Configuration.CommandLine | 8.0.0 | MIT | <https://github.com/dotnet/runtime> |
+| Microsoft.Extensions.Configuration.EnvironmentVariables | 8.0.0 | MIT | <https://github.com/dotnet/runtime> |
+| Microsoft.Extensions.Configuration.FileExtensions | 8.0.1 | MIT | <https://github.com/dotnet/runtime> |
+| Microsoft.Extensions.Configuration.Json | 8.0.1 | MIT | <https://github.com/dotnet/runtime> |
+| Microsoft.Extensions.Configuration.UserSecrets | 8.0.1 | MIT | <https://github.com/dotnet/runtime> |
+| Microsoft.Extensions.DependencyInjection | 8.0.1 | MIT | <https://github.com/dotnet/runtime> |
+| Microsoft.Extensions.DependencyInjection.Abstractions | 10.0.10 | MIT | <https://github.com/dotnet/dotnet> |
+| Microsoft.Extensions.Diagnostics | 8.0.1 | MIT | <https://github.com/dotnet/runtime> |
+| Microsoft.Extensions.Diagnostics.Abstractions | 10.0.10 | MIT | <https://github.com/dotnet/dotnet> |
+| Microsoft.Extensions.FileProviders.Abstractions | 10.0.10 | MIT | <https://github.com/dotnet/dotnet> |
+| Microsoft.Extensions.FileProviders.Physical | 8.0.0 | MIT | <https://github.com/dotnet/runtime> |
+| Microsoft.Extensions.FileSystemGlobbing | 8.0.0 | MIT | <https://github.com/dotnet/runtime> |
+| Microsoft.Extensions.Hosting | 8.0.1 | MIT | <https://github.com/dotnet/runtime> |
+| Microsoft.Extensions.Hosting.Abstractions | 10.0.10 | MIT | <https://github.com/dotnet/dotnet> |
+| Microsoft.Extensions.Logging | 8.0.1 | MIT | <https://github.com/dotnet/runtime> |
+| Microsoft.Extensions.Logging.Abstractions | 10.0.10 | MIT | <https://github.com/dotnet/dotnet> |
+| Microsoft.Extensions.Logging.Configuration | 8.0.1 | MIT | <https://github.com/dotnet/runtime> |
+| Microsoft.Extensions.Logging.Console | 8.0.1 | MIT | <https://github.com/dotnet/runtime> |
+| Microsoft.Extensions.Logging.Debug | 8.0.1 | MIT | <https://github.com/dotnet/runtime> |
+| Microsoft.Extensions.Logging.EventLog | 8.0.1 | MIT | <https://github.com/dotnet/runtime> |
+| Microsoft.Extensions.Logging.EventSource | 8.0.1 | MIT | <https://github.com/dotnet/runtime> |
+| Microsoft.Extensions.Options | 10.0.10 | MIT | <https://github.com/dotnet/dotnet> |
+| Microsoft.Extensions.Options.ConfigurationExtensions | 8.0.0 | MIT | <https://github.com/dotnet/runtime> |
+| Microsoft.Extensions.Primitives | 10.0.10 | MIT | <https://github.com/dotnet/dotnet> |
+| ModelContextProtocol | 2.2.0 | Apache-2.0 | <https://github.com/modelcontextprotocol/csharp-sdk> |
+| ModelContextProtocol.Core | 2.2.0 | Apache-2.0 | <https://github.com/modelcontextprotocol/csharp-sdk> |
+| ModelContextProtocol.Extensions.Tasks | 2.2.0 | Apache-2.0 | <https://github.com/modelcontextprotocol/csharp-sdk> |
+| System.Diagnostics.EventLog | 8.0.1 | MIT | <https://github.com/dotnet/runtime> |
+
+Licence texts:
+
+- MIT: [licenses/MIT-dotnet.txt](licenses/MIT-dotnet.txt) (Microsoft.* and System.* packages),
+  [licenses/MIT-L5Sharp.txt](licenses/MIT-L5Sharp.txt) (L5Sharp).
+- Apache-2.0: [licenses/Apache-2.0.txt](licenses/Apache-2.0.txt). The
+  ModelContextProtocol packages are moving from MIT to Apache-2.0; their own
+  statement of this is in
+  [licenses/ModelContextProtocol-LICENSE.txt](licenses/ModelContextProtocol-LICENSE.txt).
+- MPL-2.0: [licenses/MPL-2.0.txt](licenses/MPL-2.0.txt) (libplctag.NET wrapper
+  and the libplctag native library, below).
+
+### libplctag native library (Mozilla Public License 2.0)
+
+The `libplctag.NativeImport` package embeds the native libplctag C library
+(`plctag.dll` / `libplctag.so`) as a resource of the .NET assembly of that
+name. At run time lgx-mcp extracts it to a temporary directory and loads it
+for CIP / EtherNet-IP access. The upstream project offers this library under
+either the MPL-2.0 or the LGPL-2.0-or-later; lgx-mcp uses it under the
+**MPL-2.0**. It is not modified by this project.
+
+Source code for the native library, as MPL-2.0 section 3.2 requires, is
+available from the upstream project at no charge:
+
+- Source repository: <https://github.com/libplctag/libplctag>
+- Releases and source archives: <https://github.com/libplctag/libplctag/releases>
+- .NET wrapper and the packaging that embeds the binaries:
+  <https://github.com/libplctag/libplctag.NET>
+
+The embedded binaries are those that upstream built into
+`libplctag.NativeImport` 1.0.0 (published September 2020). The full MPL-2.0
+text is in [licenses/MPL-2.0.txt](licenses/MPL-2.0.txt). The MPL-2.0 covers
+the libplctag files themselves; it does not apply to lgx-mcp's own source
+code, which stays under the LICENSE file at the root of this repository.

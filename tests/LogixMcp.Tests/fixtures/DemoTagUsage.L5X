@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<RSLogix5000Content SchemaRevision="1.0" SoftwareRevision="36.1" TargetName="TagUsageController" TargetType="Controller" ContainsContext="false">
+  <Controller Name="TagUsageController" MajorRev="36" MinorRev="1" ProcessorType="1756-L84E">
+    <DataTypes>
+      <DataType Name="MotorCmd" Family="NoFamily" Class="User">
+        <Members>
+          <Member Name="Enable" DataType="BOOL" Dimension="0" Radix="NullType" ExternalAccess="Read/Write" Hidden="false" />
+          <Member Name="Speed" DataType="REAL" Dimension="0" Radix="NullType" ExternalAccess="Read/Write" Hidden="false" />
+        </Members>
+      </DataType>
+    </DataTypes>
+    <Modules />
+    <AddOnInstructionDefinitions />
+    <Tags>
+      <Tag Name="Ctrl_Motor" TagType="Base" ExternalAccess="Read/Write" Constant="false" DataType="MotorCmd">
+        <Data Format="Decorated">
+          <Structure DataType="MotorCmd" />
+        </Data>
+      </Tag>
+      <Tag Name="Ctrl_Enable" TagType="Base" ExternalAccess="Read/Write" Constant="false" DataType="BOOL" Radix="Decimal">
+        <Data Format="Decorated">
+          <DataValue DataType="BOOL" Radix="Decimal" Value="0" />
+        </Data>
+      </Tag>
+    </Tags>
+    <Programs>
+      <Program Name="MainProgram" Type="Normal" TestEdits="false" Disabled="false" UseAsFolder="false" MainRoutineName="MainRoutine">
+        <Tags>
+          <Tag Name="Prog_Motor" TagType="Base" ExternalAccess="Read/Write" Constant="false" DataType="MotorCmd">
+            <Data Format="Decorated">
+              <Structure DataType="MotorCmd" />
+            </Data>
+          </Tag>
+        </Tags>
+        <Routines>
+          <Routine Name="MainRoutine" Type="RLL">
+            <RLLContent>
+              <Rung Number="0" Type="N">
+                <Text><![CDATA[NOP();]]></Text>
+              </Rung>
+            </RLLContent>
+          </Routine>
+        </Routines>
+      </Program>
+    </Programs>
+    <Tasks>
+      <Task Name="MainTask" Type="CONTINUOUS" Priority="10" Watchdog="500" DisableUpdateOutputs="false" InhibitTask="false">
+        <ScheduledPrograms>
+          <ScheduledProgram Name="MainProgram"/>
+        </ScheduledPrograms>
+      </Task>
+    </Tasks>
+    <ParameterConnections />
+    <Trends />
+    <QuickWatchLists />
+  </Controller>
+</RSLogix5000Content>

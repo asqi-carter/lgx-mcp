@@ -1,0 +1,86 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<!--
+  Regression fixture for two defects found on 2026-07-31 by driving the server
+  against real Studio 5000 v36 exports (L5Sharp Test.L5X, hutcheb/acd ACDTests):
+
+  1. A non-RLL routine (the FbdRoutine below) crashed every handler that
+     enumerated Routine.Rungs — L5Sharp throws
+     "Unable to cast L5Sharp.Core.Sheet to L5Sharp.Core.Rung" rather than
+     yielding an empty sequence, which the old code comments assumed.
+
+  2. GSV writes its destination operand (Cmd_ScanTime) but is absent from the
+     WriteClassifier KindMap, so the tag escaped the ProgramWritten deny and was
+     granted write access on its Cmd_ prefix alone. Unmapped instructions must
+     fail closed.
+
+  Every fixture that shipped before this one was RLL-only and used exclusively
+  mapped instructions, which is why 414 tests were green while three tools were
+  dead on any real project.
+-->
+<RSLogix5000Content SchemaRevision="1.0" SoftwareRevision="36.1" TargetName="MixedController" TargetType="Controller" ContainsContext="false">
+  <Controller Name="MixedController" MajorRev="36" MinorRev="1" ProcessorType="1756-L84E">
+    <DataTypes />
+    <Modules />
+    <AddOnInstructionDefinitions />
+    <Tags>
+      <Tag Name="Cmd_MotorStart" TagType="Base" ExternalAccess="Read/Write" Constant="false" DataType="BOOL" Radix="Decimal">
+        <Data Format="Decorated">
+          <DataValue DataType="BOOL" Radix="Decimal" Value="0" />
+        </Data>
+      </Tag>
+      <Tag Name="Cmd_Untouched" TagType="Base" ExternalAccess="Read/Write" Constant="false" DataType="BOOL" Radix="Decimal">
+        <Data Format="Decorated">
+          <DataValue DataType="BOOL" Radix="Decimal" Value="0" />
+        </Data>
+      </Tag>
+      <Tag Name="Cmd_ScanTime" TagType="Base" ExternalAccess="Read/Write" Constant="false" DataType="DINT" Radix="Decimal">
+        <Description><![CDATA[Written by GSV - an instruction the classifier does not know]]></Description>
+        <Data Format="Decorated">
+          <DataValue DataType="DINT" Radix="Decimal" Value="0" />
+        </Data>
+      </Tag>
+      <Tag Name="Safety_OK" TagType="Base" ExternalAccess="Read/Write" Constant="false" DataType="BOOL" Radix="Decimal">
+        <Data Format="Decorated">
+          <DataValue DataType="BOOL" Radix="Decimal" Value="0" />
+        </Data>
+      </Tag>
+      <Tag Name="Motor_Run" TagType="Base" ExternalAccess="Read/Write" Constant="false" DataType="BOOL" Radix="Decimal">
+        <Data Format="Decorated">
+          <DataValue DataType="BOOL" Radix="Decimal" Value="0" />
+        </Data>
+      </Tag>
+    </Tags>
+    <Programs>
+      <Program Name="MainProgram" Type="Normal" TestEdits="false" Disabled="false" UseAsFolder="false" MainRoutineName="MainRoutine">
+        <Tags />
+        <Routines>
+          <Routine Name="MainRoutine" Type="RLL">
+            <RLLContent>
+              <Rung Number="0" Type="N">
+                <Comment><![CDATA[Interlock: Motor_Run coil energized when Cmd_MotorStart AND Safety_OK]]></Comment>
+                <Text><![CDATA[XIC(Cmd_MotorStart)XIC(Safety_OK)OTE(Motor_Run);]]></Text>
+              </Rung>
+              <Rung Number="1" Type="N">
+                <Comment><![CDATA[GSV destination is a write, but GSV is not in the KindMap]]></Comment>
+                <Text><![CDATA[GSV(Task,MainTask,LastScanTime,Cmd_ScanTime);]]></Text>
+              </Rung>
+            </RLLContent>
+          </Routine>
+          <Routine Name="FbdRoutine" Type="FBD">
+            <FBDContent SheetSize="Letter - 8.5 x 11 in" SheetOrientation="Landscape">
+              <Sheet Number="1">
+                <IRef ID="0" X="100" Y="100" Operand="Cmd_MotorStart" HideDesc="false" />
+                <ORef ID="1" X="300" Y="100" Operand="Motor_Run" HideDesc="false" />
+                <Wire FromID="0" ToID="1" />
+              </Sheet>
+            </FBDContent>
+          </Routine>
+        </Routines>
+      </Program>
+    </Programs>
+    <Tasks />
+    <ParameterConnections />
+    <Trends />
+    <QuickWatchLists />
+  </Controller>
+</RSLogix5000Content>

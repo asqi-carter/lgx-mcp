@@ -1,0 +1,136 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<!--
+  DemoScopedInterlock.L5X - same-named program tags in different programs (interlock chains, xref, find_tags).
+  Labelled 36.x.
+
+  Controller tags: Cond, Other, Run and the lamps. P1 and P2 each own Gate, Drive and a Run that shadows the controller Run.
+
+  P1.Main:  0: XIC(Cond)OTE(Gate);     - P1.Gate is interlocked by Cond
+            1: XIC(Gate)OTE(Drive);
+            2: XIC(Run)OTE(P1Lamp);    - P1's own Run
+  P2.Main:  0: XIC(Other)OTE(Gate);    - P2.Gate is NOT interlocked by Cond
+            1: XIC(Gate)OTE(Drive);
+            2: XIC(Run)OTE(P2Lamp);    - P2's own Run
+  Top.Main: 0: XIC(\P1.Gate)OTE(Lamp);   - reaches Cond through the interlocked P1.Gate
+            1: XIC(\P2.Gate)OTE(Lamp2);  - reaches the uninterlocked P2.Gate
+            2: XIC(Run)OTE(CtrlLamp);     - the controller Run
+-->
+<RSLogix5000Content SchemaRevision="1.0" SoftwareRevision="36.1" TargetName="ScopedCtrl" TargetType="Controller" ContainsContext="false">
+  <Controller Name="ScopedCtrl" MajorRev="36" MinorRev="1" ProcessorType="1756-L84E">
+    <DataTypes />
+    <Modules />
+    <AddOnInstructionDefinitions />
+    <Tags>
+        <Tag Name="Cond" TagType="Base" ExternalAccess="Read/Write" Constant="false" DataType="BOOL" Radix="Decimal">
+          <Data Format="Decorated"><DataValue DataType="BOOL" Radix="Decimal" Value="0" /></Data>
+        </Tag>
+        <Tag Name="Other" TagType="Base" ExternalAccess="Read/Write" Constant="false" DataType="BOOL" Radix="Decimal">
+          <Data Format="Decorated"><DataValue DataType="BOOL" Radix="Decimal" Value="0" /></Data>
+        </Tag>
+        <Tag Name="Run" TagType="Base" ExternalAccess="Read/Write" Constant="false" DataType="BOOL" Radix="Decimal">
+          <Data Format="Decorated"><DataValue DataType="BOOL" Radix="Decimal" Value="0" /></Data>
+        </Tag>
+        <Tag Name="Lamp" TagType="Base" ExternalAccess="Read/Write" Constant="false" DataType="BOOL" Radix="Decimal">
+          <Data Format="Decorated"><DataValue DataType="BOOL" Radix="Decimal" Value="0" /></Data>
+        </Tag>
+        <Tag Name="Lamp2" TagType="Base" ExternalAccess="Read/Write" Constant="false" DataType="BOOL" Radix="Decimal">
+          <Data Format="Decorated"><DataValue DataType="BOOL" Radix="Decimal" Value="0" /></Data>
+        </Tag>
+        <Tag Name="P1Lamp" TagType="Base" ExternalAccess="Read/Write" Constant="false" DataType="BOOL" Radix="Decimal">
+          <Data Format="Decorated"><DataValue DataType="BOOL" Radix="Decimal" Value="0" /></Data>
+        </Tag>
+        <Tag Name="P2Lamp" TagType="Base" ExternalAccess="Read/Write" Constant="false" DataType="BOOL" Radix="Decimal">
+          <Data Format="Decorated"><DataValue DataType="BOOL" Radix="Decimal" Value="0" /></Data>
+        </Tag>
+        <Tag Name="CtrlLamp" TagType="Base" ExternalAccess="Read/Write" Constant="false" DataType="BOOL" Radix="Decimal">
+          <Data Format="Decorated"><DataValue DataType="BOOL" Radix="Decimal" Value="0" /></Data>
+        </Tag>
+    </Tags>
+    <Programs>
+      <Program Name="P1" Type="Normal" TestEdits="false" Disabled="false" UseAsFolder="false" MainRoutineName="Main">
+        <Tags>
+        <Tag Name="Gate" TagType="Base" ExternalAccess="Read/Write" Constant="false" DataType="BOOL" Radix="Decimal">
+          <Data Format="Decorated"><DataValue DataType="BOOL" Radix="Decimal" Value="0" /></Data>
+        </Tag>
+        <Tag Name="Drive" TagType="Base" ExternalAccess="Read/Write" Constant="false" DataType="BOOL" Radix="Decimal">
+          <Data Format="Decorated"><DataValue DataType="BOOL" Radix="Decimal" Value="0" /></Data>
+        </Tag>
+        <Tag Name="Run" TagType="Base" ExternalAccess="Read/Write" Constant="false" DataType="BOOL" Radix="Decimal">
+          <Data Format="Decorated"><DataValue DataType="BOOL" Radix="Decimal" Value="0" /></Data>
+        </Tag>
+        </Tags>
+        <Routines>
+          <Routine Name="Main" Type="RLL">
+            <RLLContent>
+              <Rung Number="0" Type="N">
+                <Text><![CDATA[XIC(Cond)OTE(Gate);]]></Text>
+              </Rung>
+              <Rung Number="1" Type="N">
+                <Text><![CDATA[XIC(Gate)OTE(Drive);]]></Text>
+              </Rung>
+              <Rung Number="2" Type="N">
+                <Text><![CDATA[XIC(Run)OTE(P1Lamp);]]></Text>
+              </Rung>
+            </RLLContent>
+          </Routine>
+        </Routines>
+      </Program>
+      <Program Name="P2" Type="Normal" TestEdits="false" Disabled="false" UseAsFolder="false" MainRoutineName="Main">
+        <Tags>
+        <Tag Name="Gate" TagType="Base" ExternalAccess="Read/Write" Constant="false" DataType="BOOL" Radix="Decimal">
+          <Data Format="Decorated"><DataValue DataType="BOOL" Radix="Decimal" Value="0" /></Data>
+        </Tag>
+        <Tag Name="Drive" TagType="Base" ExternalAccess="Read/Write" Constant="false" DataType="BOOL" Radix="Decimal">
+          <Data Format="Decorated"><DataValue DataType="BOOL" Radix="Decimal" Value="0" /></Data>
+        </Tag>
+        <Tag Name="Run" TagType="Base" ExternalAccess="Read/Write" Constant="false" DataType="BOOL" Radix="Decimal">
+          <Data Format="Decorated"><DataValue DataType="BOOL" Radix="Decimal" Value="0" /></Data>
+        </Tag>
+        </Tags>
+        <Routines>
+          <Routine Name="Main" Type="RLL">
+            <RLLContent>
+              <Rung Number="0" Type="N">
+                <Text><![CDATA[XIC(Other)OTE(Gate);]]></Text>
+              </Rung>
+              <Rung Number="1" Type="N">
+                <Text><![CDATA[XIC(Gate)OTE(Drive);]]></Text>
+              </Rung>
+              <Rung Number="2" Type="N">
+                <Text><![CDATA[XIC(Run)OTE(P2Lamp);]]></Text>
+              </Rung>
+            </RLLContent>
+          </Routine>
+        </Routines>
+      </Program>
+      <Program Name="Top" Type="Normal" TestEdits="false" Disabled="false" UseAsFolder="false" MainRoutineName="Main">
+        <Tags>
+        </Tags>
+        <Routines>
+          <Routine Name="Main" Type="RLL">
+            <RLLContent>
+              <Rung Number="0" Type="N">
+                <Text><![CDATA[XIC(\P1.Gate)OTE(Lamp);]]></Text>
+              </Rung>
+              <Rung Number="1" Type="N">
+                <Text><![CDATA[XIC(\P2.Gate)OTE(Lamp2);]]></Text>
+              </Rung>
+              <Rung Number="2" Type="N">
+                <Text><![CDATA[XIC(Run)OTE(CtrlLamp);]]></Text>
+              </Rung>
+            </RLLContent>
+          </Routine>
+        </Routines>
+      </Program>
+    </Programs>
+    <Tasks>
+      <Task Name="MainTask" Type="CONTINUOUS" Priority="10" Watchdog="500" DisableUpdateOutputs="false" InhibitTask="false">
+        <ScheduledPrograms>
+          <ScheduledProgram Name="P1" />
+          <ScheduledProgram Name="P2" />
+          <ScheduledProgram Name="Top" />
+        </ScheduledPrograms>
+      </Task>
+    </Tasks>
+  </Controller>
+</RSLogix5000Content>

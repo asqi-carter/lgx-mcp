@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<!-- Lint fixture for MissingRungComment. Routine Commented: rungs 0 and 3 have outputs and no comment (flagged);
+     rung 1 is commented; rung 2 has no output. Routine Other: rung 0 flagged. -->
+<RSLogix5000Content SchemaRevision="1.0" SoftwareRevision="35.1" TargetName="LintController" TargetType="Controller" ContainsContext="false">
+  <Controller Name="LintController" MajorRev="35" MinorRev="1" ProcessorType="1756-L84E">
+    <DataTypes />
+    <Modules />
+    <AddOnInstructionDefinitions />
+    <Tags>
+      <Tag Name="Idx" TagType="Base" ExternalAccess="Read/Write" Constant="false" DataType="DINT" Radix="Decimal">
+        <Data Format="Decorated"><DataValue DataType="DINT" Radix="Decimal" Value="0" /></Data>
+      </Tag>
+      <Tag Name="Out" TagType="Base" ExternalAccess="Read/Write" Constant="false" DataType="DINT" Radix="Decimal">
+        <Data Format="Decorated"><DataValue DataType="DINT" Radix="Decimal" Value="0" /></Data>
+      </Tag>
+      <Tag Name="Arr" TagType="Base" DataType="DINT" Dimensions="10" Radix="Decimal" ExternalAccess="Read/Write" Constant="false">
+        <Data Format="Decorated"><Array DataType="DINT" Dimensions="10" Radix="Decimal"><Element Index="[0]" Value="0" /><Element Index="[1]" Value="0" /><Element Index="[2]" Value="0" /><Element Index="[3]" Value="0" /><Element Index="[4]" Value="0" /><Element Index="[5]" Value="0" /><Element Index="[6]" Value="0" /><Element Index="[7]" Value="0" /><Element Index="[8]" Value="0" /><Element Index="[9]" Value="0" /></Array></Data>
+      </Tag>
+    </Tags>
+    <Programs>
+      <Program Name="MainProgram" Type="Normal" TestEdits="false" Disabled="false" UseAsFolder="false" MainRoutineName="Commented">
+        <Tags />
+        <Routines>
+          <Routine Name="Commented" Type="RLL">
+            <RLLContent>
+              <Rung Number="0" Type="N">
+                <Text><![CDATA[XIC(Idx)OTE(Out);]]></Text>
+              </Rung>
+              <Rung Number="1" Type="N">
+                <Comment><![CDATA[Drives Out from Idx.]]></Comment>
+                <Text><![CDATA[XIC(Idx)OTE(Out);]]></Text>
+              </Rung>
+              <Rung Number="2" Type="N">
+                <Text><![CDATA[XIC(Idx);]]></Text>
+              </Rung>
+              <Rung Number="3" Type="N">
+                <Text><![CDATA[MOV(1,Out);]]></Text>
+              </Rung>
+            </RLLContent>
+          </Routine>
+          <Routine Name="Other" Type="RLL">
+            <RLLContent>
+              <Rung Number="0" Type="N">
+                <Text><![CDATA[OTL(Out);]]></Text>
+              </Rung>
+            </RLLContent>
+          </Routine>
+        </Routines>
+      </Program>
+    </Programs>
+    <Tasks />
+    <ParameterConnections />
+    <Trends />
+    <QuickWatchLists />
+  </Controller>
+</RSLogix5000Content>

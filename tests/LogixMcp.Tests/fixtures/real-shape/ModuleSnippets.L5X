@@ -1,0 +1,99 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!-- Real Logix v38 module shape: InputTag/OutputTag/ConfigTag carry NO Name attribute; the tag name is derived
+     (<Module>:I for a remote module, <Parent>:<Slot>:I for a chassis module). Names and values invented.
+     NOTE: the source export edge-0160-0162/fixtures/module_snippets.xml was not available when this was written;
+     this follows the same shape (1756-IB16D / 1756-OB16D in slots 1-2). -->
+<RSLogix5000Content SchemaRevision="1.0" SoftwareRevision="38.00" TargetName="Plant_Ctl" TargetType="Controller" ContainsContext="false" Owner="tester" ExportDate="Fri Oct 09 08:00:00 2026" ExportOptions="NoRawData L5KData DecoratedData ForceProtectedEncoding AllProjDocTrans">
+<Controller Use="Target" Name="Plant_Ctl" ProcessorType="1756-L83E" MajorRev="38" MinorRev="11">
+<DataTypes />
+<Modules>
+<Module Name="Local" CatalogNumber="1756-L83E" Vendor="1" ProductType="14" ProductCode="166" Major="38" Minor="11" ParentModule="Local" ParentModPortId="1" Inhibited="false" MajorFault="true">
+<EKey State="ExactMatch"/>
+<Ports>
+<Port Id="1" Address="0" Type="ICP" Upstream="false"><Bus Size="7"/></Port>
+<Port Id="2" Type="Ethernet" Upstream="false"/>
+</Ports>
+</Module>
+<Module Name="IB16D_S1" CatalogNumber="1756-IB16D" Vendor="1" ProductType="7" ProductCode="30" Major="3" Minor="1" ParentModule="Local" ParentModPortId="1" Inhibited="false" MajorFault="true">
+<EKey State="ExactMatch"/>
+<Ports>
+<Port Id="1" Address="1" Type="ICP" Upstream="true"/>
+</Ports>
+<Communications>
+<ConfigTag ConfigSize="20" ExternalAccess="Read/Write">
+<Data Format="L5K"><![CDATA[[0,0,0,0,0]]]></Data>
+<Data Format="Decorated"><Structure DataType="AB:1756_DI_Diag:C:0"><DataValueMember Name="DiagCommonLatch" DataType="BOOL" Value="0"/><DataValueMember Name="FilterOffOn" DataType="INT" Radix="Decimal" Value="0"/></Structure></Data>
+</ConfigTag>
+<Connections>
+<Connection Name="Data" RPI="20000" Type="Input" EventID="0" ProgrammaticallySendEventTrigger="false">
+<InputTag ExternalAccess="Read/Write">
+<Data Format="L5K"><![CDATA[[0,0]]]></Data>
+<Data Format="Decorated"><Structure DataType="AB:1756_DI:I:0"><DataValueMember Name="Fault" DataType="DINT" Radix="Binary" Value="2#0000_0000_0000_0000_0000_0000_0000_0000"/><DataValueMember Name="Data" DataType="DINT" Radix="Binary" Value="2#0000_0000_0000_0000_0000_0000_0000_0000"/></Structure></Data>
+</InputTag>
+</Connection>
+</Connections>
+</Communications>
+</Module>
+<Module Name="OB16D_S2" CatalogNumber="1756-OB16D" Vendor="1" ProductType="7" ProductCode="53" Major="3" Minor="1" ParentModule="Local" ParentModPortId="1" Inhibited="false" MajorFault="true">
+<EKey State="ExactMatch"/>
+<Ports>
+<Port Id="1" Address="2" Type="ICP" Upstream="true"/>
+</Ports>
+<Communications>
+<ConfigTag ConfigSize="20" ExternalAccess="Read/Write">
+<Data Format="L5K"><![CDATA[[0,0,0,0,0]]]></Data>
+</ConfigTag>
+<Connections>
+<Connection Name="Data" RPI="20000" Type="Output" EventID="0" ProgrammaticallySendEventTrigger="false">
+<InputTag ExternalAccess="Read/Write">
+<Data Format="L5K"><![CDATA[[0,0]]]></Data>
+<Data Format="Decorated"><Structure DataType="AB:1756_DO:I:0"><DataValueMember Name="Fault" DataType="DINT" Radix="Binary" Value="2#0000_0000_0000_0000_0000_0000_0000_0000"/></Structure></Data>
+</InputTag>
+<OutputTag ExternalAccess="Read/Write">
+<Data Format="L5K"><![CDATA[[0]]]></Data>
+<Data Format="Decorated"><Structure DataType="AB:1756_DO:O:0"><DataValueMember Name="Data" DataType="DINT" Radix="Binary" Value="2#0000_0000_0000_0000_0000_0000_0000_0000"/></Structure></Data>
+</OutputTag>
+</Connection>
+</Connections>
+</Communications>
+</Module>
+<Module Name="EN2T_S3" CatalogNumber="1756-EN2T" Vendor="1" ProductType="12" ProductCode="166" Major="11" Minor="1" ParentModule="Local" ParentModPortId="1" Inhibited="false" MajorFault="false">
+<EKey State="ExactMatch"/>
+<Ports>
+<Port Id="1" Address="3" Type="ICP" Upstream="true"/>
+<Port Id="2" Address="10.0.0.5" Type="Ethernet" Upstream="false"/>
+</Ports>
+</Module>
+<Module Name="VFD_Remote" CatalogNumber="PowerFlex 525-EENET" Vendor="1" ProductType="143" ProductCode="1" Major="1" Minor="1" ParentModule="EN2T_S3" ParentModPortId="2" Inhibited="false" MajorFault="false">
+<EKey State="Disabled"/>
+<Ports>
+<Port Id="1" Address="10.0.0.20" Type="Ethernet" Upstream="true"/>
+</Ports>
+<Communications>
+<ConfigTag ConfigSize="0" ExternalAccess="Read/Write">
+<Data Format="L5K"><![CDATA[[0]]]></Data>
+</ConfigTag>
+<Connections>
+<Connection Name="Data" RPI="20000" Type="Output" EventID="0" ProgrammaticallySendEventTrigger="false">
+<InputTag ExternalAccess="Read/Write">
+<Data Format="L5K"><![CDATA[[0,0]]]></Data>
+<Data Format="Decorated"><Structure DataType="AB:PF525_Drive:I:0"><DataValueMember Name="Ready" DataType="BOOL" Value="0"/><DataValueMember Name="Active" DataType="BOOL" Value="0"/><DataValueMember Name="OutputFreq" DataType="INT" Radix="Decimal" Value="0"/></Structure></Data>
+</InputTag>
+<OutputTag ExternalAccess="Read/Write">
+<Data Format="L5K"><![CDATA[[0,0]]]></Data>
+<Data Format="Decorated"><Structure DataType="AB:PF525_Drive:O:0"><DataValueMember Name="Stop" DataType="BOOL" Value="0"/><DataValueMember Name="Start" DataType="BOOL" Value="0"/></Structure></Data>
+</OutputTag>
+</Connection>
+</Connections>
+</Communications>
+</Module>
+</Modules>
+<AddOnInstructionDefinitions />
+<Tags>
+<Tag Name="Sensor_Alias" TagType="Alias" AliasFor="Local:1:I.Data.3" Radix="Decimal" ExternalAccess="Read/Write"/>
+<Tag Name="Run_Cmd" TagType="Base" DataType="BOOL" Radix="Decimal" Constant="false" ExternalAccess="Read/Write"><Data Format="L5K"><![CDATA[0]]></Data><Data Format="Decorated"><DataValue DataType="BOOL" Radix="Decimal" Value="0"/></Data></Tag>
+</Tags>
+<Programs />
+<Tasks />
+</Controller>
+</RSLogix5000Content>

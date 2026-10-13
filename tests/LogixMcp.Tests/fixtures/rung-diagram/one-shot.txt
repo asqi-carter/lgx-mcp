@@ -1,0 +1,5 @@
+Rung 8  Line_A/Main
+║ Operator start  One-shot   Fill sequence ║
+║   pushbutton   storage bit  latched on   ║
+║   Cmd_Start      Pulse_1    Fill_Latch   ║
+╟──────┤ ├──────────[ONS]─────────( )──────╢

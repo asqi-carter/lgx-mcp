@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<!-- Diagnose fixture. Rung 0 reads Other_Arr[Other_Idx] (DINT[10]); rung 1 is the probe rung
+     ADD(Probe_Arr[Probe_Idx],0,Probe_Out) on DINT[2]; rung 2 has a literal subscript (not a suspect);
+     rung 3 runs Timer_Neg, rung 4 runs Timer_Ok. -->
+<RSLogix5000Content SchemaRevision="1.0" SoftwareRevision="36.1" TargetName="DiagController" TargetType="Controller" ContainsContext="false">
+  <Controller Name="DiagController" MajorRev="36" MinorRev="1" ProcessorType="1756-L84E">
+    <DataTypes />
+    <Modules />
+    <AddOnInstructionDefinitions />
+    <Tags>
+      <Tag Name="Probe_Idx" TagType="Base" ExternalAccess="Read/Write" Constant="false" DataType="DINT" Radix="Decimal">
+        <Data Format="Decorated"><DataValue DataType="DINT" Radix="Decimal" Value="0" /></Data>
+      </Tag>
+      <Tag Name="Other_Idx" TagType="Base" ExternalAccess="Read/Write" Constant="false" DataType="DINT" Radix="Decimal">
+        <Data Format="Decorated"><DataValue DataType="DINT" Radix="Decimal" Value="0" /></Data>
+      </Tag>
+      <Tag Name="Probe_Out" TagType="Base" ExternalAccess="Read/Write" Constant="false" DataType="DINT" Radix="Decimal">
+        <Data Format="Decorated"><DataValue DataType="DINT" Radix="Decimal" Value="0" /></Data>
+      </Tag>
+      <Tag Name="Probe_Arr" TagType="Base" DataType="DINT" Dimensions="2" Radix="Decimal" ExternalAccess="Read/Write" Constant="false">
+        <Data Format="Decorated"><Array DataType="DINT" Dimensions="2" Radix="Decimal"><Element Index="[0]" Value="0" /><Element Index="[1]" Value="0" /></Array></Data>
+      </Tag>
+      <Tag Name="Other_Arr" TagType="Base" DataType="DINT" Dimensions="10" Radix="Decimal" ExternalAccess="Read/Write" Constant="false">
+        <Data Format="Decorated"><Array DataType="DINT" Dimensions="10" Radix="Decimal"><Element Index="[0]" Value="0" /><Element Index="[1]" Value="0" /><Element Index="[2]" Value="0" /><Element Index="[3]" Value="0" /><Element Index="[4]" Value="0" /><Element Index="[5]" Value="0" /><Element Index="[6]" Value="0" /><Element Index="[7]" Value="0" /><Element Index="[8]" Value="0" /><Element Index="[9]" Value="0" /></Array></Data>
+      </Tag>
+      <Tag Name="Timer_Neg" TagType="Base" ExternalAccess="Read/Write" Constant="false" DataType="TIMER">
+        <Data Format="Decorated"><Structure DataType="TIMER" /></Data>
+      </Tag>
+      <Tag Name="Timer_Ok" TagType="Base" ExternalAccess="Read/Write" Constant="false" DataType="TIMER">
+        <Data Format="Decorated"><Structure DataType="TIMER" /></Data>
+      </Tag>
+    </Tags>
+    <Programs>
+      <Program Name="MainProgram" Type="Normal" TestEdits="false" Disabled="false" UseAsFolder="false" MainRoutineName="MainRoutine">
+        <Tags />
+        <Routines>
+          <Routine Name="MainRoutine" Type="RLL">
+            <RLLContent>
+              <Rung Number="0" Type="N">
+                <Text><![CDATA[MOVE(Other_Arr[Other_Idx],Probe_Out);]]></Text>
+              </Rung>
+              <Rung Number="1" Type="N">
+                <Text><![CDATA[ADD(Probe_Arr[Probe_Idx],0,Probe_Out);]]></Text>
+              </Rung>
+              <Rung Number="2" Type="N">
+                <Text><![CDATA[MOVE(Probe_Arr[1],Probe_Out);]]></Text>
+              </Rung>
+              <Rung Number="3" Type="N">
+                <Text><![CDATA[XIC(Probe_Out)TON(Timer_Neg,?,?);]]></Text>
+              </Rung>
+              <Rung Number="4" Type="N">
+                <Text><![CDATA[XIC(Probe_Out)TON(Timer_Ok,?,?);]]></Text>
+              </Rung>
+            </RLLContent>
+          </Routine>
+        </Routines>
+      </Program>
+    </Programs>
+    <Tasks />
+    <ParameterConnections />
+    <Trends />
+    <QuickWatchLists />
+  </Controller>
+</RSLogix5000Content>

@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!-- Structure copied from a real Studio 5000 export; all names invented. -->
+<RSLogix5000Content SchemaRevision="1.0" SoftwareRevision="36.01" TargetName="Plant_Ctl" TargetType="Controller" ContainsContext="false" Owner="tester" ExportDate="Mon Jan 05 08:00:00 2026" ExportOptions="NoRawData L5KData DecoratedData ForceProtectedEncoding AllProjDocTrans">
+<Controller Use="Target" Name="Plant_Ctl" ProcessorType="1756-L83E" MajorRev="36" MinorRev="1">
+<DataTypes />
+<Modules />
+<AddOnInstructionDefinitions />
+<Tags />
+<Programs>
+<Program Use="Target" Name="Line_A" TestEdits="false" MainRoutineName="Main" Disabled="false" UseAsFolder="false">
+<Tags><Tag Name="Msg_Reply" TagType="Base" DataType="MESSAGE" Constant="false" ExternalAccess="Read/Write"><Data Format="Message"><MessageParameters MessageType="CIP Generic" RequestedLength="0" ConnectedFlag="2" ConnectionPath="1,0" CommTypeCode="2" ServiceCode="16#000e" ObjectType="16#007d" TargetObject="16#0001" AttributeNumber="16#0000" LocalIndex="0" DestinationTag="Reply_Buf" LargePacketUsage="false"/></Data></Tag><Tag Name="Msg_Request" TagType="Base" DataType="MESSAGE" Constant="false" ExternalAccess="Read/Write"><Data Format="Message"><MessageParameters MessageType="CIP Generic" RequestedLength="12" ConnectedFlag="2" ConnectionPath="1,0" CommTypeCode="2" ServiceCode="16#004b" ObjectType="16#007d" TargetObject="16#0001" AttributeNumber="16#0000" LocalIndex="0" LocalElement="Req_Src.Member" LargePacketUsage="false"/></Data></Tag><Tag Name="Msg_Both" TagType="Base" DataType="MESSAGE" Constant="false" ExternalAccess="Read/Write"><Data Format="Message"><MessageParameters MessageType="CIP Generic" RequestedLength="12" ConnectedFlag="2" ConnectionPath="1,0" CommTypeCode="2" ServiceCode="16#004b" ObjectType="16#007d" TargetObject="16#0001" AttributeNumber="16#0000" LocalIndex="0" LocalElement="Both_Src" DestinationTag="Both_Reply" LargePacketUsage="false"/></Data></Tag><Tag Name="Reply_Buf" TagType="Base" DataType="DINT" Dimensions="4" Radix="Decimal" Constant="false" ExternalAccess="Read/Write"><Data Format="L5K"><![CDATA[[0,0,0,0]]]></Data></Tag><Tag Name="Req_Src" TagType="Base" DataType="DINT" Radix="Decimal" Constant="false" ExternalAccess="Read/Write"><Data Format="L5K"><![CDATA[0]]></Data></Tag><Tag Name="Both_Src" TagType="Base" DataType="DINT" Radix="Decimal" Constant="false" ExternalAccess="Read/Write"><Data Format="L5K"><![CDATA[0]]></Data></Tag><Tag Name="Both_Reply" TagType="Base" DataType="DINT" Dimensions="4" Radix="Decimal" Constant="false" ExternalAccess="Read/Write"><Data Format="L5K"><![CDATA[[0,0,0,0]]]></Data></Tag><Tag Name="Cmd_Go" TagType="Base" DataType="BOOL" Radix="Decimal" Constant="false" ExternalAccess="Read/Write"><Data Format="L5K"><![CDATA[0]]></Data></Tag></Tags>
+<Routines>
+<Routine Use="Target" Name="Main" Type="RLL"><RLLContent><Rung Number="0" Type="N"><Text><![CDATA[XIC(Cmd_Go)MSG(Msg_Reply);]]></Text></Rung><Rung Number="1" Type="N"><Text><![CDATA[XIC(Cmd_Go)MSG(Msg_Request);]]></Text></Rung><Rung Number="2" Type="N"><Text><![CDATA[XIC(Cmd_Go)MSG(Msg_Both);]]></Text></Rung></RLLContent></Routine>
+</Routines>
+</Program>
+</Programs>
+<Tasks />
+<ParameterConnections />
+</Controller>
+</RSLogix5000Content>

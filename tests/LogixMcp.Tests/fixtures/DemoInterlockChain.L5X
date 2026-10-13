@@ -1,0 +1,203 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<!--
+  DemoInterlockChain.L5X — intermediate-bit chain fixture for VerifyInterlockHandler tests. Condition tag is Cond.
+    Drive      XIC(StartBit)OTE(Drive);  XIC(Cond)XIC(Start)OTE(StartBit)                  -> verified via [StartBit]
+    DriveBad   XIC(BadBit)OTE(DriveBad); XIC(Cond)XIC(Start)OTE(BadBit); XIC(Other)OTE(BadBit) -> not verified, names rung 6
+    DriveLU    XIC(LatchBit)OTE(DriveLU); XIC(Cond)XIC(Start)OTL(LatchBit); XIO(Stop)OTU(LatchBit) -> verified (OTU only clears)
+    Drive3     Drive3 <- D3A <- D3B <- D3C <- Cond                                         -> verified (depth 3)
+    Drive4     Drive4 <- D4A <- D4B <- D4C <- D4D <- Cond                                  -> not verified, depth-limit
+    OutLU      XIC(Cond)XIC(Start)OTL(OutLU); XIO(Stop)OTU(OutLU)                          -> verified, unlatch writer listed
+    OutAfter   XIC(Start)OTE(OutAfter)XIC(Cond)OTE(AfterSink)                              -> not verified, condition-after-output
+    DriveXio   XIO(XioBit)OTE(DriveXio); XIC(Cond)XIC(Start)OTE(XioBit)                    -> not verified, xio-of-guarded-bit
+-->
+<RSLogix5000Content SchemaRevision="1.0" SoftwareRevision="36.1" TargetName="InterlockChainCtrl" TargetType="Controller" ContainsContext="false">
+  <Controller Name="InterlockChainCtrl" MajorRev="36" MinorRev="1" ProcessorType="1756-L84E">
+    <DataTypes />
+    <Modules />
+    <AddOnInstructionDefinitions />
+    <Tags>
+      <Tag Name="Drive" TagType="Base" ExternalAccess="Read/Write" Constant="false" DataType="BOOL" Radix="Decimal">
+        <Data Format="Decorated">
+          <DataValue DataType="BOOL" Radix="Decimal" Value="0" />
+        </Data>
+      </Tag>
+      <Tag Name="StartBit" TagType="Base" ExternalAccess="Read/Write" Constant="false" DataType="BOOL" Radix="Decimal">
+        <Data Format="Decorated">
+          <DataValue DataType="BOOL" Radix="Decimal" Value="0" />
+        </Data>
+      </Tag>
+      <Tag Name="Start" TagType="Base" ExternalAccess="Read/Write" Constant="false" DataType="BOOL" Radix="Decimal">
+        <Data Format="Decorated">
+          <DataValue DataType="BOOL" Radix="Decimal" Value="0" />
+        </Data>
+      </Tag>
+      <Tag Name="Cond" TagType="Base" ExternalAccess="Read/Write" Constant="false" DataType="BOOL" Radix="Decimal">
+        <Data Format="Decorated">
+          <DataValue DataType="BOOL" Radix="Decimal" Value="0" />
+        </Data>
+      </Tag>
+      <Tag Name="Other" TagType="Base" ExternalAccess="Read/Write" Constant="false" DataType="BOOL" Radix="Decimal">
+        <Data Format="Decorated">
+          <DataValue DataType="BOOL" Radix="Decimal" Value="0" />
+        </Data>
+      </Tag>
+      <Tag Name="DriveBad" TagType="Base" ExternalAccess="Read/Write" Constant="false" DataType="BOOL" Radix="Decimal">
+        <Data Format="Decorated">
+          <DataValue DataType="BOOL" Radix="Decimal" Value="0" />
+        </Data>
+      </Tag>
+      <Tag Name="BadBit" TagType="Base" ExternalAccess="Read/Write" Constant="false" DataType="BOOL" Radix="Decimal">
+        <Data Format="Decorated">
+          <DataValue DataType="BOOL" Radix="Decimal" Value="0" />
+        </Data>
+      </Tag>
+      <Tag Name="DriveLU" TagType="Base" ExternalAccess="Read/Write" Constant="false" DataType="BOOL" Radix="Decimal">
+        <Data Format="Decorated">
+          <DataValue DataType="BOOL" Radix="Decimal" Value="0" />
+        </Data>
+      </Tag>
+      <Tag Name="LatchBit" TagType="Base" ExternalAccess="Read/Write" Constant="false" DataType="BOOL" Radix="Decimal">
+        <Data Format="Decorated">
+          <DataValue DataType="BOOL" Radix="Decimal" Value="0" />
+        </Data>
+      </Tag>
+      <Tag Name="Stop" TagType="Base" ExternalAccess="Read/Write" Constant="false" DataType="BOOL" Radix="Decimal">
+        <Data Format="Decorated">
+          <DataValue DataType="BOOL" Radix="Decimal" Value="0" />
+        </Data>
+      </Tag>
+      <Tag Name="Drive3" TagType="Base" ExternalAccess="Read/Write" Constant="false" DataType="BOOL" Radix="Decimal">
+        <Data Format="Decorated">
+          <DataValue DataType="BOOL" Radix="Decimal" Value="0" />
+        </Data>
+      </Tag>
+      <Tag Name="D3A" TagType="Base" ExternalAccess="Read/Write" Constant="false" DataType="BOOL" Radix="Decimal">
+        <Data Format="Decorated">
+          <DataValue DataType="BOOL" Radix="Decimal" Value="0" />
+        </Data>
+      </Tag>
+      <Tag Name="D3B" TagType="Base" ExternalAccess="Read/Write" Constant="false" DataType="BOOL" Radix="Decimal">
+        <Data Format="Decorated">
+          <DataValue DataType="BOOL" Radix="Decimal" Value="0" />
+        </Data>
+      </Tag>
+      <Tag Name="D3C" TagType="Base" ExternalAccess="Read/Write" Constant="false" DataType="BOOL" Radix="Decimal">
+        <Data Format="Decorated">
+          <DataValue DataType="BOOL" Radix="Decimal" Value="0" />
+        </Data>
+      </Tag>
+      <Tag Name="Drive4" TagType="Base" ExternalAccess="Read/Write" Constant="false" DataType="BOOL" Radix="Decimal">
+        <Data Format="Decorated">
+          <DataValue DataType="BOOL" Radix="Decimal" Value="0" />
+        </Data>
+      </Tag>
+      <Tag Name="D4A" TagType="Base" ExternalAccess="Read/Write" Constant="false" DataType="BOOL" Radix="Decimal">
+        <Data Format="Decorated">
+          <DataValue DataType="BOOL" Radix="Decimal" Value="0" />
+        </Data>
+      </Tag>
+      <Tag Name="D4B" TagType="Base" ExternalAccess="Read/Write" Constant="false" DataType="BOOL" Radix="Decimal">
+        <Data Format="Decorated">
+          <DataValue DataType="BOOL" Radix="Decimal" Value="0" />
+        </Data>
+      </Tag>
+      <Tag Name="D4C" TagType="Base" ExternalAccess="Read/Write" Constant="false" DataType="BOOL" Radix="Decimal">
+        <Data Format="Decorated">
+          <DataValue DataType="BOOL" Radix="Decimal" Value="0" />
+        </Data>
+      </Tag>
+      <Tag Name="D4D" TagType="Base" ExternalAccess="Read/Write" Constant="false" DataType="BOOL" Radix="Decimal">
+        <Data Format="Decorated">
+          <DataValue DataType="BOOL" Radix="Decimal" Value="0" />
+        </Data>
+      </Tag>
+    </Tags>
+    <Programs>
+      <Program Name="MainProgram" Type="Normal" TestEdits="false" Disabled="false" UseAsFolder="false" MainRoutineName="MainRoutine">
+        <Tags />
+        <Routines>
+          <Routine Name="MainRoutine" Type="RLL">
+            <RLLContent>
+              <Rung Number="0" Type="N">
+                <Text><![CDATA[XIC(StartBit)OTE(Drive);]]></Text>
+              </Rung>
+              <Rung Number="1" Type="N">
+                <Text><![CDATA[XIC(Cond)XIC(Start)OTE(StartBit);]]></Text>
+              </Rung>
+              <Rung Number="2" Type="N">
+                <Text><![CDATA[XIC(BadBit)OTE(DriveBad);]]></Text>
+              </Rung>
+              <Rung Number="3" Type="N">
+                <Text><![CDATA[XIC(Cond)XIC(Start)OTE(BadBit);]]></Text>
+              </Rung>
+              <Rung Number="4" Type="N">
+                <Text><![CDATA[XIC(Other)OTE(BadBit);]]></Text>
+              </Rung>
+              <Rung Number="5" Type="N">
+                <Text><![CDATA[XIC(LatchBit)OTE(DriveLU);]]></Text>
+              </Rung>
+              <Rung Number="6" Type="N">
+                <Text><![CDATA[XIC(Cond)XIC(Start)OTL(LatchBit);]]></Text>
+              </Rung>
+              <Rung Number="7" Type="N">
+                <Text><![CDATA[XIO(Stop)OTU(LatchBit);]]></Text>
+              </Rung>
+              <Rung Number="8" Type="N">
+                <Text><![CDATA[XIC(D3A)OTE(Drive3);]]></Text>
+              </Rung>
+              <Rung Number="9" Type="N">
+                <Text><![CDATA[XIC(D3B)OTE(D3A);]]></Text>
+              </Rung>
+              <Rung Number="10" Type="N">
+                <Text><![CDATA[XIC(D3C)OTE(D3B);]]></Text>
+              </Rung>
+              <Rung Number="11" Type="N">
+                <Text><![CDATA[XIC(Cond)XIC(Start)OTE(D3C);]]></Text>
+              </Rung>
+              <Rung Number="12" Type="N">
+                <Text><![CDATA[XIC(D4A)OTE(Drive4);]]></Text>
+              </Rung>
+              <Rung Number="13" Type="N">
+                <Text><![CDATA[XIC(D4B)OTE(D4A);]]></Text>
+              </Rung>
+              <Rung Number="14" Type="N">
+                <Text><![CDATA[XIC(D4C)OTE(D4B);]]></Text>
+              </Rung>
+              <Rung Number="15" Type="N">
+                <Text><![CDATA[XIC(D4D)OTE(D4C);]]></Text>
+              </Rung>
+              <Rung Number="16" Type="N">
+                <Text><![CDATA[XIC(Cond)XIC(Start)OTE(D4D);]]></Text>
+              </Rung>
+              <Rung Number="17" Type="N">
+                <Text><![CDATA[XIC(Cond)XIC(Start)OTL(OutLU);]]></Text>
+              </Rung>
+              <Rung Number="18" Type="N">
+                <Text><![CDATA[XIO(Stop)OTU(OutLU);]]></Text>
+              </Rung>
+              <Rung Number="19" Type="N">
+                <Text><![CDATA[XIC(Start)OTE(OutAfter)XIC(Cond)OTE(AfterSink);]]></Text>
+              </Rung>
+              <Rung Number="20" Type="N">
+                <Text><![CDATA[XIO(XioBit)OTE(DriveXio);]]></Text>
+              </Rung>
+              <Rung Number="21" Type="N">
+                <Text><![CDATA[XIC(Cond)XIC(Start)OTE(XioBit);]]></Text>
+              </Rung>
+            </RLLContent>
+          </Routine>
+        </Routines>
+      </Program>
+    </Programs>
+    <Tasks>
+      <Task Name="MainTask" Type="CONTINUOUS" Priority="10" Watchdog="500" DisableUpdateOutputs="false" InhibitTask="false">
+        <ScheduledPrograms>
+          <ScheduledProgram Name="MainProgram"/>
+        </ScheduledPrograms>
+      </Task>
+    </Tasks>
+    <ParameterConnections />
+    <Trends />
+    <QuickWatchLists />
+  </Controller>
+</RSLogix5000Content>

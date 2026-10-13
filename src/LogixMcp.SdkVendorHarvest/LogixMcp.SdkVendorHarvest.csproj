@@ -1,0 +1,43 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Library</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <!--
+      This project contains no source files.  Its sole purpose is to act as a
+      "vendor harvester": by referencing RockwellAutomation.LogixDesigner.CSClient
+      WITHOUT ExcludeAssets="runtime", a dotnet publish of this project produces
+      the full transitive runtime closure of that package in the publish output
+      directory.  IncludeSdkAdapterInPublish in LogixMcp.csproj then reads that
+      output, filters out the non-redistributable Rockwell DLLs, and injects the
+      remaining vendor assemblies (Grpc.*, Google.Protobuf, …) into sdk/vendor/.
+
+      Background: LogixMcp.SdkAdapter uses ExcludeAssets="runtime" on the same
+      PackageReference so that Rockwell DLLs are never emitted into the adapter's
+      own build output.  The side-effect is that the Rockwell package's transitive
+      runtime dependencies (Google.Protobuf, Grpc.Net.Client, …) are also
+      suppressed.  This project exists to lift that suppression in a controlled,
+      isolated build that is only invoked during the publish step.
+    -->
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <!--
+      Suppress the "no source files" warning produced when a project has
+      EnableDefaultCompileItems=false and no explicit Compile items.
+    -->
+    <NoWarn>$(NoWarn);MSB3277;NU1701</NoWarn>
+  </PropertyGroup>
+
+  <!--
+    Reference the Rockwell SDK package WITHOUT ExcludeAssets="runtime" so that
+    its transitive runtime dependencies (Grpc.*, Google.Protobuf) appear in the
+    publish output and can be harvested.  The Rockwell DLL itself
+    (RockwellAutomation.LogixDesigner.LogixProject.CSClient.dll) will also be
+    present; it is filtered out by IncludeSdkAdapterInPublish before the vendor
+    DLLs are injected into the final publish artifact.
+  -->
+  <ItemGroup Condition="'$(EnableLogixSdk)' == 'true'">
+    <PackageReference Include="RockwellAutomation.LogixDesigner.CSClient" Version="2.2.1109" />
+  </ItemGroup>
+
+</Project>

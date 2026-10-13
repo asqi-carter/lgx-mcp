@@ -1,0 +1,10 @@
+# Normalize line endings; let git decide text vs binary.
+* text=auto
+
+# Shell scripts must stay LF (a CRLF shebang breaks on Linux).
+*.sh text eol=lf
+
+# PowerShell scripts stay LF on every platform: the invariant tests in
+# tests/LogixMcp.Tests scan them for "\n}\n" boundaries, lint-ps's ASCII gate
+# is byte-based, and PS 5.1 / pwsh both parse LF fine.
+*.ps1 text eol=lf

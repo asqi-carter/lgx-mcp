@@ -1,0 +1,15 @@
+Rung 9  Line_A/Main
+// Every permissive in the start chain must be made.
+║                Permissive    Permissive    Permissive    Permissive    Permissive    Permissive    Permissive   ║
+║                number 1 in   number 2 in   number 3 in   number 4 in   number 5 in   number 6 in   number 7 in  ║
+║ Program scope   the start     the start     the start     the start     the start     the start     the start   ║
+║     flag          chain         chain         chain         chain         chain         chain         chain     ║
+║  Local_Flag   Permissive_01 Permissive_02 Permissive_03 Permissive_04 Permissive_05 Permissive_06 Permissive_07 ║
+╟──────┤ ├───────────┤ ├───────────┤ ├───────────┤ ├───────────┤ ├───────────┤ ├───────────┤ ├───────────┤ ├──────…
+║                                                                                                                 ║
+║  Permissive    Permissive    Permissive    Permissive    Permissive                                             ║
+║  number 8 in   number 9 in  number 10 in  number 11 in  number 12 in                                            ║
+║   the start     the start     the start     the start     the start   Line run                                  ║
+║     chain         chain         chain         chain         chain      output                                   ║
+║ Permissive_08 Permissive_09 Permissive_10 Permissive_11 Permissive_12 Run_Out                                   ║
+…──────┤ ├───────────┤ ├───────────┤ ├───────────┤ ├───────────┤ ├────────( )─────────────────────────────────────╢

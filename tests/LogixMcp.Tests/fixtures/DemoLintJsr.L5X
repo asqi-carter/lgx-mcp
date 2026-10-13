@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<!-- Lint fixture for JSR rules. MainRoutine JSRs Called_Sub (fine) and Ghost (missing -> error).
+     Orphan_Sub is never called (info). FaultRoutine is the program fault routine (exempt). -->
+<RSLogix5000Content SchemaRevision="1.0" SoftwareRevision="36.1" TargetName="LintController" TargetType="Controller" ContainsContext="false">
+  <Controller Name="LintController" MajorRev="36" MinorRev="1" ProcessorType="1756-L84E">
+    <DataTypes />
+    <Modules />
+    <AddOnInstructionDefinitions />
+    <Tags>
+      <Tag Name="Cmd_Start" TagType="Base" ExternalAccess="Read/Write" Constant="false" DataType="BOOL" Radix="Decimal">
+        <Data Format="Decorated"><DataValue DataType="BOOL" Radix="Decimal" Value="0" /></Data>
+      </Tag>
+      <Tag Name="Out_A" TagType="Base" ExternalAccess="Read/Write" Constant="false" DataType="BOOL" Radix="Decimal">
+        <Data Format="Decorated"><DataValue DataType="BOOL" Radix="Decimal" Value="0" /></Data>
+      </Tag>
+    </Tags>
+    <Programs>
+      <Program Name="MainProgram" Type="Normal" TestEdits="false" Disabled="false" UseAsFolder="false" MainRoutineName="MainRoutine" FaultRoutineName="FaultRoutine">
+        <Tags />
+        <Routines>
+          <Routine Name="MainRoutine" Type="RLL">
+            <RLLContent>
+              <Rung Number="0" Type="N">
+                <Text><![CDATA[XIC(Cmd_Start)JSR(Called_Sub,0);]]></Text>
+              </Rung>
+              <Rung Number="1" Type="N">
+                <Text><![CDATA[XIC(Cmd_Start)JSR(Ghost,0);]]></Text>
+              </Rung>
+            </RLLContent>
+          </Routine>
+          <Routine Name="Called_Sub" Type="RLL">
+            <RLLContent>
+              <Rung Number="0" Type="N">
+                <Text><![CDATA[XIC(Cmd_Start)OTE(Out_A);]]></Text>
+              </Rung>
+            </RLLContent>
+          </Routine>
+          <Routine Name="Orphan_Sub" Type="RLL">
+            <RLLContent>
+              <Rung Number="0" Type="N">
+                <Text><![CDATA[NOP();]]></Text>
+              </Rung>
+            </RLLContent>
+          </Routine>
+          <Routine Name="FaultRoutine" Type="RLL">
+            <RLLContent>
+              <Rung Number="0" Type="N">
+                <Text><![CDATA[NOP();]]></Text>
+              </Rung>
+            </RLLContent>
+          </Routine>
+        </Routines>
+      </Program>
+    </Programs>
+    <Tasks />
+    <ParameterConnections />
+    <Trends />
+    <QuickWatchLists />
+  </Controller>
+</RSLogix5000Content>

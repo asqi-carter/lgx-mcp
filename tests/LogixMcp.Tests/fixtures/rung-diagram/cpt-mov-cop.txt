@@ -1,0 +1,9 @@
+Rung 6  Line_A/Main
+║ Operator start Batch_Count: Batches   Avg_Count: Average of the last two     Recipe_Src[0]: Recipe    ║
+║   pushbutton   filled since reset     counts                                 table source             ║
+║   Cmd_Start    ┌────────────────────┐ ┌────────────────────────────────────┐ ┌──────────────────────┐ ║
+╟──────┤ ├───────┤ MOV                ├─┤ CPT                                ├─┤ COP                  ├─╢
+║                │ Source Batch_Count │ │ Dest       Avg_Count               │ │ Source Recipe_Src[0] │ ║
+║                │ Dest   Last_Count  │ │ Expression (Batch_Count+Last_Count │ │ Dest   Recipe_Dst[0] │ ║
+║                └────────────────────┘ │            )/2                     │ │ Length 10            │ ║
+║                                       └────────────────────────────────────┘ └──────────────────────┘ ║

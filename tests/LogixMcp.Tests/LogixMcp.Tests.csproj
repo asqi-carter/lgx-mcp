@@ -1,0 +1,191 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(EnableLogixSdk)' == 'true'">
+    <DefineConstants>$(DefineConstants);LOGIX_SDK</DefineConstants>
+  </PropertyGroup>
+
+  <ItemGroup Condition="'$(EnableLogixSdk)' != 'true'">
+    <Compile Remove="AcdProjectOpenerTests.cs" />
+    <Compile Remove="LogixProjectSessionTests.cs" />
+    <Compile Remove="TypedSdkTagServiceTests.cs" />
+    <Compile Remove="TypedSdkTagServiceMemberTests.cs" />
+    <Compile Remove="ExportRungsHandlerTests.cs" />
+    <Compile Remove="ProposeRungEditHandlerTests.cs" />
+    <Compile Remove="ProposeRungEditIntegrationTests.cs" />
+    <Compile Remove="ExportRungsRoundTripTests.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.6.0" />
+    <PackageReference Include="xunit" Version="2.4.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.4.5">
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
+    <PackageReference Include="coverlet.collector" Version="6.0.0">
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
+    <PackageReference Include="Xunit.SkippableFact" Version="1.4.13" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Pinned to exact resolved version. A version bump is a release event gated by the cold-install gate, not routine dependency drift. -->
+    <PackageReference Include="L5Sharp" Version="[7.6.2]" />
+    <PackageReference Include="RockwellAutomation.LogixDesigner.CSClient" Version="2.2.1109" Condition="'$(EnableLogixSdk)' == 'true'" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\LogixMcp\LogixMcp.csproj" />
+    <!--
+      Unconditional reference so SkillsGuardTests.EveryToolNameInSkills_IsARegisteredTool
+      can access SdkToolNames.All (the non-conditional SDK-tool name registry) in both
+      SDK and non-SDK builds.  All SDK-specific test code (CancelPendingEditsToolTests,
+      CapabilityTests SDK block, etc.) is guarded by #if LOGIX_SDK or <Compile Remove>,
+      so removing the LOGIX_SDK condition here is safe.
+    -->
+    <ProjectReference Include="..\..\src\LogixMcp.SdkAdapter\LogixMcp.SdkAdapter.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Content Include="fixtures\Demo.L5X">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </Content>
+    <Content Include="fixtures\DemoModules.L5X">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </Content>
+    <Content Include="fixtures\DemoModuleIo.L5X">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </Content>
+    <Content Include="fixtures\DemoB.L5X">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </Content>
+    <Content Include="fixtures\DemoCrossProgram.L5X">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </Content>
+    <Content Include="fixtures\DemoScopedInterlock.L5X">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </Content>
+    <Content Include="fixtures\DemoUnparsedRungs.L5X">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </Content>
+    <Content Include="fixtures\DemoCrossRef.L5X">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </Content>
+    <Content Include="fixtures\DemoInterlock.L5X">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </Content>
+    <Content Include="fixtures\DemoInterlockBranch.L5X">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </Content>
+    <Content Include="fixtures\DemoInterlockChain.L5X">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </Content>
+    <Content Include="fixtures\DemoMixedRoutines.L5X">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </Content>
+    <Content Include="fixtures\DemoDataTypes.L5X">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </Content>
+    <Content Include="fixtures\DemoRecipe.L5X">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </Content>
+    <Content Include="fixtures\DemoTagUsage.L5X">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </Content>
+    <Content Include="fixtures\DemoLintDivZero.L5X">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </Content>
+    <Content Include="fixtures\DemoLintJsr.L5X">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </Content>
+    <Content Include="fixtures\DemoLintDuplicateTimer.L5X">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </Content>
+    <Content Include="fixtures\DemoLintBackwardJump.L5X">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </Content>
+    <Content Include="fixtures\DemoLintRecursiveJsr.L5X">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </Content>
+    <Content Include="fixtures\DemoLintJsrParams.L5X">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </Content>
+    <Content Include="fixtures\DemoLintDuplicateOte.L5X">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </Content>
+    <Content Include="fixtures\DemoLintArrayIndex.L5X">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </Content>
+    <Content Include="fixtures\DemoLintRungComment.L5X">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </Content>
+    <Content Include="fixtures\DemoLintShadow.L5X">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </Content>
+    <Content Include="fixtures\DemoLintCaseCollision.L5X">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </Content>
+    <Content Include="fixtures\DemoLintNegativePreset.L5X">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </Content>
+    <Content Include="fixtures\DemoLintAoiUnused.L5X">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </Content>
+    <Content Include="fixtures\DemoLintCrossProgram.L5X">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </Content>
+    <Content Include="..\..\bench\fixtures\DemoLintRules.L5X" Link="fixtures\DemoLintRules.L5X">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </Content>
+    <Content Include="fixtures\DemoDiagnose.L5X">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </Content>
+    <Content Include="fixtures\real-shape\ModuleSnippets.L5X">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </Content>
+    <Content Include="fixtures\real-shape\DataTypeBool.L5X">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </Content>
+    <Content Include="fixtures\real-shape\MsgRead.L5X">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </Content>
+    <Content Include="fixtures\real-shape\MsgWrite.L5X">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </Content>
+    <Content Include="fixtures\real-shape\MsgCipGeneric.L5X">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </Content>
+    <Content Include="fixtures\real-shape\UsageParameters.L5X">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </Content>
+    <Content Include="fixtures\real-shape\EncodedRoutine.L5X">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </Content>
+    <Content Include="fixtures\real-shape\RoutineExport.L5X">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </Content>
+    <Content Include="fixtures\real-shape\ProgramExport.L5X">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </Content>
+    <Content Include="fixtures\real-shape\RungDiagram.L5X">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </Content>
+    <Content Include="fixtures\mnemonic-sets\*.L5X">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </Content>
+    <Content Include="fixtures\rung-diagram\*.txt">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,40 @@
+<Project>
+
+  <!-- Single version source for every assembly. Server code reads it back from
+       AssemblyInformationalVersionAttribute (see ServerIdentity); do not repeat
+       the literal anywhere under src/. -->
+  <PropertyGroup>
+    <Version>1.0.0</Version>
+    <InformationalVersion>$(Version)</InformationalVersion>
+  </PropertyGroup>
+
+  <!--
+    Auto-detect the Rockwell Logix SDK by checking for a matching .nupkg in
+    .localfeed/.  The property is intentionally overridable so developers can
+    force either lane on a machine that already has the package installed:
+
+        dotnet build -p:EnableLogixSdk=false   # build without SDK
+        dotnet build -p:EnableLogixSdk=true    # build with SDK (default when pkg found)
+
+    When EnableLogixSdk is true the LOGIX_SDK compilation symbol is defined,
+    letting source files gate Logix-specific code behind #if LOGIX_SDK.
+  -->
+
+  <PropertyGroup>
+    <_LocalFeedPath>$(MSBuildThisFileDirectory).localfeed</_LocalFeedPath>
+
+    <!--
+      Scan .localfeed/ for the package file (wildcard, any version).
+      The Condition guards against the directory being absent entirely.
+    -->
+    <_LogixSdkFiles Condition="$([System.IO.Directory]::Exists('$(_LocalFeedPath)'))">$([System.IO.Directory]::GetFiles('$(_LocalFeedPath)', 'RockwellAutomation.LogixDesigner.CSClient.*.nupkg'))</_LogixSdkFiles>
+
+    <!-- Set EnableLogixSdk when the package is present, unless the caller already provided it. -->
+    <EnableLogixSdk Condition="'$(EnableLogixSdk)' == '' and '$(_LogixSdkFiles)' != ''">true</EnableLogixSdk>
+    <EnableLogixSdk Condition="'$(EnableLogixSdk)' == ''">false</EnableLogixSdk>
+
+    <!-- Define LOGIX_SDK compilation symbol when the SDK lane is active. -->
+    <DefineConstants Condition="'$(EnableLogixSdk)' == 'true'">$(DefineConstants);LOGIX_SDK</DefineConstants>
+  </PropertyGroup>
+
+</Project>

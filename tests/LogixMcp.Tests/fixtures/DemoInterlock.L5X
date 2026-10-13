@@ -1,0 +1,122 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<!--
+  DemoInterlock.L5X — fixture for VerifyInterlockHandler unit tests.
+
+  Tags:
+    Motor_Run   BOOL  — output coil written in MainRoutine (two rungs)
+    Safe_Output BOOL  — output coil written in SafeRoutine (one rung, Safety_OK present as XIC)
+    Alarm_Light BOOL  — output coil written in AlarmRoutine (one rung, Safety_OK present as XIO)
+    Cmd_MotorStart BOOL — contact (read only)
+    Safety_OK   BOOL  — safety interlock (tested as XIC or XIO)
+    E_Stop      BOOL  — emergency-stop contact (read only)
+
+  Programs / Routines:
+    MainProgram / MainRoutine:
+      Rung 0: XIC(Cmd_MotorStart)XIC(Safety_OK)OTE(Motor_Run);
+              Motor_Run written; Safety_OK present as XIC → conditionPresent=true, polarity=XIC
+      Rung 1: XIC(E_Stop)OTE(Motor_Run);
+              Motor_Run written; Safety_OK absent → conditionPresent=false, polarity=null
+
+    MainProgram / SafeRoutine:
+      Rung 0: XIC(Safety_OK)OTE(Safe_Output);
+              Safe_Output written; Safety_OK present as XIC → conditionPresent=true, polarity=XIC
+
+    MainProgram / AlarmRoutine:
+      Rung 0: XIO(Safety_OK)OTE(Alarm_Light);
+              Alarm_Light written; Safety_OK present as XIO → conditionPresent=true, polarity=XIO
+
+  Expected verify_interlock results:
+    verify_interlock(Motor_Run,   Safety_OK) → verified=false (rung 1 missing condition), 2 rungs
+    verify_interlock(Safe_Output, Safety_OK) → verified=true,  1 rung, polarity=XIC
+    verify_interlock(Alarm_Light, Safety_OK) → verified=true,  1 rung, polarity=XIO
+    verify_interlock(E_Stop,      Safety_OK) → error (E_Stop never written)
+-->
+<RSLogix5000Content SchemaRevision="1.0" SoftwareRevision="36.1" TargetName="InterlockCtrl" TargetType="Controller" ContainsContext="false">
+  <Controller Name="InterlockCtrl" MajorRev="36" MinorRev="1" ProcessorType="1756-L84E">
+    <DataTypes />
+    <Modules />
+    <AddOnInstructionDefinitions />
+    <Tags>
+      <Tag Name="Motor_Run" TagType="Base" ExternalAccess="Read/Write" Constant="false" DataType="BOOL" Radix="Decimal">
+        <Data Format="Decorated">
+          <DataValue DataType="BOOL" Radix="Decimal" Value="0" />
+        </Data>
+      </Tag>
+      <Tag Name="Safe_Output" TagType="Base" ExternalAccess="Read/Write" Constant="false" DataType="BOOL" Radix="Decimal">
+        <Data Format="Decorated">
+          <DataValue DataType="BOOL" Radix="Decimal" Value="0" />
+        </Data>
+      </Tag>
+      <Tag Name="Alarm_Light" TagType="Base" ExternalAccess="Read/Write" Constant="false" DataType="BOOL" Radix="Decimal">
+        <Data Format="Decorated">
+          <DataValue DataType="BOOL" Radix="Decimal" Value="0" />
+        </Data>
+      </Tag>
+      <Tag Name="Cmd_MotorStart" TagType="Base" ExternalAccess="Read/Write" Constant="false" DataType="BOOL" Radix="Decimal">
+        <Data Format="Decorated">
+          <DataValue DataType="BOOL" Radix="Decimal" Value="0" />
+        </Data>
+      </Tag>
+      <Tag Name="Safety_OK" TagType="Base" ExternalAccess="Read/Write" Constant="false" DataType="BOOL" Radix="Decimal">
+        <Data Format="Decorated">
+          <DataValue DataType="BOOL" Radix="Decimal" Value="0" />
+        </Data>
+      </Tag>
+      <Tag Name="E_Stop" TagType="Base" ExternalAccess="Read/Write" Constant="false" DataType="BOOL" Radix="Decimal">
+        <Data Format="Decorated">
+          <DataValue DataType="BOOL" Radix="Decimal" Value="0" />
+        </Data>
+      </Tag>
+    </Tags>
+    <Programs>
+      <Program Name="MainProgram" Type="Normal" TestEdits="false" Disabled="false" UseAsFolder="false" MainRoutineName="MainRoutine">
+        <Tags />
+        <Routines>
+          <Routine Name="MainRoutine" Type="RLL">
+            <RLLContent>
+              <!-- Rung 0: Motor_Run written; Safety_OK present (XIC) -->
+              <Rung Number="0" Type="N">
+                <Comment><![CDATA[Motor_Run energized when Cmd_MotorStart AND Safety_OK]]></Comment>
+                <Text><![CDATA[XIC(Cmd_MotorStart)XIC(Safety_OK)OTE(Motor_Run);]]></Text>
+              </Rung>
+              <!-- Rung 1: Motor_Run written; Safety_OK absent — breaks interlock -->
+              <Rung Number="1" Type="N">
+                <Comment><![CDATA[Motor_Run written without safety interlock (test case for verified=false)]]></Comment>
+                <Text><![CDATA[XIC(E_Stop)OTE(Motor_Run);]]></Text>
+              </Rung>
+            </RLLContent>
+          </Routine>
+          <Routine Name="SafeRoutine" Type="RLL">
+            <RLLContent>
+              <!-- Rung 0: Safe_Output written; Safety_OK present as XIC -->
+              <Rung Number="0" Type="N">
+                <Comment><![CDATA[Safe_Output driven only when Safety_OK]]></Comment>
+                <Text><![CDATA[XIC(Safety_OK)OTE(Safe_Output);]]></Text>
+              </Rung>
+            </RLLContent>
+          </Routine>
+          <Routine Name="AlarmRoutine" Type="RLL">
+            <RLLContent>
+              <!-- Rung 0: Alarm_Light written; Safety_OK present as XIO (alarm when safety is NOT OK) -->
+              <Rung Number="0" Type="N">
+                <Comment><![CDATA[Alarm_Light fires when Safety_OK is de-energized (XIO)]]></Comment>
+                <Text><![CDATA[XIO(Safety_OK)OTE(Alarm_Light);]]></Text>
+              </Rung>
+            </RLLContent>
+          </Routine>
+        </Routines>
+      </Program>
+    </Programs>
+    <!-- MainTask (CONTINUOUS) schedules MainProgram so it executes. Do not remove the task. -->
+<Tasks>
+      <Task Name="MainTask" Type="CONTINUOUS" Priority="10" Watchdog="500" DisableUpdateOutputs="false" InhibitTask="false">
+        <ScheduledPrograms>
+          <ScheduledProgram Name="MainProgram"/>
+        </ScheduledPrograms>
+      </Task>
+    </Tasks>
+    <ParameterConnections />
+    <Trends />
+    <QuickWatchLists />
+  </Controller>
+</RSLogix5000Content>

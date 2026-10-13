@@ -1,0 +1,11 @@
+Rung 5 [staged locally (not on controller)]  Line_A/Edits
+║ Fill valve Line run      ║
+║  solenoid   output       ║
+║ Fill_Valve Run_Out       ║
+╟────┤ ├───────( )─────────╢
+
+Rung 6 [pending delete, tested]  Line_A/Edits
+║ Fill valve Fill sequence ║
+║  solenoid   latched on   ║
+║ Fill_Valve  Fill_Latch   ║
+╟────┤ ├──────────( )──────╢

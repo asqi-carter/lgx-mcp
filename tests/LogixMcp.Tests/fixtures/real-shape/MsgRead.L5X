@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!-- Structure copied from a real Studio 5000 export; all names invented. -->
+<RSLogix5000Content SchemaRevision="1.0" SoftwareRevision="36.01" TargetName="Plant_Ctl" TargetType="Controller" ContainsContext="false" Owner="tester" ExportDate="Mon Jan 05 08:00:00 2026" ExportOptions="NoRawData L5KData DecoratedData ForceProtectedEncoding AllProjDocTrans">
+<Controller Use="Target" Name="Plant_Ctl" ProcessorType="1756-L83E" MajorRev="36" MinorRev="1">
+<DataTypes />
+<Modules />
+<AddOnInstructionDefinitions />
+<Tags />
+<Programs>
+<Program Use="Target" Name="Line_A" TestEdits="false" MainRoutineName="Main" Disabled="false" UseAsFolder="false">
+<Tags><Tag Name="Msg_Probe" TagType="Base" DataType="MESSAGE" Constant="false" ExternalAccess="Read/Write"><Data Format="Message"><MessageParameters MessageType="CIP Data Table Read" RemoteElement="Remote_Block[0]" RequestedLength="1" ConnectedFlag="2" ConnectionPath="1,0" CommTypeCode="2" LocalIndex="0" LocalElement="Dst_Values[0]" CacheConnections="true"/></Data></Tag><Tag Name="Dst_Values" TagType="Base" DataType="DINT" Dimensions="4" Radix="Decimal" Constant="false" ExternalAccess="Read/Write"><Data Format="L5K"><![CDATA[[0,0,0,0]]]></Data></Tag><Tag Name="Cmd_Go" TagType="Base" DataType="BOOL" Radix="Decimal" Constant="false" ExternalAccess="Read/Write"><Data Format="L5K"><![CDATA[0]]></Data><Data Format="Decorated"><DataValue DataType="BOOL" Radix="Decimal" Value="0"/></Data></Tag></Tags>
+<Routines>
+<Routine Use="Target" Name="Main" Type="RLL"><RLLContent><Rung Number="0" Type="N"><Text><![CDATA[XIC(Cmd_Go)MSG(Msg_Probe);]]></Text></Rung></RLLContent></Routine>
+</Routines>
+</Program>
+</Programs>
+<Tasks />
+<ParameterConnections />
+</Controller>
+</RSLogix5000Content>
