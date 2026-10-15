@@ -48,7 +48,7 @@ using SdkDataType         = RockwellAutomation.LogixDesigner.LogixProject.DataTy
 /// a structured <see cref="TagServiceErrorKind.ConnectionFailed"/> error.
 /// </para>
 /// </summary>
-public sealed class TypedSdkTagService : ITagService, IControllerModeSource, IRoutineL5xSource, IControllerImageSource, ISessionTypeSource, IAliasAware
+public sealed class TypedSdkTagService : ITagService, IControllerModeSource, IRoutineL5xSource, IControllerImageSource, IStagedRungSource, ISessionTypeSource, IAliasAware
 {
     private readonly LogixProjectSession _session;
     private readonly L5X _typeProject;
@@ -286,6 +286,31 @@ public sealed class TypedSdkTagService : ITagService, IControllerModeSource, IRo
         if (program.Contains('\''))
             throw new ArgumentException("Program name cannot contain a quote.");
         return await ExportPartAsync($"Controller/Programs/Program[@Name='{program}']", ct).ConfigureAwait(false);
+    }
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// Reads the session's staged-rung buffer (<see cref="LogixProjectSession.StagedRungBuffer"/>) and its replace
+    /// counts, so a controller image refresh re-stamps the staged rungs instead of keeping the plain copy the export
+    /// shows. Buckets whose routine XPath does not name a routine in <paramref name="program"/> are skipped.
+    /// </remarks>
+    IReadOnlyList<StagedBlock> IStagedRungSource.StagedBlocks(string program)
+    {
+        var blocks = new List<StagedBlock>();
+        foreach (var (key, rungs) in _session.StagedRungBuffer.ToList())
+        {
+            if (rungs.Count == 0 ||
+                !PendingEditsHandler.TryParseRoutineXPath(key.RoutineXPath, out var prog, out var routine) ||
+                !string.Equals(prog, program, StringComparison.OrdinalIgnoreCase))
+                continue;
+            _session.StagedReplaceCounts.TryGetValue(key, out var replaceCount);
+            _session.StagedKeptNormal.TryGetValue(key, out var kept);
+            blocks.Add(new StagedBlock(prog, routine, (int)key.InsertPosition, (int)replaceCount, rungs.ToList())
+            {
+                KeptNormal = kept is { Count: > 0 } ? kept.ToHashSet() : new HashSet<int>(),
+            });
+        }
+        return blocks;
     }
 
     /// <inheritdoc />

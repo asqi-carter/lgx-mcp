@@ -3,7 +3,7 @@ using System.Xml.Linq;
 namespace LogixMcp.Tests;
 
 /// <summary>
-/// N1 (logix-mcp-r7k0.1): pre-check, mnemonic check, census, copy check and write scan select only the
+/// N1: pre-check, mnemonic check, census, copy check and write scan select only the
 /// target routine's <c>RLLContent/Rung</c>; an Add-On Instruction's own <c>Logic</c> (In1/Out1) never counts.
 /// </summary>
 public class RoutineRungSelectorTests

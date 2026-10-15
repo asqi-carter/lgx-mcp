@@ -10,7 +10,7 @@ using Task = System.Threading.Tasks.Task;
 namespace LogixMcp.Tests;
 
 /// <summary>
-/// logix-mcp-r7k0.9 (N10, N11): publish/replace/cancel wording and the post-cancel pending_edits re-read.
+/// Publish/replace/cancel wording and the post-cancel pending_edits re-read.
 /// </summary>
 [Collection("StaticHandlerHooks")]
 public class PublishAndCancelWordingTests

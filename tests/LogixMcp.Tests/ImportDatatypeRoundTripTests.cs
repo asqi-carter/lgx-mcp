@@ -69,7 +69,7 @@ public class ImportDatatypeRoundTripTests
         var host = Assert.Single(members, m => (string?)m.Attribute("Hidden") == "true");
         Assert.Equal("SINT", host.Attribute("DataType")!.Value);
         var hostName = host.Attribute("Name")!.Value;
-        var bools = members.Where(m => (string?)m.Attribute("DataType") == "BOOL").ToList();
+        var bools = members.Where(m => (string?)m.Attribute("DataType") == "BIT").ToList();
         Assert.Equal(2, bools.Count);
         Assert.All(bools, b => Assert.Equal(hostName, b.Attribute("Target")!.Value));
         Assert.Equal(new[] { "0", "1" }, bools.Select(b => b.Attribute("BitNumber")!.Value).ToArray());
@@ -165,5 +165,49 @@ public class ImportDatatypeRoundTripTests
         var err = Assert.IsType<ImportDatatypeError>(result);
         Assert.Equal(ImportDatatypeHandler.InvalidFragmentKind, err.Kind);
         Assert.False(File.Exists(saveAs));
+    }
+
+    [Fact]
+    public void RenderedFragment_WritesBitWithTargetAndBitNumber_AndNoTargetOnPlainBool()
+    {
+        var members = new DataTypeMemberEntry[]
+        {
+            new("Count", "DINT", "0", "Decimal", false, "Read/Write"),
+            new("Run",   "BOOL", "0", "",        false, "Read/Write"),
+            new("Stop",  "BIT",  "0", "",        false, "Read/Write"),
+        };
+
+        var m = TargetMembers(DryRun(members, "Flags").L5XFragment);
+
+        var bits = m.Where(x => (string?)x.Attribute("DataType") == "BIT").ToList();
+        Assert.Equal(new[] { "Run", "Stop" }, bits.Select(b => b.Attribute("Name")!.Value).ToArray());
+        Assert.All(bits, b =>
+        {
+            Assert.NotNull(b.Attribute("Target"));
+            Assert.NotNull(b.Attribute("BitNumber"));
+        });
+        Assert.Equal(new[] { "0", "1" }, bits.Select(b => b.Attribute("BitNumber")!.Value).ToArray());
+
+        // Nothing is rendered as BOOL, and no BOOL-typed member carries a Target.
+        Assert.DoesNotContain(m, x => (string?)x.Attribute("DataType") == "BOOL" && x.Attribute("Target") is not null);
+        Assert.DoesNotContain(m, x => (string?)x.Attribute("DataType") == "BOOL");
+        Assert.Null(m.Single(x => (string?)x.Attribute("Name") == "Count").Attribute("Target"));
+    }
+
+    [Fact]
+    public void BitMapsToBool_OnInput_AndInValidateRenderedFragment()
+    {
+        var fragment = DryRun(new DataTypeMemberEntry[]
+        {
+            new("Run", "BOOL", "0", "", false, "Read/Write"),
+        }, "Flags").L5XFragment;
+
+        // BIT spelling on the l5xPath side maps back to BOOL.
+        var extracted = ImportDatatypeHandler.ExtractTargetMembersFromFragment(fragment);
+        Assert.Equal("BOOL", extracted.Single(e => e.Name == "Run").DataType);
+
+        // The validator accepts both spellings.
+        Assert.Null(ImportDatatypeHandler.ValidateRenderedFragment(XDocument.Parse(fragment)));
+        Assert.Null(ImportDatatypeHandler.ValidateRenderedFragment(XDocument.Parse(fragment.Replace("DataType=\"BIT\"", "DataType=\"BOOL\""))));
     }
 }

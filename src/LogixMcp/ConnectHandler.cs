@@ -201,12 +201,38 @@ public record ConnectResult(
     public ConnectPhaseTimings? PhaseTimings { get; init; }
 
     /// <summary>
+    /// The same object as <see cref="PhaseTimings"/>, under the name <c>logix_connect_status</c> uses for it, so a
+    /// connected payload carries <c>phaseTimingsSummary</c> whether it came from a connect that finished within the
+    /// sync budget, from a direct connect, or from the status poll. Omitted when there are no timings.
+    /// </summary>
+    [JsonPropertyName("phaseTimingsSummary")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public ConnectPhaseTimings? PhaseTimingsSummary => PhaseTimings;
+
+    /// <summary>
     /// How many stale offline build-check copies (older than 24 h, not locked) this connect removed from
     /// <c>%TEMP%\logix-mcp-work\build-verify\</c>. Omitted when the SDK backend is not loaded.
     /// </summary>
     [JsonPropertyName("staleOfflineCopiesRemoved")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public int? StaleOfflineCopiesRemoved { get; init; }
+
+    /// <summary>
+    /// How many <c>ctl-*</c> upload slot folders this connect removed because the process that owned them (the pid in
+    /// the slot file) is no longer running, for example a server that was killed mid-session. Omitted when the SDK
+    /// backend is not loaded.
+    /// </summary>
+    [JsonPropertyName("staleUploadSlotsRemoved")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? StaleUploadSlotsRemoved { get; init; }
+
+    /// <summary>
+    /// Present when this connect replaced a session that was live: the id and finish time of the connect that made
+    /// it. The old session was closed and the controller was uploaded again. Omitted for a first connect.
+    /// </summary>
+    [JsonPropertyName("replacedSession")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public LiveSessionStamp? ReplacedSession { get; init; }
 
     /// <summary>
     /// Logix Designer version as <c>major.minor</c> (SDK backend only); omitted when not known. At connect it comes
@@ -295,6 +321,16 @@ public record ConnectError(
     [JsonPropertyName("retries")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public IReadOnlyList<ConnectRetryEntry>? Retries { get; init; }
+
+    /// <summary>Machine-readable error kind (for example <c>NoProjectLoaded</c>); omitted when the error is untyped.</summary>
+    [JsonPropertyName("kind")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Kind { get; init; }
+
+    /// <summary>Next steps for the caller; omitted when there is none.</summary>
+    [JsonPropertyName("hint")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Hint { get; init; }
 }
 
 #if LOGIX_SDK
@@ -322,7 +358,7 @@ public record ConnectSdkServiceUnstableError(
 
     private const string LegacyTail = "Recovery will restart it \u2014 wait a few seconds and retry.";
 
-    // The comms-fault message's manual-restart advice contradicts a give-up's "recovery will restart it" (G55, #38).
+    // The comms-fault message's manual-restart advice contradicts a give-up's "recovery will restart it".
     private const string CommsFaultAdvice =
         "Check the Windows Application event log for LdSdkServer.exe errors and restart the LdSdkService service, then retry.";
 
@@ -397,6 +433,18 @@ public record ConnectMissingArgumentError(
     [property: JsonPropertyName("kind")]      string Kind,
     [property: JsonPropertyName("parameter")] string Parameter,
     [property: JsonPropertyName("hint")]      string Hint);
+
+/// <summary>
+/// Structured error returned when the registered project's file is gone from disk
+/// (<see cref="ErrorKinds.ProjectFileMissing"/>).
+/// </summary>
+/// <param name="Error">Human-readable description naming the missing file.</param>
+/// <param name="Kind">Always <c>"ProjectFileMissing"</c>.</param>
+/// <param name="Hint">Names the file, says the upload copy was removed, and gives the next step.</param>
+public record ConnectProjectFileMissingError(
+    [property: JsonPropertyName("error")] string Error,
+    [property: JsonPropertyName("kind")]  string Kind,
+    [property: JsonPropertyName("hint")]  string Hint);
 
 /// <summary>
 /// Structured error returned when the <c>backend</c> parameter supplied to
@@ -554,8 +602,7 @@ public record ConnectUnknownParameterError(
 /// including a concrete example.
 /// </param>
 /// <param name="Hint">
-/// Actionable instruction: use the <c>sdkCommPath</c> parameter to supply the Logix
-/// comm path separately from the CIP <c>gateway</c>/<c>path</c> parameters.
+/// Actionable instruction: check the comm path (slot and port) and that the controller is reachable.
 /// </param>
 public record ConnectSdkRouteError(
     [property: JsonPropertyName("error")]          string  Error,
@@ -563,6 +610,10 @@ public record ConnectSdkRouteError(
     [property: JsonPropertyName("expectedFormat")] string  ExpectedFormat,
     [property: JsonPropertyName("hint")]           string? Hint = null)
 {
+    /// <summary>Machine-readable error kind: always <see cref="ErrorKinds.CommPathInvalid"/> (the status mirror carries it too).</summary>
+    [JsonPropertyName("kind")]
+    public string Kind { get; init; } = ErrorKinds.CommPathInvalid;
+
     /// <summary>Retries made before the connect gave up (each with the SDK restart it saw, if any); omitted when none.</summary>
     [JsonPropertyName("retries")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
@@ -1032,6 +1083,12 @@ public static class ConnectHandler
     public static Func<int>? StaleOfflineCopyCleaner { get; set; }
 
     /// <summary>
+    /// Removes <c>ctl-*</c> upload slot folders whose owner process is gone and returns how many it removed.
+    /// Registered by the SDK adapter; <c>null</c> when the adapter is not loaded. Run once per connect; a failure is ignored.
+    /// </summary>
+    public static Func<int>? StaleUploadSlotCleaner { get; set; }
+
+    /// <summary>
     /// Builds the connect warning for staged rungs the outgoing session holds, or <c>null</c> when there is
     /// nothing to discard (no SDK session, a faulted one whose work is already lost, or an empty buffer).
     /// Never throws.
@@ -1129,26 +1186,51 @@ public static class ConnectHandler
         }
     }
 
+#if LOGIX_SDK
+    /// <summary>Hint on a <c>CommPathInvalid</c> error. Never tells the caller to use <c>sdkCommPath</c>: it was used.</summary>
+    internal const string CommPathInvalidHint =
+        "check the comm path (slot and port) and that the controller is reachable; the SDK could not route it";
+
+    /// <summary>Warning added to a connect result when <c>path</c> is passed with <c>backend="sdk"</c>.</summary>
+    internal const string PathUnusedBySdkWarning =
+        "path is a CIP backplane path and is not used by the sdk backend; the SDK uses sdkCommPath";
+#endif
+
     /// <summary>
     /// Disposes the active SDK session, faulted or healthy, through the same seam
     /// <c>logix_close_project</c> uses, so the connect that follows never leaves it open in
-    /// LdSdkServer for the keep-alive reaper (#37). An absent session is left alone. Never throws.
+    /// LdSdkServer for the keep-alive reaper. An absent session is left alone. Never throws.
     /// </summary>
     /// <param name="sessionService">The tag-session singleton.</param>
     /// <returns><c>true</c> when a session was disposed.</returns>
-    internal static bool DisposeOutgoingSdkSession(TagSessionService sessionService)
+    internal static bool DisposeOutgoingSdkSession(TagSessionService sessionService, ProjectService? projectService = null)
     {
         try
         {
             if (CloseProjectHandler.SdkSessionInspector?.Invoke(sessionService) is null)
                 return false;
             CloseProjectHandler.SdkSessionDisposer?.Invoke(sessionService);
+            projectService?.NoteSessionEnded();   // readers' NoProjectLoaded hint names the displaced session
+            ClearUploadRegistration(projectService);
             return true;
         }
         catch
         {
             return false;   // best effort: the connect that follows must still run
         }
+    }
+
+    /// <summary>
+    /// Drops the project an upload registered once its session is gone. Disposing an upload-backed session deletes its
+    /// ACD, so a registration left behind would point at a file that no longer exists. A project opened with
+    /// <c>logix_open_project</c> is never touched. Uses the same <see cref="ProjectService.Clear"/> primitive as
+    /// <c>logix_close_project</c>; the ACD is not kept.
+    /// </summary>
+    /// <param name="projectService">The project singleton, or <c>null</c> to do nothing.</param>
+    private static void ClearUploadRegistration(ProjectService? projectService)
+    {
+        if (projectService is { IsLoaded: true, OpenedExplicitly: false })
+            projectService.Clear();
     }
 
     /// <summary>
@@ -1307,8 +1389,14 @@ public static class ConnectHandler
         Func<string, string, CancellationToken, Task<ITagService>>? cipRouteConnector = null,
         Func<string, CancellationToken, Task<ControllerIdentity>>? cipIdentityReader = null,
         SdkConnectRetryPolicy? sdkConnectRetry = null,
-        Func<TagSessionService, CancellationToken, Task<IReadOnlyList<DoctorZone>>>? pendingZoneReader = null)
+        Func<TagSessionService, CancellationToken, Task<IReadOnlyList<DoctorZone>>>? pendingZoneReader = null,
+        ConnectState? connectState = null)
     {
+        // ── Own connect visible at once ──────────────────────
+        // Mark this instance's connect as started before any pre-work, so a status poll answers
+        // connecting/starting and never falls through to the registry's history of other instances.
+        using var ownConnect = connectState?.BeginOwnConnect(string.IsNullOrWhiteSpace(sdkCommPath) ? path : sdkCommPath);
+
         // ── Command prefixes (LGX_GATE_COMMAND_PREFIXES) ──────────────────────
         // Resolved once, before any connection work. An invalid entry fails the connect with
         // kind 'GateConfigInvalid'; entries are never silently dropped.
@@ -1339,8 +1427,15 @@ public static class ConnectHandler
         // outgoing one (faulted or healthy) before connecting. An abandoned project stays open in
         // LdSdkServer until its keep-alive reaper disposes it, and that reaper crashes the whole service
         // (IOException deleting the project's temp .acd in ReceivedFile.Dispose) — the in-connect SDK
-        // crashes of r9–r12.
-        DisposeOutgoingSdkSession(sessionService);
+        // crashes.
+        // A live session is replaced by this connect (a new upload, ~19 s): name the connect that made it.
+        var stateForSession = connectState ?? sessionService.ConnectState;
+        var replacedSession = sessionService.IsConnected ? stateForSession?.LiveSession : null;
+
+        DisposeOutgoingSdkSession(sessionService, projectService);
+
+        // ── Zone ledger: a connect starts from an empty record of the zones this server published. ──
+        ZoneLedger.ClearAll();
 
         var result = await ExecuteCoreAsync(
             gateway, path, useVirtual, projectService, sessionService, backend, ct,
@@ -1359,8 +1454,15 @@ public static class ConnectHandler
             : [.. connected.Warnings ?? [], .. configWarnings];
         if (discardedWarning is not null)
             warnings = [.. warnings ?? [], discardedWarning];
+        // `path` is the CIP backplane path; only the CIP probe reads it. Under the sdk backend the SDK uses
+        // commPath, so say the argument had no effect rather than silently ignoring it. No refusal.
+#if LOGIX_SDK
+        if (string.Equals(backend?.Trim(), "sdk", StringComparison.OrdinalIgnoreCase)
+            && !string.IsNullOrWhiteSpace(path))
+            warnings = [.. warnings ?? [], PathUnusedBySdkWarning];
+#endif
 
-        // ── Rung edits the previous server never finished (logix-mcp-qpqy.4) ──
+        // ── Rung edits the previous server never finished ──
         // A "sending" rung_edit intent line with no outcome line means the server stopped mid-import. When the
         // routine now has a pending zone, the import reached the controller: record an "orphaned" line and warn.
         var orphanedWarning = await OrphanedRungEditWarningAsync(
@@ -1370,10 +1472,18 @@ public static class ConnectHandler
         int? staleCopiesRemoved = null;
         try { staleCopiesRemoved = StaleOfflineCopyCleaner?.Invoke(); }
         catch { /* best effort: a cleanup failure never fails a connect */ }
+        int? staleSlotsRemoved = null;
+        try { staleSlotsRemoved = StaleUploadSlotCleaner?.Invoke(); }
+        catch { /* best effort: a cleanup failure never fails a connect */ }
         var unparsed = (sessionService.Service as GatedTagService)?.Policy.Unparsed;
+        var replacedNote = replacedSession is null ? null
+            : $"This connect replaced the live session from connect {replacedSession.ConnectId} " +
+              $"(connected {replacedSession.ConnectedAt.UtcDateTime:yyyy-MM-ddTHH:mm:ssZ}); that session was closed.";
         connected = connected with
         {
             StaleOfflineCopiesRemoved = staleCopiesRemoved,
+            StaleUploadSlotsRemoved   = staleSlotsRemoved,
+            ReplacedSession       = replacedSession,
             CommandPrefixes       = gateConfig.CommandPrefixesWire,
             CommandPrefixesSource = gateConfig.CommandPrefixesSource,
             UnparsedContentCount  = unparsed?.Count,
@@ -1382,13 +1492,16 @@ public static class ConnectHandler
                 : null,
             UnparsedRungs         = unparsed is { Count: > 0 } ? UnparsedContent.RungsOf(unparsed) : null,
             Warnings              = warnings,
-            Message               = configWarnings is null && discardedWarning is null && orphanedWarning is null
-                ? connected.Message
-                : connected.Message + " Warning: " +
+            Message               = (replacedNote is null ? connected.Message : connected.Message + " " + replacedNote)
+                + (configWarnings is null && discardedWarning is null && orphanedWarning is null
+                ? ""
+                : " Warning: " +
                   string.Join(" ", (configWarnings ?? [])
                       .Concat(discardedWarning is null ? [] : [discardedWarning])
-                      .Concat(orphanedWarning is null ? [] : [orphanedWarning])),
+                      .Concat(orphanedWarning is null ? [] : [orphanedWarning]))),
         };
+        stateForSession?.NoteSessionLive(
+            stateForSession.Current?.ConnectId ?? Guid.NewGuid().ToString("N"), DateTimeOffset.UtcNow);
 
         return allowlist is not null
             ? connected with { AllowlistSha256 = allowlist.Sha256, AllowlistEntries = allowlist.EntryCount }
@@ -1429,7 +1542,13 @@ public static class ConnectHandler
             // Requires an open project to seed the in-memory tag store.
             if (!projectService.IsLoaded)
                 return new ConnectError(
-                    "No project loaded. Call logix_open_project first to use virtual mode.");
+                    "No project loaded. Call logix_open_project first to use virtual mode.")
+                {
+                    Kind = ErrorKinds.NoProjectLoaded,
+                    Hint =
+                        "Call logix_open_project with a path to a project file, then call logix_connect with " +
+                        "useVirtual=true again.",
+                };
 
             var project = projectService.Project!;
 
@@ -1767,9 +1886,7 @@ public static class ConnectHandler
                             "\"EmulateEthernet\\192.0.2.10\" (emulated controller), " +
                             "\"192.0.2.10\" (real controller, direct IP).",
                         Hint:
-                            "Pass the Logix comm path via the sdkCommPath parameter. " +
-                            "The gateway and path parameters use the CIP/libplctag format and " +
-                            "are not accepted by the Logix Designer SDK.")
+                            CommPathInvalidHint)
                     {
                         Retries = uploadRetries.Count > 0 ? uploadRetries : null,
                     };
@@ -2104,13 +2221,32 @@ public static class ConnectHandler
                     "To use backend='sdk' without a project file, call logix_connect " +
                     "with sdkMode='online' and a gateway or sdkCommPath — the controller's " +
                     "project will be uploaded automatically. " +
-                    "Alternatively, call logix_open_project first to load a project file.");
+                    "Alternatively, call logix_open_project first to load a project file.")
+                {
+                    Kind = ErrorKinds.NoProjectLoaded,
+                    Hint =
+                        "Call logix_connect with backend='sdk', sdkMode='online' and sdkCommPath or gateway to " +
+                        "upload the controller's project, or call logix_open_project with a path to a project file.",
+                };
             }
 
             if (projectService.FilePath is null)
                 return new ConnectError(
                     "Project file path is unavailable. " +
                     "Re-open the project via logix_open_project to use backend='sdk'.");
+
+            // A registration left by an upload whose session closed names an ACD that was deleted with it.
+            if (!File.Exists(projectService.FilePath))
+                return new ConnectProjectFileMissingError(
+                    Error:
+                        $"The registered project file '{projectService.FilePath}' no longer exists on disk, " +
+                        "so there is nothing to open an SDK session against.",
+                    Kind: ErrorKinds.ProjectFileMissing,
+                    Hint:
+                        $"The project file '{projectService.FilePath}' is missing: the upload copy was removed " +
+                        "when its session closed. Call logix_connect with sdkMode='online' and a commPath " +
+                        "(sdkCommPath or gateway) to upload it again, or call logix_open_project with a path " +
+                        "to a project file.");
 
             // A partial export derives no write gate, so it cannot back a live SDK session.
             if (sdkIsOnlineForRouting && projectService.PartialExport is not null)
@@ -2275,7 +2411,13 @@ public static class ConnectHandler
             // Backed by L5XOfflineTagService against the open L5X project.
             if (!projectService.IsLoaded)
                 return new ConnectError(
-                    "No project loaded. Call logix_open_project first to use backend='l5x'.");
+                    "No project loaded. Call logix_open_project first to use backend='l5x'.")
+                {
+                    Kind = ErrorKinds.NoProjectLoaded,
+                    Hint =
+                        "Call logix_open_project with a path to an L5X project file, then call logix_connect with " +
+                        "backend='l5x' again.",
+                };
 
             var project = projectService.Project!;
             var l5xSvc  = new L5XOfflineTagService(project);

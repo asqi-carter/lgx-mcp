@@ -1,18 +1,79 @@
 using System.Runtime.CompilerServices;
+using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 using System.Xml.Linq;
 using L5Sharp.Core;
+
+/// <summary>One program of a <see cref="ControllerFingerprint"/>.</summary>
+/// <param name="Program">Program name.</param>
+/// <param name="TestEdits">The program's <c>TestEdits</c> attribute, or <c>null</c> when absent or unreadable.</param>
+/// <param name="Routines">Rung count per routine name (case-insensitive); a routine that is not ladder logic counts 0.</param>
+public sealed record ProgramFingerprint(string Program, bool? TestEdits, IReadOnlyDictionary<string, int> Routines);
+
+/// <summary>
+/// A cheap summary of the controller used to notice changes made outside this session: for each program its
+/// routine names, rung count per routine and <c>TestEdits</c>, plus the controller's name and serial.
+/// </summary>
+/// <param name="Identity">Controller name and serial as the source reports them, or <c>null</c> when it reports none.</param>
+/// <param name="Programs">The programs.</param>
+public sealed record ControllerFingerprint(ControllerIdentity? Identity, IReadOnlyList<ProgramFingerprint> Programs)
+{
+    /// <summary>Builds the fingerprint of an L5X document: a full image or any export that carries <c>&lt;Program&gt;</c> elements.</summary>
+    /// <param name="l5x">L5X text.</param>
+    /// <returns>The fingerprint.</returns>
+    public static ControllerFingerprint FromL5x(string l5x)
+    {
+        var doc        = SafeXml.ParseDocument(l5x);
+        var controller = doc.Descendants("Controller").FirstOrDefault();
+        var identity   = controller is null ? null
+            : new ControllerIdentity((string?)controller.Attribute("Name"), ControllerIdentity.ParseSerial((string?)controller.Attribute("ProjectSN")));
+        var programs = doc.Descendants("Program")
+            .Select(p => new ProgramFingerprint(
+                (string?)p.Attribute("Name") ?? "",
+                bool.TryParse(((string?)p.Attribute("TestEdits"))?.Trim(), out var t) ? t : null,
+                p.Descendants("Routine")
+                    .GroupBy(r => (string?)r.Attribute("Name") ?? "", StringComparer.OrdinalIgnoreCase)
+                    .ToDictionary(g => g.Key, g => g.First().Element("RLLContent")?.Elements("Rung").Count() ?? 0, StringComparer.OrdinalIgnoreCase)))
+            .ToList();
+        return new ControllerFingerprint(identity, programs);
+    }
+}
+
+/// <summary>Why the session's controller is no longer the one it connected to.</summary>
+/// <param name="Message">What changed: the name/serial before and after, or "project re-downloaded".</param>
+/// <param name="Before">Identity the session connected to, as text; <c>null</c> for a re-download.</param>
+/// <param name="After">Identity the controller reports now, as text; <c>null</c> for a re-download.</param>
+public sealed record ControllerChangeInfo(string Message, string? Before, string? After);
+
+/// <summary>Structured <see cref="ErrorKinds.ControllerChanged"/> error returned by image readers.</summary>
+/// <param name="Error">Human-readable message.</param>
+/// <param name="Kind"><see cref="ErrorKinds.ControllerChanged"/>.</param>
+/// <param name="Hint">What to do next.</param>
+/// <param name="Before">Identity before; omitted for a re-download.</param>
+/// <param name="After">Identity after; omitted for a re-download.</param>
+public sealed record ControllerChangedError(
+    [property: JsonPropertyName("error")] string Error,
+    [property: JsonPropertyName("kind")]  string Kind = ErrorKinds.ControllerChanged,
+    [property: JsonPropertyName("hint")]  string Hint = AnalysisImage.ControllerChangedHint,
+    [property: JsonPropertyName("before"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Before = null,
+    [property: JsonPropertyName("after"),  JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? After = null);
 
 /// <summary>A pending rung that writes an analysed tag but was left out because <c>includePending</c> is false.</summary>
 /// <param name="Program">Program holding the rung.</param>
 /// <param name="Routine">Routine holding the rung.</param>
 /// <param name="RungIndex">Rung number in the session image (the pending rung's own index).</param>
 /// <param name="Tag">The analysed tag the rung writes.</param>
+/// <param name="State">
+/// <c>staged</c> (held on the workstation, not yet sent to the controller), <c>pending</c> (an untested or
+/// not-known-tested edit on the controller) or <c>tested</c> (a tested edit, executing on the controller).
+/// </param>
 public sealed record PendingWriter(
     [property: JsonPropertyName("program")]   string Program,
     [property: JsonPropertyName("routine")]   string Routine,
     [property: JsonPropertyName("rungIndex")] int    RungIndex,
-    [property: JsonPropertyName("tag")]       string Tag);
+    [property: JsonPropertyName("tag")]       string Tag,
+    [property: JsonPropertyName("state")]     string State = AnalysisImage.StatePending);
 
 /// <summary>
 /// Chooses which controller image the static analysis tools (<c>logix_cross_reference</c>,
@@ -21,6 +82,22 @@ public sealed record PendingWriter(
 /// </summary>
 internal static class AnalysisImage
 {
+    /// <summary>Hint of the <see cref="ErrorKinds.ControllerChanged"/> error.</summary>
+    internal const string ControllerChangedHint =
+        "call logix_connect again; staged rungs of this session are discarded on reconnect";
+
+    /// <summary>Name of the result field that reports a refresh forced by an out-of-band change.</summary>
+    internal const string RefreshedBecauseField = "imageRefreshedBecause";
+
+    /// <summary>A rung held on the workstation that the controller does not have.</summary>
+    internal const string StateStaged = "staged";
+
+    /// <summary>A pending edit on the controller that is untested or not known to be tested.</summary>
+    internal const string StatePending = "pending";
+
+    /// <summary>A tested edit: its logic executes on the controller.</summary>
+    internal const string StateTested = "tested";
+
     /// <summary>Note reported when a tag is on the controller but missing from the project file.</summary>
     internal const string FileOlderNote =
         "project file is older than the controller: this tag exists on the controller but not in the loaded project file. " +
@@ -73,7 +150,7 @@ internal static class AnalysisImage
         if (usesImage && SessionImageState.StalenessOf(session) is { } stale)
             imageNote = imageNote is null ? stale.Note : $"{imageNote} {stale.Note}";
         if (include && image is not null)
-            return new Selection(image, ProjectSourceLabel.SessionImage, null, imageNote);
+            return new Selection(ControllerImageRefresh.PendingApplied(image), ProjectSourceLabel.SessionImage, null, imageNote);
         // Pending rungs are left out of everything below; keep them so a pending writer is reported, not hidden.
         // The accepted image is the session image itself when nothing is pending, so that case needs no scan.
         var pending = image is not null && !ReferenceEquals(accepted, image) ? ControllerImageRefresh.PendingOnly(image) : null;
@@ -87,15 +164,115 @@ internal static class AnalysisImage
     }
 
     /// <summary>
-    /// Refreshes the session's controller image when this session changed the controller since it was taken, so the
-    /// analysis that follows sees the change. A failed refresh is not fatal: the result then carries the stale note.
+    /// Brings the session's controller image up to date before a read: first notices changes made outside this session
+    /// (the controller fingerprint, probed at most once per <see cref="TagSessionService.ImageFingerprintTtl"/>), then
+    /// refreshes the stale programs, whether this session or another party changed them. A failed refresh is not fatal:
+    /// the result then carries the stale note.
     /// </summary>
     /// <param name="session">Tag session, or <c>null</c>.</param>
     /// <param name="ct">Cancellation token.</param>
-    internal static async System.Threading.Tasks.Task PrepareAsync(TagSessionService? session, CancellationToken ct = default)
+    /// <param name="forceProbe"><c>true</c> to probe the fingerprint regardless of the TTL (<c>logix_diff_against_controller</c>).</param>
+    /// <returns>
+    /// <see cref="TagSessionService.OutOfBandReason"/> when a refresh forced by an out-of-band change has not been reported
+    /// yet (the caller puts it on its result as <c>imageRefreshedBecause</c>), otherwise <c>null</c>.
+    /// </returns>
+    internal static async System.Threading.Tasks.Task<string?> PrepareAsync(
+        TagSessionService? session, CancellationToken ct = default, bool forceProbe = false)
     {
-        if (session is { IsImageStale: true })
+        if (session is null) return null;
+        await session.CheckControllerFingerprintAsync(forceProbe, ct).ConfigureAwait(false);
+        // A changed controller is not refreshed: the image is no longer this controller's, and readers refuse.
+        if (session.ControllerChange is null && session.IsImageStale)
             await session.RefreshControllerImageAsync(ct).ConfigureAwait(false);
+        return session.TakeImageRefreshedBecause();
+    }
+
+    /// <summary>
+    /// The <see cref="ErrorKinds.ControllerChanged"/> error for a session whose controller changed, or <c>null</c>.
+    /// </summary>
+    /// <param name="session">Tag session, or <c>null</c>.</param>
+    internal static ControllerChangedError? ChangedErrorOf(TagSessionService? session) =>
+        session?.ControllerChange is { } c ? new ControllerChangedError($"The controller changed outside this session: {c.Message}.", Before: c.Before, After: c.After) : null;
+
+    /// <summary>
+    /// Runs an image read: prepares the image (<see cref="PrepareAsync"/>), refuses with
+    /// <see cref="ErrorKinds.ControllerChanged"/> when the controller is no longer the one the session connected to, and
+    /// otherwise stamps <c>imageRefreshedBecause</c> on the read's JSON result when this read followed an out-of-band refresh.
+    /// </summary>
+    /// <param name="session">Tag session, or <c>null</c>.</param>
+    /// <param name="read">The read; returns the serialized result.</param>
+    /// <param name="forceProbe"><c>true</c> to probe regardless of the TTL.</param>
+    /// <param name="ct">Cancellation token.</param>
+    internal static async System.Threading.Tasks.Task<string> ReadAsync(
+        TagSessionService? session, Func<string> read, bool forceProbe = false, CancellationToken ct = default)
+    {
+        var because = await PrepareAsync(session, ct, forceProbe).ConfigureAwait(false);
+        if (ChangedErrorOf(session) is { } changed) return JsonSerializer.Serialize(changed);
+        return StampRefreshed(read(), because);
+    }
+
+    /// <summary>Adds <c>imageRefreshedBecause</c> to a JSON object result; returns <paramref name="json"/> unchanged when there is no reason or it is not an object.</summary>
+    /// <param name="json">The serialized result.</param>
+    /// <param name="because">The reason from <see cref="PrepareAsync"/>, or <c>null</c>.</param>
+    internal static string StampRefreshed(string json, string? because)
+    {
+        if (because is null) return json;
+        try
+        {
+            if (JsonNode.Parse(json) is not JsonObject obj) return json;
+            obj[RefreshedBecauseField] = because;
+            return obj.ToJsonString();
+        }
+        catch (JsonException) { return json; }
+    }
+
+    /// <summary>What <see cref="Compare"/> found.</summary>
+    /// <param name="Change">Set when the controller is a different one or was re-downloaded.</param>
+    /// <param name="ChangedPrograms">Programs whose routine set, rung counts or <c>TestEdits</c> differ from the image.</param>
+    internal sealed record FingerprintComparison(ControllerChangeInfo? Change, IReadOnlyList<string> ChangedPrograms);
+
+    /// <summary>
+    /// Compares the controller's fingerprint with the image's. A different name or serial (where both sides report one) or
+    /// a program or routine the image holds that the controller lacks (a re-download) is a <see cref="FingerprintComparison.Change"/>;
+    /// otherwise each program whose routine names, rung counts or <c>TestEdits</c> differ is changed.
+    /// </summary>
+    /// <param name="image">Fingerprint of the session image.</param>
+    /// <param name="now">Fingerprint the controller reports now.</param>
+    /// <param name="skipProgram">Programs the comparison leaves out (already waiting for a refresh).</param>
+    internal static FingerprintComparison Compare(ControllerFingerprint image, ControllerFingerprint now, Func<string, bool> skipProgram)
+    {
+        static string Describe(ControllerIdentity? i) =>
+            i is null ? "unknown" : $"'{i.Name ?? "n/a"}' (serial {(i.Serial is { } s ? $"0x{s:X8}" : "n/a")})";
+
+        if (image.Identity is { } before && now.Identity is { } after &&
+            ((before.Name is { } bn && after.Name is { } an && !string.Equals(bn, an, StringComparison.OrdinalIgnoreCase)) ||
+             (before.Serial is { } bs && after.Serial is { } asr && bs != asr)))
+            return new FingerprintComparison(
+                new ControllerChangeInfo($"was {Describe(before)}, now {Describe(after)}", Describe(before), Describe(after)), []);
+
+        var current = now.Programs.ToDictionary(p => p.Program, StringComparer.OrdinalIgnoreCase);
+        foreach (var held in image.Programs)
+        {
+            if (skipProgram(held.Program)) continue;
+            if (!current.TryGetValue(held.Program, out var there))
+                return new FingerprintComparison(new ControllerChangeInfo($"project re-downloaded (program '{held.Program}' is gone)", null, null), []);
+            var lost = held.Routines.Keys.FirstOrDefault(r => !there.Routines.ContainsKey(r));
+            if (lost is not null)
+                return new FingerprintComparison(new ControllerChangeInfo($"project re-downloaded (routine '{held.Program}/{lost}' is gone)", null, null), []);
+        }
+
+        var heldByName = image.Programs.ToDictionary(p => p.Program, StringComparer.OrdinalIgnoreCase);
+        var changed = new List<string>();
+        foreach (var program in now.Programs)
+        {
+            if (skipProgram(program.Program)) continue;
+            if (!heldByName.TryGetValue(program.Program, out var held) ||
+                held.Routines.Count != program.Routines.Count ||
+                program.Routines.Any(r => !held.Routines.TryGetValue(r.Key, out var rungs) || rungs != r.Value) ||
+                (held.TestEdits is { } ht && program.TestEdits is { } nt && ht != nt))
+                changed.Add(program.Program);
+        }
+        return new FingerprintComparison(null, changed);
     }
 
     /// <summary>
@@ -135,86 +312,145 @@ internal static class AnalysisImage
     /// the same matching it uses for accepted logic, so both sides apply one rule.
     /// </param>
     /// <returns>The pending writers, in program/routine/rung order.</returns>
-    internal static IReadOnlyList<PendingWriter> PendingWriters(Selection selection, Func<L5X, IEnumerable<PendingWriter>> find) =>
-        selection.PendingImage is { } pending
-            ? find(pending).DistinctBy(w => (w.Program, w.Routine, w.RungIndex, w.Tag)).ToList()
-            : Array.Empty<PendingWriter>();
-
-    /// <summary>"1 pending rung (Main rung 2)" / "2 pending rungs (Main rung 2, Main rung 3)".</summary>
-    /// <param name="writers">The pending writers.</param>
-    internal static string DescribePending(IReadOnlyList<PendingWriter> writers)
+    internal static IReadOnlyList<PendingWriter> PendingWriters(
+        Selection selection, Func<L5X, IEnumerable<PendingWriter>> find, Func<string, bool?>? zoneTested = null)
     {
-        var where = string.Join(", ", writers.Select(w => $"{w.Routine} rung {w.RungIndex}").Distinct());
-        var count = writers.Select(w => (w.Program, w.Routine, w.RungIndex)).Distinct().Count();
-        return $"{count} pending rung{(count == 1 ? "" : "s")} ({where})";
+        if (selection.PendingImage is not { } pending) return Array.Empty<PendingWriter>();
+        var root = pending.Content.Serialize();
+        return find(pending)
+            .Select(w => w with { State = StateOfRung(root, w, zoneTested) })
+            .DistinctBy(w => (w.Program, w.Routine, w.RungIndex, w.Tag))
+            .ToList();
     }
 
     /// <summary>
-    /// Message for a tag no accepted rung writes while pending rungs do:
+    /// The state word of a pending-only rung: <c>e</c> and <c>er</c> rungs are <c>staged</c>; an <c>I</c> or <c>IR</c> rung
+    /// is <c>tested</c> when its program's zone is known to be tested and <c>pending</c> otherwise (the export marks a
+    /// tested and an untested zone alike).
+    /// </summary>
+    private static string StateOfRung(System.Xml.Linq.XElement root, PendingWriter writer, Func<string, bool?>? zoneTested)
+    {
+        var rung = root.Descendants("Program")
+            .Where(p => string.Equals((string?)p.Attribute("Name"), writer.Program, StringComparison.OrdinalIgnoreCase))
+            .Descendants("Routine")
+            .Where(r => string.Equals((string?)r.Attribute("Name"), writer.Routine, StringComparison.OrdinalIgnoreCase))
+            .Descendants("Rung")
+            .FirstOrDefault(r => (string?)r.Attribute("Number") == writer.RungIndex.ToString());
+        return ((string?)rung?.Attribute("Type")) switch
+        {
+            "e" or "er" => StateStaged,
+            _ => zoneTested?.Invoke(writer.Program) == true ? StateTested : StatePending,
+        };
+    }
+
+    /// <summary>
+    /// "1 staged rung (Main rung 2; not yet sent to the controller)", "1 pending rung (Main rung 2)",
+    /// "1 tested rung (Main rung 2; executing)"; writers in more than one state are joined with " and ".
+    /// </summary>
+    /// <param name="writers">The pending writers.</param>
+    internal static string DescribePending(IReadOnlyList<PendingWriter> writers)
+    {
+        var parts = new List<string>();
+        foreach (var state in new[] { StateStaged, StatePending, StateTested })
+        {
+            var group = writers.Where(w => w.State == state).ToList();
+            if (group.Count == 0) continue;
+            var where = string.Join(", ", group.Select(w => $"{w.Routine} rung {w.RungIndex}").Distinct());
+            var count = group.Select(w => (w.Program, w.Routine, w.RungIndex)).Distinct().Count();
+            var tail  = state switch
+            {
+                StateStaged => "; not yet sent to the controller",
+                StateTested => "; executing",
+                _           => "",
+            };
+            parts.Add($"{count} {state} rung{(count == 1 ? "" : "s")} ({where}{tail})");
+        }
+        return string.Join(" and ", parts);
+    }
+
+    private static int DistinctRungs(IReadOnlyList<PendingWriter> writers) =>
+        writers.Select(w => (w.Program, w.Routine, w.RungIndex)).Distinct().Count();
+
+    /// <summary>
+    /// Message for a tag no accepted rung writes while staged, pending or tested rungs do:
     /// "X is not written by any accepted rung; 1 pending rung (Main rung 2) writes it. Pass includePending:true to include it."
     /// </summary>
     /// <param name="subject">How the message names the tag (for example <c>Output tag 'X'</c>).</param>
     /// <param name="writers">The pending writers (non-empty).</param>
     internal static string NotWrittenByAccepted(string subject, IReadOnlyList<PendingWriter> writers)
     {
-        var count = writers.Select(w => (w.Program, w.Routine, w.RungIndex)).Distinct().Count();
+        var count = DistinctRungs(writers);
         return $"{subject} is not written by any accepted rung; {DescribePending(writers)} {(count == 1 ? "writes" : "write")} it. " +
                "Pass includePending:true to include it.";
     }
 
-    /// <summary>Note for a tag that accepted rungs write and pending rungs also write.</summary>
+    /// <summary>Note for a tag that accepted rungs write and staged, pending or tested rungs also write.</summary>
     /// <param name="tag">The tag as the caller named it.</param>
     /// <param name="writers">The pending writers (non-empty).</param>
     internal static string AlsoWrittenByPending(string tag, IReadOnlyList<PendingWriter> writers)
     {
-        var count = writers.Select(w => (w.Program, w.Routine, w.RungIndex)).Distinct().Count();
+        var count = DistinctRungs(writers);
         return $"{DescribePending(writers)} also {(count == 1 ? "writes" : "write")} '{tag}' and {(count == 1 ? "was" : "were")} excluded. " +
                "Pass includePending:true to include it.";
     }
 }
 
+/// <summary>One block of rungs staged on the workstation and not yet published (a bucket of the staged-rung buffer).</summary>
+/// <param name="Program">Program holding the routine.</param>
+/// <param name="Routine">Routine the block is staged into.</param>
+/// <param name="InsertPosition">Rung position the block starts at.</param>
+/// <param name="ReplaceCount">How many existing rungs from <paramref name="InsertPosition"/> the block replaces.</param>
+/// <param name="Rungs">Text of the staged rungs, in order (compared through <c>RungTextComparer.Normalize</c>).</param>
+/// <param name="KeptNormal">
+/// Indices <c>j &lt; ReplaceCount</c> of replacements whose text equals the original rung they displace. Logix keeps
+/// such a rung normal, so a refresh neither stamps it <c>IR</c> nor lets it claim a displaced original. Empty by default.
+/// </param>
+internal sealed record StagedBlock(
+    string Program, string Routine, int InsertPosition, int ReplaceCount, IReadOnlyList<string> Rungs,
+    IReadOnlySet<int>? KeptNormal = null)
+{
+    /// <summary>Replacement indices that stay normal in the session image; never <c>null</c>.</summary>
+    public IReadOnlySet<int> KeptNormal { get; init; } = KeptNormal ?? new HashSet<int>();
+}
+
 /// <summary>
-/// Keeps the session's controller image in step with pending edits this session published, then accepted, assembled or
-/// cancelled through Studio, or marks it stale when it cannot.
+/// Implemented by a controller image source that also knows the rungs this session has staged but not published. A
+/// refresh asks it, so an export that shows a staged rung as plain <c>N</c> does not leave a plain copy in the image.
+/// </summary>
+internal interface IStagedRungSource
+{
+    /// <summary>The blocks currently staged for <paramref name="program"/> (empty when none).</summary>
+    /// <param name="program">Program being refreshed.</param>
+    IReadOnlyList<StagedBlock> StagedBlocks(string program);
+}
+
+/// <summary>
+/// The session image's staleness mark and the re-stamping of workstation-staged blocks. The image itself is
+/// only ever written by <see cref="TagSessionService.RefreshControllerImageAsync"/>, which merges the controller's
+/// export of each stale program and then calls <see cref="ReapplyStaged"/>.
 /// </summary>
 /// <remarks>
 /// <para>
-/// A publish this session made is recorded with its rungs and replace range (<see cref="RecordPublish"/>); the same
-/// merge the staging path uses puts the rungs into the image as pending. On accept or assemble the recorded change set
-/// is applied to the image as accepted logic (pending rungs become ordinary rungs, replaced originals go). On cancel
-/// the routine's rungs are restored to what they were before the publish.
-/// </para>
-/// <para>
-/// When the zone is not one this session published, its rungs do not match the record, or the merge fails, the image is
-/// marked stale instead: every session-image response then carries <c>imageStale</c>, <c>staleSince</c>,
-/// <c>staleReason</c> and the reconnect hint (<see cref="ProjectSourceLabel.Staleness"/>). The mark belongs to the
-/// image it was set on: a reconnect attaches a new session service and takes a new image, which clears it.
+/// When the image cannot be brought in step with the controller, it is marked stale: every session-image response then
+/// carries <c>imageStale</c>, <c>staleSince</c>, <c>staleReason</c> and the reconnect hint
+/// (<see cref="ProjectSourceLabel.Staleness"/>). A failed refresh marks it with the export error; a later successful
+/// refresh clears the mark. The mark belongs to the image it was set on: a reconnect attaches a new session service and
+/// takes a new image, which clears it.
 /// </para>
 /// </remarks>
 internal static class SessionImageState
 {
-    /// <summary>Rung <c>Type</c> codes of rungs a pending zone adds (insert and replacement).</summary>
-    private static readonly HashSet<string> NewRungCodes = new(StringComparer.Ordinal) { "e", "er", "I", "IR" };
-
-    private sealed record Publish(
-        string Program, string Routine, int InsertPosition, int ReplaceCount,
-        IReadOnlyList<string> Rungs, bool AppliedPending, XElement? PreContent, IReadOnlyList<string?>? Comments = null);
-
     private sealed class State
     {
         public object?         Service;
         public DateTimeOffset? TakenAt;
         public DateTimeOffset? StaleSince;
         public string?         StaleReason;
-        public readonly List<Publish> Publishes = new();
-        public readonly HashSet<string> Unfollowed = new(StringComparer.OrdinalIgnoreCase);
 
         public void Reset(object? service, DateTimeOffset? takenAt)
         {
             Service = service; TakenAt = takenAt;
             StaleSince = null; StaleReason = null;
-            Publishes.Clear();
-            Unfollowed.Clear();
         }
     }
 
@@ -257,288 +493,171 @@ internal static class SessionImageState
         }
     }
 
-    /// <summary>
-    /// Records a publish this session made as pending edits, and (by default) merges it into the session image as
-    /// pending rungs: the replaced originals become <c>R</c>/<c>D</c> and the new rungs <c>IR</c>/<c>I</c>.
-    /// </summary>
+    /// <summary>Clears the stale mark on the session's current image (a successful refresh calls this). Does nothing when it is not marked.</summary>
     /// <param name="session">Tag session, or <c>null</c>.</param>
-    /// <param name="program">Program holding the routine.</param>
-    /// <param name="routine">Routine that was published to.</param>
-    /// <param name="insertPosition">Rung position the change starts at.</param>
-    /// <param name="replaceCount">How many existing rungs from <paramref name="insertPosition"/> the change replaces.</param>
-    /// <param name="rungTexts">Neutral text of the new rungs, in order (the first <paramref name="replaceCount"/> replace, the rest insert).</param>
-    /// <param name="applyToImage"><c>false</c> to only record the change set and leave the image alone.</param>
-    /// <param name="rungComments">
-    /// Comment each new rung carries on the controller, parallel to <paramref name="rungTexts"/> (<c>null</c> or an empty
-    /// entry for none). The merge writes them into the image, so the rungs keep their comments on accept.
-    /// <c>null</c> (or a list of another length) means no comments are known and the new rungs carry none.
-    /// </param>
-    /// <returns><c>true</c> when the change set was recorded (and, if asked, merged); otherwise <c>false</c> and nothing changed.</returns>
-    internal static bool RecordPublish(
-        TagSessionService? session, string program, string routine, int insertPosition, int replaceCount,
-        IReadOnlyList<string> rungTexts, bool applyToImage = true, IReadOnlyList<string?>? rungComments = null)
-    {
-        ArgumentNullException.ThrowIfNull(rungTexts);
-        if (insertPosition < 0 || replaceCount < 0 || (rungTexts.Count == 0 && replaceCount == 0)) return false;
-        var comments = rungComments is not null && rungComments.Count == rungTexts.Count ? rungComments.ToList() : null;
-        lock (Gate)
-        {
-            if (Current(session) is not { } state) return false;
-            XElement? pre = null;
-            if (applyToImage)
-            {
-                try
-                {
-                    var doc = SafeXml.ParseDocument(session!.ControllerImage!.ToString());
-                    if (FindContent(doc, program, routine) is not { } content) return false;
-                    pre = new XElement(content);
-                    if (!Splice(content, insertPosition, replaceCount, rungTexts, pending: true, comments)) return false;
-                    Replace(session, doc);
-                }
-                catch (Exception ex) when (ex is not OperationCanceledException) { return false; }
-            }
-            state.Publishes.Add(new Publish(program, routine, insertPosition, replaceCount, rungTexts.ToList(), applyToImage, pre, comments));
-            return true;
-        }
-    }
-
-    /// <summary>
-    /// Notes that this session published pending edits to <paramref name="program"/> in a shape the image cannot follow
-    /// (for example landed rungs that do not start at the reported insert position, or a publish to several routines).
-    /// The next accept, assemble or cancel of that program's zone marks the image stale with that as the reason.
-    /// </summary>
-    /// <param name="session">Tag session, or <c>null</c>.</param>
-    /// <param name="program">Program the unrecorded publish went to.</param>
-    internal static void RecordUnfollowedPublish(TagSessionService? session, string program)
+    internal static void ClearStale(TagSessionService? session)
     {
         lock (Gate)
         {
             if (Current(session) is not { } state) return;
-            state.Unfollowed.Add(program);
+            state.StaleSince  = null;
+            state.StaleReason = null;
         }
     }
 
-    /// <summary>A routine of the pending zone and the pending rungs (type code, text) it holds.</summary>
+    /// <summary>
+    /// Stamps this session's workstation-staged blocks for <paramref name="program"/> onto a freshly merged export of it.
+    /// A workstation-staged replace or insert can come back from the export as plain <c>N</c> rungs; each staged new rung
+    /// the export shows as <c>N</c> is stamped <c>IR</c> (replacement) or <c>I</c> (insert), and the originals it
+    /// displaces are stamped <c>R</c> or <c>D</c>, so the accepted view never holds a plain copy of a staged rung.
+    /// </summary>
+    /// <param name="session">Tag session, or <c>null</c> (unused: kept so callers pass the session the image belongs to).</param>
+    /// <param name="image">The refreshed image, after the program's export was merged into it. It is not modified.</param>
+    /// <param name="program">Program that was merged.</param>
+    /// <param name="staged">The blocks currently staged for the program, or <c>null</c> for none.</param>
+    /// <returns>A stamped copy of <paramref name="image"/>, or <paramref name="image"/> itself when nothing was stamped.</returns>
+    /// <remarks>
+    /// Rungs are matched by <see cref="RungTextComparer.Normalize"/>. Only rungs the export shows as <c>N</c> are touched,
+    /// each at most once; a rung that matches no staged block is left as exported. Any failure leaves the image as exported.
+    /// </remarks>
+    internal static L5X ReapplyStaged(
+        TagSessionService? session, L5X image, string program, IReadOnlyList<StagedBlock>? staged = null)
+    {
+        ArgumentNullException.ThrowIfNull(image);
+        var blocks = (staged ?? []).Where(b => Same(b.Program, program) && b.Rungs.Count > 0).ToList();
+        if (blocks.Count == 0) return image;
+        try
+        {
+            var doc     = SafeXml.ParseDocument(image.ToString());
+            var changed = false;
+            foreach (var block in blocks)
+            {
+                if (FindContent(doc, block.Program, block.Routine) is not { } content) continue;
+                changed |= StampStagedBlock(content, block);
+            }
+            return changed ? SafeXml.ToL5x(doc) : image;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException) { return image; }
+    }
+
+    /// <summary>Stamps one staged block in a routine; returns <c>true</c> when any rung changed.</summary>
+    private static bool StampStagedBlock(XElement content, StagedBlock block)
+    {
+        // Replacements identical to the rung they displace stay normal: not stamped, and they claim no original.
+        var keptNormal = block.KeptNormal;
+        var keptCount  = keptNormal is null ? 0
+            : keptNormal.Count(j => j >= 0 && j < block.ReplaceCount && j < block.Rungs.Count);
+        var rungs      = content.Elements("Rung").ToList();
+        var consumed   = new HashSet<XElement>();
+
+        // Index of the first unconsumed plain-N rung with this text at or after 'from', else anywhere.
+        int Find(string text, int from)
+        {
+            var key = RungTextComparer.Normalize(text);
+            for (var pass = 0; pass < 2; pass++)
+                for (var i = pass == 0 ? from : 0; i < rungs.Count; i++)
+                {
+                    if (consumed.Contains(rungs[i]) || !IsPlain(rungs[i])) continue;
+                    if (RungTextComparer.Normalize((string?)rungs[i].Element("Text")) == key) return i;
+                }
+            return -1;
+        }
+
+        var changed  = false;
+        var firstNew = -1;
+        var lastNew  = -1;
+        for (var j = 0; j < block.Rungs.Count; j++)
+        {
+            if (keptNormal is not null && j < block.ReplaceCount && keptNormal.Contains(j)) continue;
+            var at = Find(block.Rungs[j], firstNew >= 0 ? firstNew : 0);
+            if (at < 0) continue;
+            consumed.Add(rungs[at]);
+            rungs[at].SetAttributeValue("Type", j < block.ReplaceCount ? "IR" : "I");
+            if (firstNew < 0) firstNew = at;
+            lastNew = Math.Max(lastNew, at);
+            changed = true;
+        }
+        if (firstNew < 0) return changed;
+
+        // A staged block has no recorded originals: the plain rungs right after it are the ones it displaces.
+        // Kept-normal replacements displace nothing: only the stamped replacements claim an original.
+        var stampedReplacements = Math.Min(block.ReplaceCount, block.Rungs.Count) - keptCount;
+        for (var k = 0; k < block.ReplaceCount - keptCount && lastNew + 1 + k < rungs.Count; k++)
+        {
+            var original = rungs[lastNew + 1 + k];
+            if (consumed.Contains(original) || !IsPlain(original)) break;
+            original.SetAttributeValue("Type", k < stampedReplacements ? "R" : "D");
+            changed = true;
+        }
+        return changed;
+    }
+
+    /// <summary>A rung the export shows as ordinary logic: <c>N</c> or no <c>Type</c>.</summary>
+    private static bool IsPlain(XElement rung) => ((string?)rung.Attribute("Type")) is null or "N";
+
+    /// <summary>A routine of the program as the controller exports it, with every rung (raw <c>Type</c>, text).</summary>
     /// <param name="Routine">Routine name.</param>
-    /// <param name="Rungs">The routine's pending rungs as <c>logix_pending_edits</c> reports them.</param>
+    /// <param name="Rungs">The routine's rungs as <c>logix_pending_edits</c> read them.</param>
     internal sealed record ZoneRoutine(string Routine, IReadOnlyList<(string Type, string Text)> Rungs);
 
+    /// <summary>What <see cref="Reconcile"/> did for one program.</summary>
+    /// <param name="Program">Program whose zone the image did not show.</param>
+    /// <param name="Routines">The routines whose exported rungs differ from the image.</param>
+    /// <param name="Outcome">Always <c>stale</c>.</param>
+    internal sealed record Reconciliation(string Program, IReadOnlyList<string> Routines, string Outcome);
+
     /// <summary>
-    /// A pending zone of <paramref name="program"/> was accepted or assembled: applies the change sets this session
-    /// published to the image when they are exactly what the zone held, otherwise marks the image stale.
+    /// <c>logix_pending_edits</c> observed <paramref name="program"/>: when the export shows a pending zone that the
+    /// session image does not hold (a zone in a program this session did not publish to, or one another process changed),
+    /// marks the image stale with "pending edits of &lt;program&gt; were resolved outside lgx-mcp". The caller marks the
+    /// program for refresh; the next successful <see cref="TagSessionService.RefreshControllerImageAsync"/> clears the mark.
     /// </summary>
     /// <param name="session">Tag session, or <c>null</c>.</param>
-    /// <param name="program">Program whose zone was accepted.</param>
-    /// <param name="zone">The routines that held pending edits before the gesture, or <c>null</c> when that is not known.</param>
-    /// <param name="what">The gesture, for the stale reason (for example <c>accepted</c>).</param>
-    internal static void OnAccepted(TagSessionService? session, string program, IReadOnlyList<ZoneRoutine>? zone, string what)
+    /// <param name="program">Program that was read.</param>
+    /// <param name="exported">The program's routines as exported just now: every rung (raw <c>Type</c>, text).</param>
+    /// <returns>What was done, or <c>null</c> when the export shows no zone or the image already holds it.</returns>
+    internal static Reconciliation? Reconcile(
+        TagSessionService? session, string program, IReadOnlyList<ZoneRoutine> exported)
     {
+        ArgumentNullException.ThrowIfNull(exported);
         lock (Gate)
         {
-            if (Current(session) is not { } state) return;
-            var records = TakeRecords(state, program);
-            var reason  = state.Unfollowed.Remove(program)
-                ? UnfollowedReason(program, what)
-                : TryAccept(session!, program, zone, records, what);
-            if (reason is not null) MarkStaleLocked(state, reason);
+            if (Current(session) is not { } state) return null;
+            if (!exported.Any(e => e.Rungs.Any(r => !IsNormalType(r.Type)))) return null;   // no zone on the controller
+
+            XDocument doc;
+            try { doc = SafeXml.ParseDocument(session!.ControllerImage!.ToString()); }
+            catch (Exception ex) when (ex is not OperationCanceledException) { return null; }
+
+            var differing = exported
+                .Where(e => !ImageHolds(doc, program, e))
+                .Select(e => e.Routine)
+                .ToList();
+            if (differing.Count == 0) return null;
+
+            state.StaleSince  ??= DateTimeOffset.UtcNow;
+            state.StaleReason ??= $"pending edits of {program} were resolved outside lgx-mcp";
+            return new Reconciliation(program, differing, "stale");
         }
     }
 
-    /// <summary>
-    /// A pending zone of <paramref name="program"/> was cancelled: restores each routine this session published to
-    /// to its rungs from before the publish when the image was changed for it, otherwise marks the image stale.
-    /// </summary>
-    /// <param name="session">Tag session, or <c>null</c>.</param>
-    /// <param name="program">Program whose zone was cancelled.</param>
-    /// <param name="zone">The routines that held pending edits before the gesture, or <c>null</c> when that is not known.</param>
-    internal static void OnCancelled(TagSessionService? session, string program, IReadOnlyList<ZoneRoutine>? zone)
+    /// <summary>True when the image's routine holds exactly the exported rungs (same <c>Type</c> codes, same text).</summary>
+    private static bool ImageHolds(XDocument doc, string program, ZoneRoutine exported)
     {
-        lock (Gate)
-        {
-            if (Current(session) is not { } state) return;
-            var records = TakeRecords(state, program);
-            var reason  = state.Unfollowed.Remove(program)
-                ? UnfollowedReason(program, "cancelled")
-                : TryCancel(session!, program, zone, records);
-            if (reason is not null) MarkStaleLocked(state, reason);
-        }
+        if (FindContent(doc, program, exported.Routine) is not { } content) return false;
+        var have = content.Elements("Rung").Select(r => (IsPlain(r) ? "N" : (string)r.Attribute("Type")!, RungText(r))).ToList();
+        var want = exported.Rungs.Select(r => (IsNormalType(r.Type) ? "N" : r.Type, r.Text)).ToList();
+        return have.Count == want.Count && have.Zip(want).All(p => p.First.Item1 == p.Second.Item1 && RungTextComparer.Matches(p.First.Item2, p.Second.Item2));
     }
 
-    private static string UnfollowedReason(string program, string what) =>
-        $"{what} pending edits in program '{program}' that this session published in a shape the session image cannot " +
-        "follow (the landed rungs are not one block starting at the reported insert position, or span several routines); " +
-        "the session image was not updated";
+    private static string RungText(XElement rung) => rung.Element("Text")?.Value ?? "";
 
-    private static void MarkStaleLocked(State state, string reason)
-    {
-        state.StaleSince  ??= DateTimeOffset.UtcNow;
-        state.StaleReason ??= reason;
-    }
-
-    private static List<Publish> TakeRecords(State state, string program)
-    {
-        var records = state.Publishes.Where(p => Same(p.Program, program)).ToList();
-        state.Publishes.RemoveAll(p => Same(p.Program, program));
-        return records;
-    }
-
-    private static string? TryAccept(
-        TagSessionService session, string program, IReadOnlyList<ZoneRoutine>? zone, List<Publish> records, string what)
-    {
-        string NotKnown(string why) =>
-            $"{what} pending edits in program '{program}' that this session did not publish with known rungs ({why}); " +
-            "the session image was not updated";
-
-        if (zone is null) return NotKnown("the program's pending zone could not be read");
-        if (records.Count == 0) return NotKnown("no publish by this session is recorded");
-
-        // The zone must be exactly what this session published: same routines, same new rungs.
-        var recorded = records.Select(r => r.Routine).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
-        var inZone   = zone.Select(z => z.Routine).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
-        if (recorded.Count != inZone.Count || recorded.Any(r => !inZone.Contains(r, StringComparer.OrdinalIgnoreCase)))
-            return NotKnown($"the zone holds routines {string.Join(", ", inZone)} but this session published to {string.Join(", ", recorded)}");
-        foreach (var routine in recorded)
-        {
-            var want = records.Where(r => Same(r.Routine, routine)).SelectMany(r => r.Rungs).Select(Normalise).Order(StringComparer.Ordinal).ToList();
-            var have = zone.Where(z => Same(z.Routine, routine)).SelectMany(z => z.Rungs)
-                .Where(r => NewRungCodes.Contains(r.Type)).Select(r => Normalise(r.Text)).Order(StringComparer.Ordinal).ToList();
-            if (!want.SequenceEqual(have, StringComparer.Ordinal))
-                return NotKnown($"the pending rungs of '{routine}' differ from the ones this session published");
-        }
-
-        try
-        {
-            var doc = SafeXml.ParseDocument(session.ControllerImage!.ToString());
-            foreach (var routine in recorded)
-            {
-                var mine = records.Where(r => Same(r.Routine, routine)).ToList();
-                if (FindContent(doc, program, routine) is not { } content)
-                    return NotKnown($"routine '{routine}' is not in the session image");
-                if (mine.All(r => r.AppliedPending))
-                    AcceptPending(content);
-                else if (mine.All(r => !r.AppliedPending))
-                {
-                    foreach (var r in mine)
-                        if (!Splice(content, r.InsertPosition, r.ReplaceCount, r.Rungs, pending: false, r.Comments))
-                            return NotKnown($"the replace range of '{routine}' is outside the session image");
-                }
-                else return NotKnown($"the publishes to '{routine}' were merged inconsistently");
-            }
-            Replace(session, doc);
-            return null;
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            return NotKnown($"merge failed: {ex.Message}");
-        }
-    }
-
-    private static string? TryCancel(
-        TagSessionService session, string program, IReadOnlyList<ZoneRoutine>? zone, List<Publish> records)
-    {
-        string NotKnown(string why) =>
-            $"cancelled pending edits in program '{program}' ({why}); the session image was not restored";
-
-        if (zone is null) return NotKnown("the program's pending zone could not be read");
-        if (records.Count == 0) return NotKnown("no publish by this session is recorded");
-        if (records.Any(r => r.PreContent is null)) return NotKnown("the session image was not changed for the publish");
-        var recorded = records.Select(r => r.Routine).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
-        if (zone.Any(z => !recorded.Contains(z.Routine, StringComparer.OrdinalIgnoreCase)))
-            return NotKnown("the zone holds edits this session did not publish");
-
-        try
-        {
-            var doc = SafeXml.ParseDocument(session.ControllerImage!.ToString());
-            foreach (var routine in recorded)
-            {
-                // The earliest publish of the routine holds the rungs from before any of them.
-                var first = records.First(r => Same(r.Routine, routine));
-                if (FindContent(doc, program, routine) is not { } content)
-                    return NotKnown($"routine '{routine}' is not in the session image");
-                content.ReplaceWith(new XElement(first.PreContent!));
-            }
-            Replace(session, doc);
-            return null;
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            return NotKnown($"restore failed: {ex.Message}");
-        }
-    }
-
-    /// <summary>Pending rungs become ordinary rungs, replaced and deleted originals go, rungs are renumbered.</summary>
-    private static void AcceptPending(XElement content)
-    {
-        foreach (var rung in content.Elements("Rung").ToList())
-        {
-            var code = (string?)rung.Attribute("Type");
-            if (code is "R" or "D") rung.Remove();
-            else if (code is "I" or "IR") rung.SetAttributeValue("Type", "N");
-        }
-        Renumber(content);
-    }
-
-    /// <summary>
-    /// Applies a change set to a routine's rung list. Pending: the new rungs (<c>IR</c>/<c>I</c>) land AT the insert position and the
-    /// replaced originals follow them, kept as <c>R</c> (or <c>D</c> when nothing replaces them). Not pending: the
-    /// originals go and the new rungs, now ordinary, stay at the insert position. Returns <c>false</c> when the replace range is outside the routine.
-    /// </summary>
-    private static bool Splice(
-        XElement content, int insertPosition, int replaceCount, IReadOnlyList<string> texts, bool pending,
-        IReadOnlyList<string?>? comments = null)
-    {
-        var rungs = content.Elements("Rung").ToList();
-        if (insertPosition + replaceCount > rungs.Count) return false;
-        // Pending, the new block sits in front of the replaced originals; accepted, the originals are gone and the
-        // block sits in front of whatever followed them. Either way it starts at insertPosition.
-        var rangeEnd = insertPosition + replaceCount;
-        var anchorIndex = pending ? insertPosition : rangeEnd;
-        var after = anchorIndex < rungs.Count ? rungs[anchorIndex] : null;
-
-        for (var i = insertPosition; i < insertPosition + replaceCount; i++)
-        {
-            if (pending) rungs[i].SetAttributeValue("Type", i - insertPosition < texts.Count ? "R" : "D");
-            else rungs[i].Remove();
-        }
-
-        var added = texts.Select((t, j) =>
-        {
-            var rung = new XElement("Rung",
-                new XAttribute("Number", 0),
-                new XAttribute("Type", pending ? (j < replaceCount ? "IR" : "I") : "N"));
-            // L5X order: Comment precedes Text. A rung with no comment gets no element, so its comment reads as empty.
-            if (comments is not null && j < comments.Count && !string.IsNullOrEmpty(comments[j]))
-                rung.Add(new XElement("Comment", new XCData(comments[j]!)));
-            rung.Add(new XElement("Text", new XCData(t)));
-            return rung;
-        }).ToList();
-        if (after is not null) after.AddBeforeSelf(added);
-        else content.Add(added);
-        Renumber(content);
-        return true;
-    }
-
-    private static void Renumber(XElement content)
-    {
-        var n = 0;
-        foreach (var rung in content.Elements("Rung")) rung.SetAttributeValue("Number", n++);
-    }
+    private static bool IsNormalType(string? type) => string.IsNullOrEmpty(type) || type == "N";
 
     private static XElement? FindContent(XDocument doc, string program, string routine) =>
         doc.Descendants("Program").FirstOrDefault(p => Same((string?)p.Attribute("Name") ?? "", program))
             ?.Descendants("Routine").FirstOrDefault(r => Same((string?)r.Attribute("Name") ?? "", routine))
             ?.Element("RLLContent");
-
-    /// <summary>Installs the merged document as the session's image, keeping its take time and any pending refresh.</summary>
-    private static void Replace(TagSessionService session, XDocument doc)
-    {
-        var wasStale = session.IsImageStale;
-        var takenAt  = session.ControllerImageTakenAt ?? DateTimeOffset.UtcNow;
-        session.SetControllerImage(SafeXml.ToL5x(doc), takenAt);
-        if (wasStale) session.MarkImageStale();
-    }
-
-    private static string Normalise(string text) => string.Concat(text.Where(c => !char.IsWhiteSpace(c)));
 
     private static bool Same(string a, string b) => string.Equals(a, b, StringComparison.OrdinalIgnoreCase);
 }

@@ -1,7 +1,7 @@
 namespace LogixMcp.Tests;
 
 /// <summary>
-/// Task logix-mcp-rjsr.4: a real Logix export leaves out <c>Usage</c> for ordinary local program
+/// A real Logix export leaves out <c>Usage</c> for ordinary local program
 /// tags, so a tag is reachable from another program only when its Usage is Public, Input or Output. The XML here
 /// has the shape of the real export (synth0161-r4.L5X): <c>XIC(\Line_A.Pump_01_Cmd)</c> in Line_C, where
 /// <c>Pump_01_Cmd</c> has no Usage attribute.

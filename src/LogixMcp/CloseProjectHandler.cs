@@ -151,7 +151,13 @@ public static class CloseProjectHandler
     /// or a <see cref="CloseProjectPendingBatchError"/> — with the project left
     /// loaded — when a staged batch would be silently discarded.
     /// </returns>
-    public static object Execute(ProjectService projectService, TagSessionService tagSessionService)
+    /// <remarks>
+    /// A successful close marks <paramref name="connectState"/> (default: the one the tag session was given) closed, so
+    /// the id-less <c>logix_connect_status</c> answers <c>closed</c>, and notes on <paramref name="projectService"/>
+    /// that a session ended when one existed, so the readers' <c>NoProjectLoaded</c> hint says so.
+    /// </remarks>
+    public static object Execute(
+        ProjectService projectService, TagSessionService tagSessionService, ConnectState? connectState = null)
     {
         ArgumentNullException.ThrowIfNull(projectService);
         ArgumentNullException.ThrowIfNull(tagSessionService);
@@ -196,10 +202,13 @@ public static class CloseProjectHandler
         // sessionInfo being non-null means an active file-backed SDK session was
         // found (whether or not it had pending work, already ruled out above).
         bool sdkSessionDisposed = sessionInfo is not null;
+        bool sessionExisted = sdkSessionDisposed || tagSessionService.Service is not null;
         if (sdkSessionDisposed)
             SdkSessionDisposer?.Invoke(tagSessionService);
 
         projectService.Clear();
+        if (sessionExisted) projectService.NoteSessionEnded();
+        (connectState ?? tagSessionService.ConnectState)?.MarkSessionClosed("closed by logix_close_project");
         tagSessionService.RefreshNoGateReason(projectService);
         AuditLogger.LogProjectClosed(closedPath, sdkSessionDisposed);
 

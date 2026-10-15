@@ -269,4 +269,47 @@ public class PollTagsHandlerTests
 
         Assert.Equal(2.0, result.Cycles[1].Changes.Single(c => c.Tag == "Speed").Current);
     }
+
+    // ── Argument checks and declared-type refusals ─────────────
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    public async Task Poll_CountBelowOne_IsInvalidArguments_NamingCount(int count)
+    {
+        var (session, svc) = ReadTagHandlerTests.TypedSession();
+
+        var err = Assert.IsType<PollError>(
+            await PollTagsHandler.ExecuteAsync(["Plain"], count, 100, session));
+
+        Assert.Equal("InvalidArguments", err.Kind);
+        Assert.StartsWith("count", err.Error);
+        Assert.Empty(svc.Reads);
+    }
+
+    [Fact]
+    public async Task Poll_EmptyTagsList_IsInvalidArguments_NamingTags()
+    {
+        var (session, svc) = ReadTagHandlerTests.TypedSession();
+
+        var err = Assert.IsType<PollError>(await PollTagsHandler.ExecuteAsync([], 1, 100, session));
+
+        Assert.Equal("InvalidArguments", err.Kind);
+        Assert.StartsWith("tags", err.Error);
+        Assert.Empty(svc.Reads);
+    }
+
+    [Fact]
+    public async Task Poll_WholeArrayAndBadIndex_ArePerPathTypedErrors_AndTheRestStillPolls()
+    {
+        var (session, svc) = ReadTagHandlerTests.TypedSession();
+
+        var result = Assert.IsType<PollResult>(
+            await PollTagsHandler.ExecuteAsync(["Arr", "Arr[9]", "Plain"], 1, 100, session));
+
+        var errors = result.Cycles.Single().Errors!;
+        Assert.Equal("StructureReadUnsupported", errors.Single(e => e.Tag == "Arr").Kind);
+        Assert.Equal("IndexOutOfRange", errors.Single(e => e.Tag == "Arr[9]").Kind);
+        Assert.Equal(["Plain"], svc.Reads);
+    }
 }

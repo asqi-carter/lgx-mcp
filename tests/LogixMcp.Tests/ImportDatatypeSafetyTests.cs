@@ -33,7 +33,7 @@ public class ImportDatatypeSafetyTests
     }
 
     private static object Run(string acd, string saveAs, bool overwrite = false,
-        Action<string, string, string, ImportCollisionOption>? sdk = null) =>
+        Func<string, string, string, ImportCollisionOption, IReadOnlyList<string>>? sdk = null) =>
         ImportDatatypeHandler.Execute(
             acdPath: acd, datatypeName: "MotorCmd", l5xPath: null, members: OneMember,
             saveAs: saveAs, service: DemoService(), dryRun: false, confirm: true,
@@ -58,7 +58,7 @@ public class ImportDatatypeSafetyTests
             var destAcd = Path.Combine(dir, "out.ACD");
             File.WriteAllText(destAcd, "PRECIOUS");
             var err2 = Assert.IsType<ImportDatatypeError>(
-                Run(acd, destAcd, sdk: (_, _, _, _) => calls++));
+                Run(acd, destAcd, sdk: (_, _, _, _) => { calls++; return Array.Empty<string>(); }));
             Assert.Equal("TargetExists", err2.Kind);
             Assert.Equal(0, calls);
             Assert.Equal("PRECIOUS", File.ReadAllText(destAcd));
@@ -89,7 +89,7 @@ public class ImportDatatypeSafetyTests
 
             // SDK "succeeds" but produces a fragment-sized file → refused, original intact.
             var err2 = Assert.IsType<ImportDatatypeError>(Run(acd, dest, overwrite: true,
-                sdk: (tmp, _, _, _) => File.WriteAllText(tmp, "tiny")));
+                sdk: (tmp, _, _, _) => { File.WriteAllText(tmp, "tiny"); return Array.Empty<string>(); }));
             Assert.Equal("SavedFileNotAProject", err2.Kind);
             Assert.Equal("PRECIOUS", File.ReadAllText(dest));
 

@@ -1,11 +1,11 @@
-Rung 2 [pending replace, untested: old rung]  Line_A/Edits
+Rung 2 [pending replace: old rung]  Line_A/Edits
 // Old reset rung.
 ║           Fill sequence  ║
 ║            latched on    ║
 ║ Cmd_Reset  Fill_Latch    ║
 ╟────┤ ├─────────(U)───────╢
 
-Rung 3 [pending replace, untested: new rung]  Line_A/Edits
+Rung 3 [pending replace: new rung]  Line_A/Edits
 // New reset rung.
 ║            Guard door                ║
 ║            closed and  Fill sequence ║

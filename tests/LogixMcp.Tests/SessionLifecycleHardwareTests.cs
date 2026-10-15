@@ -1,7 +1,7 @@
-// ── SessionLifecycleHardwareTests — process-level SDK session close (#39, guards #37) ─────
+// ── SessionLifecycleHardwareTests — process-level SDK session close ─────
 //
 // Spawns the real published LogixMcp.exe over stdio and checks that it closes its SDK project on
-// client exit and on reconnect, against a live FactoryTalk Logix Echo controller. #37: a project the
+// client exit and on reconnect, against a live FactoryTalk Logix Echo controller. A project the
 // server abandoned was reaped by LdSdkServer's keep-alive thread, whose unguarded temp-.acd delete
 // crashed the service. The unit tests (SdkServerFaultedTests) cover the code paths; these cover the
 // real process + real SDK end to end.
@@ -15,7 +15,7 @@
 //   set LGX_HW_SESSION=1 && dotnet test --filter FullyQualifiedName~SessionLifecycle
 //
 // Limits: the crash itself needs a slow next upload, so it cannot be forced on demand. These tests
-// check the mechanism (sessions are closed, not abandoned), not crash absence; the #37 A/B (16 → 0
+// check the mechanism (sessions are closed, not abandoned), not crash absence; the A/B (16 → 0
 // crashes) covers that. The Kill test is the control: it proves the others do not pass for free.
 // ──────────────────────────────────────────────────────────────────────────────────────────────
 using System.Diagnostics;

@@ -68,6 +68,13 @@ public class LogixSdkTools
         _projectService    = projectService;
         _tagSessionService = tagSessionService;
         _capabilities      = capabilities;    // null = no capability gate applied
+
+        // Out-of-band change detection: image reads probe the active SDK session's fingerprint through this.
+        // It reads whichever session is active, so a reconnect needs no re-wiring.
+        _tagSessionService.ControllerFingerprintSource ??= async ct =>
+            GetActiveSession(_tagSessionService) is { } active
+                ? await PendingEditsHandler.ReadFingerprintAsync(active, ct).ConfigureAwait(false)
+                : null;
     }
 
     /// <summary>
@@ -241,6 +248,40 @@ public class LogixSdkTools
         foreach (var tag in project.Tags.Concat(project.Programs.SelectMany(p => p.Tags)))
             map[tag.Name] = tag.Serialize().Attribute("ExternalAccess")?.Value ?? "Read/Write";
         return map;
+    }
+
+    /// <summary>
+    /// Data type per tag name (controller- and program-scoped) and the names of every data type and add-on
+    /// instruction the loaded project defines, for the <c>tags[]</c> checks of <c>logix_propose_rung_edit</c>.
+    /// A name declared with different types in different scopes is left out (the check cannot tell which one is meant).
+    /// </summary>
+    private static TagDeclarationCensus BuildTagDeclarationCensus(L5Sharp.Core.L5X project, L5Sharp.Core.L5X? sessionImage = null)
+    {
+        var types = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var ambiguous = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var tag in project.Tags.Concat(project.Programs.SelectMany(p => p.Tags)))
+        {
+            var el   = tag.Serialize();
+            var type = el.Attribute("DataType")?.Value;
+            if (string.IsNullOrWhiteSpace(type)) continue;
+            var dims = el.Attribute("Dimensions")?.Value;
+            var full = string.IsNullOrWhiteSpace(dims) || dims == "0" ? type : $"{type}[{dims}]";
+            if (types.TryGetValue(tag.Name, out var seen) && !string.Equals(seen, full, StringComparison.OrdinalIgnoreCase))
+                ambiguous.Add(tag.Name);
+            types[tag.Name] = full;
+        }
+        foreach (var name in ambiguous) types.Remove(name);
+
+        var defined = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var dt in project.DataTypes) defined.Add(dt.Name);
+        foreach (var aoi in project.AddOnInstructions) defined.Add(aoi.Name);
+        // A type created in this session (logix_import_datatype) is in the controller image before the project file.
+        if (sessionImage is not null)
+        {
+            foreach (var dt in sessionImage.DataTypes) defined.Add(dt.Name);
+            foreach (var aoi in sessionImage.AddOnInstructions) defined.Add(aoi.Name);
+        }
+        return new TagDeclarationCensus(types, defined);
     }
 
     /// <summary>The Add-On Instruction names declared in the loaded project (empty when none is loaded).</summary>
@@ -722,7 +763,8 @@ public class LogixSdkTools
                 preExistingTagNames, ct, confirmedByUser, expectedRungText,
                 rungs, tags, preExistingTagAccess,
                 presetReader: TagRouteResolver.Backend(_tagSessionService.Service),
-                verifyOnStage: verifyOnStage);
+                verifyOnStage: verifyOnStage,
+                tagCensus: _projectService.Project is { } declProject ? BuildTagDeclarationCensus(declProject, _tagSessionService.ControllerImage) : null);
 
             // ── Record session-created tags ────────────────────────────────────
             // When the controller path creates tags, record them in the session
@@ -744,18 +786,18 @@ public class LogixSdkTools
             }
 
             // ── Any rung proposal (stage, replace, publish) changes the session image ──
-            // The next analysis call re-exports the affected program, so includePending sees the staged or
-            // published rung without a reconnect.
+            // The affected program is re-exported at once, so includePending sees the staged or published rung
+            // without a reconnect.
             if (result is ProposeRungEditResult)
+            {
                 _tagSessionService.MarkImageStale(
                     DiffAgainstControllerHandler.RoutineKeyFromXPath(routineXPath)?.Split('/', 2)[0],
                     controllerTags: result is ProposeRungEditResult { TagsCreated: { Count: > 0 } });
-
-            // ── Remember the pending zone this publish made ──
-            // A later accept / assemble / cancel applies it to the session image (or restores the image) instead
-            // of leaving the image without it.
-            if (result is ProposeRungEditResult { Status: "proposed", Finalized: not true } pendingPublish)
-                RecordPendingPublish(pendingPublish);
+                // The export is the only writer of rungs into the image, so refresh before the response returns
+                // and the next read of any kind sees the zone exactly as the SDK exports it. A failed refresh leaves the
+                // image marked stale with the export error (ImageStaleNote); the publish itself is not failed.
+                await _tagSessionService.RefreshControllerImageAsync(ct);
+            }
 
             // ── Mark the session's controller image stale ───────────
             // A live rung edit (Finalized) or a tag created on the controller changes the
@@ -946,13 +988,15 @@ public class LogixSdkTools
             "Must not be empty.")]
         string routineXPath,
         [Description(
+            "Integer (JSON number, 0 or more; a string or null is refused with kind 'InvalidArguments' naming the parameter). " +
             "Zero-based rung position at which the imported rungs are inserted. " +
             "A value of 0 inserts before the first rung.")]
-        uint insertPosition,
+        object? insertPosition,
         [Description(
+            "Integer (JSON number, 0 or more; a string or null is refused with kind 'InvalidArguments' naming the parameter). " +
             "Number of existing rungs to replace starting at insertPosition. " +
             "Pass 0 to insert without replacing any rungs.")]
-        uint replaceCount,
+        object? replaceCount,
         [Description(
             "ADVANCED path — prefer the typed parameters, e.g. " +
             "rungs=[{\"text\":\"XIC(Start)OTE(Lamp);\",\"comment\":\"…\"}], " +
@@ -1077,6 +1121,13 @@ public class LogixSdkTools
             "'ignored: controller publishes are always checked by Logix'); also ignored when offline=true.")]
         bool verifyOnStage = false)
     {
+        // The two positions arrive as raw values so a string ("1") or a null is refused by name instead of being
+        // coerced or failing the SDK's own binding without saying which argument was wrong.
+        if (BindPosition(nameof(insertPosition), insertPosition, out var insertAt) is { } badInsert)
+            return badInsert;
+        if (BindPosition(nameof(replaceCount), replaceCount, out var replaceN) is { } badReplace)
+            return badReplace;
+
         // Typed-input validation precedes the no-session check so a malformed
         // request is reported as such rather than masked by a session error.
         if (ProposeRungEditHandler.ValidateTypedInput(l5xFragment, rungs, tags, out _)
@@ -1115,7 +1166,7 @@ public class LogixSdkTools
                  !confirmedByUser);
             if (liveSession is null && !confirmGateWouldFire)
             {
-                AuditLogger.LogRungEdit(routineXPath, insertPosition, "refused", null,
+                AuditLogger.LogRungEdit(routineXPath, insertAt, "refused", null,
                     destination: isControllerTarget ? (isLiveTarget ? "live" : "controller") : "workstation",
                     kind: ErrorKinds.NoActiveSession);
                 return JsonSerializer.Serialize(
@@ -1129,7 +1180,7 @@ public class LogixSdkTools
 
         var sw     = Stopwatch.StartNew();
         var result = await GetProposeRungEditResponseAsync(
-            routineXPath, insertPosition, replaceCount, l5xFragment,
+            routineXPath, insertAt, replaceN, l5xFragment,
             session: liveSession, offline: offline, target: target,
             confirmedByUser: confirmedByUser,
             expectedRungText: expectedRungText,
@@ -1139,11 +1190,66 @@ public class LogixSdkTools
         TrafficLogger.Append(
             "logix_propose_rung_edit",
             requestBytes:  TrafficLogger.MeasureRequestBytes(
-                new { routineXPath, insertPosition, replaceCount, l5xFragment, offline, target, confirmedByUser, expectedRungText, rungs, tags, verifyOnStage }),
+                new { routineXPath, insertAt, replaceN, l5xFragment, offline, target, confirmedByUser, expectedRungText, rungs, tags, verifyOnStage }),
             responseBytes: TrafficLogger.MeasureResponseBytes(result),
             elapsedMs:     sw.ElapsedMilliseconds,
             ok:            TrafficLogger.IsOkResponse(result));
         return result;
+    }
+
+    /// <summary>
+    /// Binds <c>insertPosition</c> / <c>replaceCount</c> of <c>logix_propose_rung_edit</c>: only a whole JSON number from
+    /// 0 to <see cref="uint.MaxValue"/> is accepted (the SDK would coerce the string <c>"1"</c> to 1). Anything else,
+    /// including null, is refused as <c>InvalidArguments</c> naming the parameter.
+    /// </summary>
+    /// <param name="name">The parameter name (<c>insertPosition</c> or <c>replaceCount</c>).</param>
+    /// <param name="raw">The bound value: a <see cref="JsonElement"/> from the MCP pipeline, or a boxed integer.</param>
+    /// <param name="value">The position when the value is valid; otherwise 0.</param>
+    /// <returns>The serialized error to return, or <c>null</c> when the value is valid.</returns>
+    internal static string? BindPosition(string name, object? raw, out uint value)
+    {
+        value = 0;
+        string? problem = null;
+        switch (raw)
+        {
+            case null:
+                problem = "is null; it must be a whole number from 0 upward";
+                break;
+            case JsonElement { ValueKind: JsonValueKind.Null or JsonValueKind.Undefined }:
+                problem = "is null; it must be a whole number from 0 upward";
+                break;
+            case JsonElement { ValueKind: JsonValueKind.Number } n:
+                if (n.TryGetUInt32(out var u)) value = u;
+                else problem = $"is {n.GetRawText()}; it must be a whole number from 0 to {uint.MaxValue}";
+                break;
+            case JsonElement { ValueKind: JsonValueKind.String } str:
+                problem = $"is the string \"{str.GetString()}\"; it must be a JSON number, not a string";
+                break;
+            case JsonElement other:
+                problem = $"is a JSON {other.ValueKind.ToString().ToLowerInvariant()}; it must be a whole number from 0 upward";
+                break;
+            case string str:
+                problem = $"is the string \"{str}\"; it must be a JSON number, not a string";
+                break;
+            case byte or ushort or uint or sbyte or short or int or long or ulong:
+                var asLong = Convert.ToDecimal(raw, System.Globalization.CultureInfo.InvariantCulture);
+                if (asLong is >= 0 and <= uint.MaxValue) value = (uint)asLong;
+                else problem = $"is {asLong}; it must be a whole number from 0 to {uint.MaxValue}";
+                break;
+            default:
+                problem = $"is a {raw.GetType().Name}; it must be a whole number from 0 upward";
+                break;
+        }
+        if (problem is null) return null;
+
+        return JsonSerializer.Serialize(new
+        {
+            error = $"logix_propose_rung_edit: argument '{name}' {problem}.",
+            kind = ErrorKinds.InvalidArguments,
+            tool = "logix_propose_rung_edit",
+            parameter = name,
+            hint = $"'{name}' must be a whole number from 0 upward (a JSON number, not a string). Fix it and call logix_propose_rung_edit again.",
+        });
     }
 
     // ── logix_pending_edits ───────────────────────────────────────────────────
@@ -1190,12 +1296,50 @@ public class LogixSdkTools
             if (ReferenceEquals(target, TargetRevision.NoTarget)) target = TargetRevision.UnknownTarget();
             result = ok with
             {
+                FingerprintAgeMs    = _tagSessionService.FingerprintAgeMs,
                 TargetMajorRevision = target.MajorRevision,
                 MnemonicSet         = target.MnemonicSet,
                 Warnings            = target.Warning is { } warning ? [warning] : null,
             };
+            if (ok.Connected && ReconcileImage(ok) is { } reconciled)
+                result = ((PendingEditsResult)result) with { Reconciled = reconciled };
         }
         return JsonSerializer.Serialize(result);
+    }
+
+    /// <summary>
+    /// This change requirement 3, as changed by an earlier change: reconcile on observation. For each program read whose export shows
+    /// a zone the session image does not hold (a program this session did not publish to, or a zone another process
+    /// changed), marks the image stale with the existing reason, marks the program for refresh (the next successful
+    /// refresh clears the stale mark) and appends one <c>image_reconciled</c> audit line. Never throws.
+    /// </summary>
+    /// <returns>The distinct outcomes joined by a comma, or <c>null</c> when nothing was reconciled.</returns>
+    private string? ReconcileImage(PendingEditsResult read)
+    {
+        var outcomes = new SortedSet<string>(StringComparer.Ordinal);
+        foreach (var group in read.Routines.GroupBy(r => r.Program, StringComparer.OrdinalIgnoreCase))
+        {
+            try
+            {
+                var exported = group
+                    .Where(r => r.ExportedRungs is not null)
+                    .Select(r => new SessionImageState.ZoneRoutine(r.Routine, r.ExportedRungs!))
+                    .ToList();
+                if (exported.Count != group.Count()) continue;
+                if (SessionImageState.Reconcile(_tagSessionService, group.Key, exported) is not { } done) continue;
+
+                _tagSessionService.MarkImageStale(group.Key);
+                AuditLogger.LogImageReconciled(done.Program, string.Join(",", done.Routines), done.Outcome);
+                outcomes.Add(done.Outcome);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                // A reconcile failure must not fail the read: the next lint/xref refresh still sees the program as stale.
+                SessionImageState.MarkStale(_tagSessionService,
+                    $"pending edits of {group.Key} were resolved outside lgx-mcp");
+            }
+        }
+        return outcomes.Count == 0 ? null : string.Join(",", outcomes);
     }
 
     /// <summary>
@@ -1210,7 +1354,12 @@ public class LogixSdkTools
         "on the active online SDK session, by exporting them (PartialExportToXmlFileAsync) " +
         "and classifying every rung's L5X Type attribute. Strictly read-only: it never " +
         "calls any PartialImport* SDK method and never touches the controller's program " +
-        "or edit state. No project needs to be open — it works over the upload route " +
+        "or edit state. The session image may be updated: after the read, for each program whose " +
+        "recorded zone is gone from the controller, the routine is compared with the record — equal to " +
+        "the recorded rungs means the edit is applied to the session image (accepted), equal to the " +
+        "pre-edit content means it is restored (cancelled), neither means the image is marked stale " +
+        "with a reason. The response carries 'reconciled' and one image_reconciled audit line is written. " +
+        "No project needs to be open — it works over the upload route " +
         "the same way logix_export_rungs does; call logix_connect first. " +
         "Rung Type code table (from the L5X export schema): " +
         "'N' = Normal, no pending edit (also the default when Type is absent). " +
@@ -1260,6 +1409,7 @@ public class LogixSdkTools
     {
         var sw     = Stopwatch.StartNew();
         var result = await GetPendingEditsResponseAsync(program, routine);
+        StampZoneTestedFrom(result);
         sw.Stop();
         TrafficLogger.Append(
             "logix_pending_edits",
@@ -1341,6 +1491,7 @@ public class LogixSdkTools
         var sw     = Stopwatch.StartNew();
         var result = await GetClearStagedResponseAsync(routine, program);
         _tagSessionService.MarkImageStale(program); // clearing staged rungs changes the session image
+        await _tagSessionService.RefreshControllerImageAsync(CancellationToken.None); // The export is the only writer of rungs into the image
         sw.Stop();
         TrafficLogger.Append(
             "logix_clear_staged",
@@ -1462,6 +1613,7 @@ public class LogixSdkTools
         var sw     = Stopwatch.StartNew();
         var result = await GetFinalizeEditsResponseAsync(program, routine, confirm);
         _tagSessionService.MarkImageStale(program); // finalize changes the controller
+        await _tagSessionService.RefreshControllerImageAsync(CancellationToken.None); // The export is the only writer of rungs into the image
         sw.Stop();
         TrafficLogger.Append(
             "logix_finalize_edits",
@@ -1575,7 +1727,8 @@ public class LogixSdkTools
             program, routine, confirm, PendingEditsReader, runner, isStudioInstalled, ct,
             planLaunch: () => Session1ScriptRunner.PlanLaunch(probe),
             leftoverTagsProvider: () => _tagSessionService.TakeZoneCreatedTagNames(program, routine),
-            imageSession: _tagSessionService);
+            imageSession: _tagSessionService,
+            ledgerSession: sdkSession);
 
         // A successful cancel discards the program's pending edits,
         // which resolves any recorded PublishMismatch for it.
@@ -1693,7 +1846,9 @@ public class LogixSdkTools
         "(4) runs bench/studio-edits.ps1 -Verb cancel on the interactive desktop (directly, or " +
         "via the logix-mcp-s1-edits task from session 0) and refuses when it reports failure. " +
         "(5) re-reads logix_pending_edits afterward and " +
-        "returns both snapshots plus every screenshot path the script collected. Returns a " +
+        "returns both snapshots plus every screenshot path the script collected. Cancel is never refused as a " +
+        "ForeignPendingZone: when this server did not publish the zone (another session or Studio did) it proceeds " +
+        "and the result carries foreign: true. Returns a " +
         "JSON object with status, program, routine, message, before (pending-edit snapshot " +
         "before cancelling), after (snapshot afterward), and screenshots (array of file paths " +
         "written by the session-1 script). " +
@@ -1717,7 +1872,9 @@ public class LogixSdkTools
     {
         var sw     = Stopwatch.StartNew();
         var result = await GetCancelPendingEditsResponseAsync(program, routine, confirm);
+        if (TrafficLogger.IsOkResponse(result)) _tagSessionService.SetZoneTested(program, null);
         _tagSessionService.MarkImageStale(program); // cancel changes the session image
+        await _tagSessionService.RefreshControllerImageAsync(CancellationToken.None); // The export is the only writer of rungs into the image
         sw.Stop();
         TrafficLogger.Append(
             "logix_cancel_pending_edits",
@@ -1746,6 +1903,10 @@ public class LogixSdkTools
     /// <param name="isStudioInstalled">Optional Studio-installed probe override.</param>
     /// <param name="ct">Cancellation token.</param>
     /// <param name="probe">Optional environment probe for launch-mode reporting.</param>
+    /// <param name="acceptForeign">
+    /// <c>true</c> accepts a pending zone this server did not publish (see <see cref="ZoneLedger"/>); the result then
+    /// carries <c>foreign: true</c>. <c>false</c> refuses it with <c>ForeignPendingZone</c>.
+    /// </param>
     /// <returns>JSON string containing the result or a structured error.</returns>
     public async Task<string> GetAcceptPendingEditsResponseAsync(
         string                                                       program,
@@ -1755,7 +1916,8 @@ public class LogixSdkTools
         Func<string, CancellationToken, Task<Session1ScriptResult>>? session1Runner = null,
         Func<bool>?                                                  isStudioInstalled = null,
         CancellationToken                                            ct = default,
-        IEnvironmentProbe?                                           probe = null)
+        IEnvironmentProbe?                                           probe = null,
+        bool                                                         acceptForeign = false)
     {
         // Gate 0: refused before any Studio probe, pending-edit read, or GUI action.
         if (_capabilities is not { StudioAutomationEnabled: true })
@@ -1806,7 +1968,8 @@ public class LogixSdkTools
 
         var result = await AcceptPendingEditsHandler.ExecuteAsync(
             program, routine, confirm, PendingEditsReader, runner, isStudioInstalled, ct,
-            () => Session1ScriptRunner.PlanLaunch(probe), _tagSessionService);
+            () => Session1ScriptRunner.PlanLaunch(probe), _tagSessionService,
+            acceptForeign, sdkSession);
         return JsonSerializer.Serialize(result);
     }
 
@@ -1845,7 +2008,11 @@ public class LogixSdkTools
         "GATING: (0) refuses (CapabilityDisabled) when LGX_ENABLE_STUDIO_AUTOMATION is not " +
         "set. (1) refuses when Studio 5000 is not installed on this host. (2) refuses unless " +
         "confirm=true. (3) calls logix_pending_edits for the target routine first and refuses " +
-        "when its state is 'none' — nothing to accept. (4) runs the driver with -Verb accept. " +
+        "when its state is 'none' — nothing to accept. (3b) refuses with kind ForeignPendingZone " +
+        "(program, routines, publishedByThisServer: false) when the live zone holds a routine this server did " +
+        "not publish (another session or Studio did): review it in logix_pending_edits and pass " +
+        "acceptForeign=true to finalize it anyway (the result then carries foreign: true), or cancel it. " +
+        "(4) runs the driver with -Verb accept. " +
         "(5) re-reads logix_pending_edits and returns ok only when the after-state is 'none' " +
         "(the before-rungs are now 'N'); if the gesture reports success but the routine is " +
         "still pending, returns an error naming both states — success is never claimed on the " +
@@ -1865,15 +2032,22 @@ public class LogixSdkTools
             "Must be true to proceed. Defaults to false, which always refuses: accepting makes " +
             "the pending rungs execute on a running controller, by driving the Studio 5000 GUI. " +
             "Pass true to acknowledge this and proceed.")]
-        bool confirm = false)
+        bool confirm = false,
+        [Description(
+            "Defaults to false: a pending zone this server did not publish (another session or Studio did) is " +
+            "refused with kind ForeignPendingZone. Pass true, after reviewing the edits in logix_pending_edits, to " +
+            "finalize such a zone anyway; the result then carries foreign: true.")]
+        bool acceptForeign = false)
     {
         var sw     = Stopwatch.StartNew();
-        var result = await GetAcceptPendingEditsResponseAsync(program, routine, confirm);
+        var result = await GetAcceptPendingEditsResponseAsync(program, routine, confirm, acceptForeign: acceptForeign);
+        if (TrafficLogger.IsOkResponse(result)) _tagSessionService.SetZoneTested(program, null);
         _tagSessionService.MarkImageStale(program); // accept changes the controller
+        await _tagSessionService.RefreshControllerImageAsync(CancellationToken.None); // The export is the only writer of rungs into the image
         sw.Stop();
         TrafficLogger.Append(
             "logix_accept_pending_edits",
-            requestBytes:  TrafficLogger.MeasureRequestBytes(new { program, routine, confirm }),
+            requestBytes:  TrafficLogger.MeasureRequestBytes(new { program, routine, confirm, acceptForeign }),
             responseBytes: TrafficLogger.MeasureResponseBytes(result),
             elapsedMs:     sw.ElapsedMilliseconds,
             ok:            TrafficLogger.IsOkResponse(result));
@@ -1884,40 +2058,12 @@ public class LogixSdkTools
     private const string StudioLifecycleGatingText =
         "Every payload reports launched, launchMode (direct or scheduled_task) and runLevel, and passes through gestureTier, dialogText and dialogWarnings. Refuses with studio_not_in_this_session or studio_elevated_driver_not when Studio is in another session or elevated. GATING: (0) refuses (CapabilityDisabled) when LGX_ENABLE_STUDIO_AUTOMATION is not set. (1) refuses when Studio 5000 is not installed on this host. (2) refuses unless confirm=true. (3) calls logix_pending_edits for the target routine first and refuses when its state is 'none'. ";
 
-    /// <summary>
-    /// Records a controller publish that left a pending zone, with its rungs and replace range, in the session image
-    /// state (<see cref="SessionImageState.RecordPublish"/>). Only a publish of one routine whose landed rungs are known
-    /// as one contiguous block that starts at the reported insert position is recorded (the new block lands AT the
-    /// insert position and the replaced originals follow it, for any replace count); any other publish is left to mark
-    /// the image stale on accept / assemble / cancel.
-    /// </summary>
-    /// <param name="result">The successful publish result.</param>
-    internal void RecordPendingPublish(ProposeRungEditResult result)
-    {
-        if (result.PublishedRoutines is not { Count: > 0 } routines) return;
-        if (!TryRecordSingleRoutinePublish(result, routines))
-        {
-            // The publish left a zone the image cannot follow: say so, so accept / cancel gives that as the reason.
-            foreach (var r in routines)
-                if (DiffAgainstControllerHandler.RoutineKeyFromXPath(r.Routine)?.Split('/', 2) is { Length: 2 } k)
-                    SessionImageState.RecordUnfollowedPublish(_tagSessionService, k[0]);
-        }
-    }
-
-    private bool TryRecordSingleRoutinePublish(ProposeRungEditResult result, IReadOnlyList<PublishedRoutine> routines)
-    {
-        if (routines.Count != 1) return false;
-        var published = routines[0];
-        if (published.PublishedTexts is not { Count: > 0 } texts || published.InsertPosition is not { } landedAt) return false;
-        if (result.InsertPosition is not { } reported || landedAt != reported) return false;
-        if (published.LandedIndices is not { Count: > 0 } landed || landed.Count != texts.Count) return false;
-        for (var i = 0; i < landed.Count; i++)
-            if (landed[i] != (int)reported + i) return false;   // not one contiguous block starting at the insert position
-        var key = DiffAgainstControllerHandler.RoutineKeyFromXPath(published.Routine)?.Split('/', 2);
-        if (key is not { Length: 2 }) return false;
-        return SessionImageState.RecordPublish(_tagSessionService, key[0], key[1], (int)reported, (int)(published.ReplaceCount ?? 0u), texts,
-            rungComments: published.PublishedComments);
-    }
+    /// <summary>Description clause of the foreign-zone gate for test and assemble.</summary>
+    private const string ForeignZoneGateText =
+        "FOREIGN ZONE: refuses with kind ForeignPendingZone (program, routines, publishedByThisServer: false), before any " +
+        "Studio command, when the live zone holds a routine this server did not publish (another session or Studio " +
+        "did); review it in logix_pending_edits and pass acceptForeign=true to proceed anyway (the result then carries " +
+        "foreign: true), or cancel it. ";
 
     // ── logix_test_pending_edits / logix_untest_pending_edits / logix_assemble_pending_edits ──
     // Thin callers of StudioLifecycleHandler (via the *PendingEditsHandler bindings).
@@ -1960,6 +2106,7 @@ public class LogixSdkTools
              Func<string, CancellationToken, Task<Session1ScriptResult>>,
              Func<bool>?, CancellationToken,
              Func<(string? LaunchMode, string? RunLevel)>?,
+             bool, object?,
              Task<object>>                                           handler,
         string                                                       program,
         string                                                       routine,
@@ -1968,7 +2115,8 @@ public class LogixSdkTools
         Func<string, CancellationToken, Task<Session1ScriptResult>>? session1Runner,
         Func<bool>?                                                  isStudioInstalled,
         CancellationToken                                            ct,
-        IEnvironmentProbe?                                           probe)
+        IEnvironmentProbe?                                           probe,
+        bool                                                         acceptForeign = false)
     {
         // Gate 0: refused before any Studio probe, pending-edit read, or GUI action.
         if (_capabilities is not { StudioAutomationEnabled: true })
@@ -2024,7 +2172,7 @@ public class LogixSdkTools
 
         var result = await handler(
             program, routine, confirm, PendingEditsReader, runner, isStudioInstalled, ct,
-            () => Session1ScriptRunner.PlanLaunch(probe));
+            () => Session1ScriptRunner.PlanLaunch(probe), acceptForeign, sdkSession);
 
         // An assembled (or accepted) zone can no longer be cancelled: its comment undos are void.
         if (result is CancelPendingEditsResult { Status: "assembled" or "accepted" })
@@ -2060,17 +2208,63 @@ public class LogixSdkTools
         }
     }
 
+    /// <summary>
+    /// Stamps each program's tested state (<c>programTestedEdits</c>, read SDK-side from the program export's
+    /// <c>TestEdits</c>) from a pending-edits response onto the session, so analysis readers can word a pending
+    /// rung as tested or untested. A <c>null</c> reading forgets the program (state unknown).
+    /// </summary>
+    private void StampZoneTestedFrom(string json)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            Walk(doc.RootElement);
+        }
+        catch (JsonException) { /* not a pending-edits payload */ }
+
+        void Walk(JsonElement e)
+        {
+            if (e.ValueKind == JsonValueKind.Object)
+            {
+                if (e.TryGetProperty("program", out var prog) && prog.ValueKind == JsonValueKind.String &&
+                    e.TryGetProperty("programTestedEdits", out var tested) &&
+                    tested.ValueKind is JsonValueKind.True or JsonValueKind.False or JsonValueKind.Null)
+                {
+                    _tagSessionService.SetZoneTested(
+                        prog.GetString()!, tested.ValueKind == JsonValueKind.Null ? null : tested.GetBoolean());
+                }
+                if (e.TryGetProperty("program", out var p2) && p2.ValueKind == JsonValueKind.String &&
+                    e.TryGetProperty("testedEdits", out var t2) &&
+                    t2.ValueKind is JsonValueKind.True or JsonValueKind.False or JsonValueKind.Null)
+                {
+                    _tagSessionService.SetZoneTested(
+                        p2.GetString()!, t2.ValueKind == JsonValueKind.Null ? null : t2.GetBoolean());
+                }
+                foreach (var prop in e.EnumerateObject()) Walk(prop.Value);
+            }
+            else if (e.ValueKind == JsonValueKind.Array)
+                foreach (var item in e.EnumerateArray()) Walk(item);
+        }
+    }
+
     private async Task<string> RunStudioLifecycleToolAsync(
         string toolName, string program, string routine, bool confirm,
-        Func<Task<string>> call)
+        Func<Task<string>> call, bool acceptForeign = false)
     {
         var sw     = Stopwatch.StartNew();
         var result = await call();
+        if (TrafficLogger.IsOkResponse(result))
+        {
+            if (toolName.Contains("untest", StringComparison.Ordinal)) _tagSessionService.SetZoneTested(program, false);
+            else if (toolName.Contains("_test_", StringComparison.Ordinal)) _tagSessionService.SetZoneTested(program, true);
+            else _tagSessionService.SetZoneTested(program, null);   // assemble: the zone is gone
+        }
         _tagSessionService.MarkImageStale(program); // test / untest / assemble change the session image
+        await _tagSessionService.RefreshControllerImageAsync(CancellationToken.None); // The export is the only writer of rungs into the image
         sw.Stop();
         TrafficLogger.Append(
             toolName,
-            requestBytes:  TrafficLogger.MeasureRequestBytes(new { program, routine, confirm }),
+            requestBytes:  TrafficLogger.MeasureRequestBytes(new { program, routine, confirm, acceptForeign }),
             responseBytes: TrafficLogger.MeasureResponseBytes(result),
             elapsedMs:     sw.ElapsedMilliseconds,
             ok:            TrafficLogger.IsOkResponse(result));
@@ -2091,6 +2285,10 @@ public class LogixSdkTools
     /// <param name="isStudioInstalled">Optional Studio-installed probe override.</param>
     /// <param name="ct">Cancellation token.</param>
     /// <param name="probe">Optional environment probe for launch-mode reporting.</param>
+    /// <param name="acceptForeign">
+    /// <c>true</c> tests a pending zone this server did not publish (see <see cref="ZoneLedger"/>); the result then
+    /// carries <c>foreign: true</c>. <c>false</c> refuses it with <c>ForeignPendingZone</c>.
+    /// </param>
     /// <returns>JSON string containing the result or a structured error.</returns>
     public Task<string> GetTestPendingEditsResponseAsync(
         string                                                       program,
@@ -2100,12 +2298,13 @@ public class LogixSdkTools
         Func<string, CancellationToken, Task<Session1ScriptResult>>? session1Runner = null,
         Func<bool>?                                                  isStudioInstalled = null,
         CancellationToken                                            ct = default,
-        IEnvironmentProbe?                                           probe = null) =>
+        IEnvironmentProbe?                                           probe = null,
+        bool                                                         acceptForeign = false) =>
         GetStudioLifecycleResponseAsync(
             "logix_test_pending_edits",
             "testing makes the new logic execute on a running controller.",
             TestPendingEditsHandler.ExecuteAsync,
-            program, routine, confirm, session, session1Runner, isStudioInstalled, ct, probe);
+            program, routine, confirm, session, session1Runner, isStudioInstalled, ct, probe, acceptForeign);
 
     /// <summary>
     /// Tests (runs the new logic of) the pending online edits of a single routine by posting a Studio 5000 command through the
@@ -2121,7 +2320,7 @@ public class LogixSdkTools
         "The Logix Designer SDK has no test call; this tool posts Studio's Test Accepted Program Edits command " +
         "(WM_COMMAND 32061) by running bench/studio-edits.ps1 -Verb test on the interactive desktop (directly, or " +
         "via the logix-mcp-s1-edits scheduled task from session 0), with no driver cursor movement (cursorMovedByDriver is false) and no focus change. "
-        + StudioLifecycleGatingText +
+        + StudioLifecycleGatingText + ForeignZoneGateText +
         "(4) runs the driver with -Verb test; no confirmation dialog means command_not_applicable. (5) re-reads " +
         "logix_pending_edits and returns ok only when the program export afterward shows zoneState 'tested' (program TestEdits=true; " +
         "result says 'verified: program TestEdits=true'), else error kind TestStateNotConfirmed with the before and " +
@@ -2142,10 +2341,14 @@ public class LogixSdkTools
         string routine,
         [Description(
             "Must be true to proceed. Defaults to false, which always refuses: testing makes the new logic execute on a running controller, by driving the Studio 5000 GUI with a posted command. Pass true to acknowledge this and proceed.")]
-        bool confirm = false) =>
+        bool confirm = false,
+        [Description(
+            "Defaults to false: a pending zone this server did not publish (another session or Studio did) is refused with kind ForeignPendingZone. Pass true, after reviewing the edits in logix_pending_edits, to test such a zone anyway; the result then carries foreign: true.")]
+        bool acceptForeign = false) =>
         RunStudioLifecycleToolAsync(
             "logix_test_pending_edits", program, routine, confirm,
-            () => GetTestPendingEditsResponseAsync(program, routine, confirm));
+            () => GetTestPendingEditsResponseAsync(program, routine, confirm, acceptForeign: acceptForeign),
+            acceptForeign);
 
     /// <summary>
     /// Tool-layer wiring for <c>logix_untest_pending_edits</c>: the
@@ -2174,7 +2377,8 @@ public class LogixSdkTools
         GetStudioLifecycleResponseAsync(
             "logix_untest_pending_edits",
             "untesting reverts the tested logic on a running controller.",
-            UntestPendingEditsHandler.ExecuteAsync,
+            (p, r, c, reader, runner, installed, token, plan, _, _) =>
+                UntestPendingEditsHandler.ExecuteAsync(p, r, c, reader, runner, installed, token, plan),
             program, routine, confirm, session, session1Runner, isStudioInstalled, ct, probe);
 
     /// <summary>
@@ -2230,6 +2434,10 @@ public class LogixSdkTools
     /// <param name="isStudioInstalled">Optional Studio-installed probe override.</param>
     /// <param name="ct">Cancellation token.</param>
     /// <param name="probe">Optional environment probe for launch-mode reporting.</param>
+    /// <param name="acceptForeign">
+    /// <c>true</c> assembles a pending zone this server did not publish (see <see cref="ZoneLedger"/>); the result then
+    /// carries <c>foreign: true</c>. <c>false</c> refuses it with <c>ForeignPendingZone</c>.
+    /// </param>
     /// <returns>JSON string containing the result or a structured error.</returns>
     public Task<string> GetAssemblePendingEditsResponseAsync(
         string                                                       program,
@@ -2239,13 +2447,15 @@ public class LogixSdkTools
         Func<string, CancellationToken, Task<Session1ScriptResult>>? session1Runner = null,
         Func<bool>?                                                  isStudioInstalled = null,
         CancellationToken                                            ct = default,
-        IEnvironmentProbe?                                           probe = null) =>
+        IEnvironmentProbe?                                           probe = null,
+        bool                                                         acceptForeign = false) =>
         GetStudioLifecycleResponseAsync(
             "logix_assemble_pending_edits",
             "assembling is irreversible and finalizes the pending rung edits on a running controller.",
-            (p, r, c, reader, runner, installed, token, plan) =>
-                AssemblePendingEditsHandler.ExecuteAsync(p, r, c, reader, runner, installed, token, plan, _tagSessionService),
-            program, routine, confirm, session, session1Runner, isStudioInstalled, ct, probe);
+            (p, r, c, reader, runner, installed, token, plan, foreign, ledger) =>
+                AssemblePendingEditsHandler.ExecuteAsync(
+                    p, r, c, reader, runner, installed, token, plan, _tagSessionService, foreign, ledger),
+            program, routine, confirm, session, session1Runner, isStudioInstalled, ct, probe, acceptForeign);
 
     /// <summary>
     /// Assembles (irreversibly finalizes) the pending online edits of a single routine by posting a Studio 5000 command through the
@@ -2262,7 +2472,7 @@ public class LogixSdkTools
         "existing zone; this tool posts Studio's Assemble Accepted Program Edits command (WM_COMMAND 32063) by " +
         "running bench/studio-edits.ps1 -Verb assemble on the interactive desktop (directly, or via the " +
         "logix-mcp-s1-edits scheduled task from session 0), with no driver cursor movement (cursorMovedByDriver is false) and no focus change. "
-        + StudioLifecycleGatingText +
+        + StudioLifecycleGatingText + ForeignZoneGateText +
         "(4) runs the driver with -Verb assemble; when Studio shows no confirmation dialog (the zone is not tested) " +
         "it returns an error with kind 'NotTested': Assemble needs a tested zone. (5) re-reads logix_pending_edits " +
         "and returns ok only when the after-state is 'none' (the before-rungs are now 'N'); if the gesture " +
@@ -2281,10 +2491,14 @@ public class LogixSdkTools
         string routine,
         [Description(
             "Must be true to proceed. Defaults to false, which always refuses: assembling is irreversible and finalizes the pending rung edits on a running controller, by driving the Studio 5000 GUI with a posted command. Pass true to acknowledge this and proceed.")]
-        bool confirm = false) =>
+        bool confirm = false,
+        [Description(
+            "Defaults to false: a pending zone this server did not publish (another session or Studio did) is refused with kind ForeignPendingZone. Pass true, after reviewing the edits in logix_pending_edits, to assemble such a zone anyway; the result then carries foreign: true.")]
+        bool acceptForeign = false) =>
         RunStudioLifecycleToolAsync(
             "logix_assemble_pending_edits", program, routine, confirm,
-            () => GetAssemblePendingEditsResponseAsync(program, routine, confirm));
+            () => GetAssemblePendingEditsResponseAsync(program, routine, confirm, acceptForeign: acceptForeign),
+            acceptForeign);
 
     /// <summary>
     /// Builds the <c>logix_run_test</c> response: runs <see cref="RunTestHandler"/> against the
@@ -2481,6 +2695,7 @@ public class LogixSdkTools
         var sw     = Stopwatch.StartNew();
         var result = await GetCreateRoutineResponseAsync(program, name, type, description, confirmedByUser);
         _tagSessionService.MarkImageStale(program); // a new routine changes the program
+        await _tagSessionService.RefreshControllerImageAsync(CancellationToken.None); // The export is the only writer of rungs into the image
         sw.Stop();
         TrafficLogger.Append(
             "logix_create_routine",

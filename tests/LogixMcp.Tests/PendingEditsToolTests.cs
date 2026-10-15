@@ -7,8 +7,10 @@ using System.Threading;
 using System.Threading.Tasks;
 using System.Xml.Linq;
 using Google.Protobuf;
+using L5Sharp.Core;
 using RockwellAutomation.LogixDesigner;
 using RockwellAutomation.LogixDesigner.Logging;
+using Task = System.Threading.Tasks.Task;
 
 using ControllerMode      = RockwellAutomation.LogixDesigner.LogixProject.ControllerMode;
 using ConnectedState      = RockwellAutomation.LogixDesigner.LogixProject.ConnectedState;
@@ -898,6 +900,41 @@ public class PendingEditsLogixSdkToolsTests
     }
 
     [Fact]
+    public async Task GetPendingEditsResponseAsync_ReportsFingerprintAgeOnceAProbeRan()
+    {
+        var fake = new FakePendingEditsProject { ExportContent = SimpleL5X("N") };
+        var (session, _) = await PendingEditsTestHelpers.OpenedSessionAsync(fake);
+        var sessions = new TagSessionService();
+        sessions.Attach(new VirtualTagService(), isVirtual: false, isLiveController: true);
+        sessions.SetControllerImage(L5X.Parse(SimpleL5X("N")), DateTimeOffset.UtcNow);
+        var tools = new LogixSdkTools(new ProjectService(), sessions);
+
+        var before = JsonDocument.Parse(await tools.GetPendingEditsResponseAsync("MainProgram", "MainRoutine", session));
+        Assert.False(before.RootElement.TryGetProperty("fingerprintAgeMs", out _));
+
+        sessions.ControllerFingerprintSource = ct => PendingEditsHandler.ReadFingerprintAsync(session, ct)!;
+        await sessions.CheckControllerFingerprintAsync(force: true);
+        var after = JsonDocument.Parse(await tools.GetPendingEditsResponseAsync("MainProgram", "MainRoutine", session));
+
+        Assert.True(after.RootElement.GetProperty("fingerprintAgeMs").GetInt64() >= 0);
+        Assert.Null(sessions.ControllerChange);   // the export matches the image
+    }
+
+    [Fact]
+    public async Task ReadFingerprintAsync_ReportsRoutinesAndRungCountsOfEveryProgram()
+    {
+        var fake = new FakePendingEditsProject { ExportContent = SimpleL5X("N") };
+        var (session, _) = await PendingEditsTestHelpers.OpenedSessionAsync(fake);
+
+        var fingerprint = await PendingEditsHandler.ReadFingerprintAsync(session);
+
+        var program = Assert.Single(fingerprint!.Programs);
+        Assert.Equal("MainProgram", program.Program);
+        Assert.Equal(1, program.Routines["MainRoutine"]);
+        Assert.Equal("Controller/Programs", fake.LastExportXPath);
+    }
+
+    [Fact]
     public async Task GetPendingEditsResponseAsync_UnknownRevision_ReportsUnknownWithWarning()
     {
         var fake = new FakePendingEditsProject { ExportContent = SimpleL5X("N") };
@@ -1526,6 +1563,150 @@ public class PendingEditsTests
         Assert.Contains("XIC(A);", result, StringComparison.Ordinal);
     }
 
+}
+
+// ── Reconcile on observation ──────────────
+
+/// <summary>
+/// <c>logix_pending_edits</c> notices a pending zone on the controller that the session image does not hold (a program
+/// this session did not publish to, or a zone changed in Logix Designer), marks the image stale with the existing reason
+/// and appends one <c>image_reconciled</c> audit line; the next successful refresh clears the mark.
+/// </summary>
+[Collection("StaticHandlerHooks")]
+public class PendingEditsReconcileTests
+{
+    private static readonly string[] Published =
+        ["XIC(A)XIC(C)OTE(B);", "XIC(D)OTE(E);", "XIC(E)OTE(C);"];   // replace(0,2) + one insert
+
+    private const string Original3 = "XIC(A)OTE(D);";
+    private const string Original1 = "XIC(A)OTE(B);";
+    private const string Original2 = "XIC(C)OTE(B);";
+
+    private static readonly (string Type, string Text)[] ZoneRungs =
+        [("IR", Published[0]), ("IR", Published[1]), ("I", Published[2]), ("R", Original1), ("R", Original2), ("N", Original3)];
+
+    private const string Reason = "pending edits of MainProgram were resolved outside lgx-mcp";
+
+    private static string Export(params (string Type, string Text)[] rungs) =>
+        "<RSLogix5000Content><Controller><Programs><Program Name=\"MainProgram\"><Routines>" +
+        "<Routine Name=\"Main\" Type=\"RLL\"><RLLContent>" +
+        string.Concat(rungs.Select((r, i) =>
+            $"<Rung Number=\"{i}\" Type=\"{r.Type}\"><Text><![CDATA[{r.Text}]]></Text></Rung>")) +
+        "</RLLContent></Routine></Routines></Program></Programs></Controller></RSLogix5000Content>";
+
+    private static (string, string)[] Plain(params string[] texts) => texts.Select(t => ("N", t)).ToArray();
+
+    /// <summary>A controller whose program export is a fixed image.</summary>
+    private sealed class FixedExport(L5X export) : IControllerImageSource
+    {
+        public Task<string> ExportProgramL5xAsync(string program, CancellationToken ct = default) => Task.FromResult(export.ToString());
+        public Task<string> ExportControllerTagsL5xAsync(CancellationToken ct = default) => Task.FromResult(export.ToString());
+    }
+
+    private sealed record Setup(
+        LogixSdkTools Tools, TagSessionService Session, ProjectService Service, LogixProjectSession Sdk,
+        FakePendingEditsProject Fake);
+
+    /// <summary>
+    /// A connected session whose image is <paramref name="image"/> (the plain connect-time image by default) and whose
+    /// controller export, as <c>logix_pending_edits</c> reads it, is <paramref name="export"/>.
+    /// </summary>
+    private static async Task<Setup> SetupAsync(string export, L5X? image = null)
+    {
+        var (session, service, _) = SessionImageAfterAcceptTests.Connect(image);
+        var fake = new FakePendingEditsProject { ExportContent = export };
+        var (sdk, _) = await PendingEditsTestHelpers.OpenedSessionAsync(fake);
+        var tools = new LogixSdkTools(service, session);
+        return new Setup(tools, session, service, sdk, fake);
+    }
+
+    private static async Task<JsonElement> ObserveAsync(Setup s) =>
+        JsonDocument.Parse(await s.Tools.GetPendingEditsResponseAsync("MainProgram", "Main", s.Sdk)).RootElement.Clone();
+
+    private static async Task<(JsonElement Response, List<JsonElement> Audit)> ObserveWithAuditAsync(Setup s)
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "lgx-reconcile-audit-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        AuditLogger.OverrideLogDir(dir);
+        try
+        {
+            var response = await ObserveAsync(s);
+            var file = Path.Combine(dir, "audit.jsonl");
+            var audit = File.Exists(file)
+                ? File.ReadAllLines(file).Where(l => !string.IsNullOrWhiteSpace(l))
+                    .Select(l => JsonDocument.Parse(l).RootElement.Clone())
+                    .Where(e => e.GetProperty("event").GetString() == "image_reconciled").ToList()
+                : [];
+            return (response, audit);
+        }
+        finally
+        {
+            AuditLogger.OverrideLogDir(null);
+            try { Directory.Delete(dir, recursive: true); } catch { /* best-effort */ }
+        }
+    }
+
+    [Fact]
+    public async Task ZoneInAProgramTheImageDoesNotHold_MarksTheImageStaleWithTheReason_AndAuditsIt()
+    {
+        var s = await SetupAsync(Export(ZoneRungs));   // the image is the plain connect-time image
+
+        var (response, audit) = await ObserveWithAuditAsync(s);
+
+        Assert.Equal("stale", response.GetProperty("reconciled").GetString());
+        var stale = Assert.IsType<SessionImageStaleness>(SessionImageState.StalenessOf(s.Session));
+        Assert.Equal(Reason, stale.Reason);
+        Assert.True(s.Session.IsImageStale);   // the program is queued for refresh
+        var result = Assert.IsType<GetRoutineResult>(GetRoutineHandler.Execute(s.Service, "MainProgram", "Main", s.Session));
+        Assert.True(result.ImageStale);
+        Assert.Equal(Reason, result.StaleReason);
+
+        var line = Assert.Single(audit);
+        Assert.Equal("MainProgram", line.GetProperty("program").GetString());
+        Assert.Equal("Main", line.GetProperty("routine").GetString());
+        Assert.Equal("stale", line.GetProperty("outcome").GetString());
+    }
+
+    [Fact]
+    public async Task TheNextSuccessfulRefresh_ClearsTheReconcileMark_AndTheFollowingObservationReconcilesNothing()
+    {
+        var zone = SessionImageAfterAcceptTests.ImageOfTyped(ZoneRungs.Select(r => (r.Text, r.Type)).ToArray());
+        var s = await SetupAsync(Export(ZoneRungs));
+        s.Session.ImageSourceOverride = new FixedExport(zone);
+        Assert.Equal("stale", (await ObserveAsync(s)).GetProperty("reconciled").GetString());
+
+        Assert.True(await s.Session.RefreshControllerImageAsync());
+
+        Assert.Null(SessionImageState.StalenessOf(s.Session));
+        Assert.False(s.Session.IsImageStale);
+        var (second, audit) = await ObserveWithAuditAsync(s);
+        Assert.False(second.TryGetProperty("reconciled", out _));
+        Assert.Empty(audit);
+    }
+
+    [Fact]
+    public async Task ZoneTheImageAlreadyHolds_ReconcilesNothing_AndAddsNoReconciledField()
+    {
+        var zone = SessionImageAfterAcceptTests.ImageOfTyped(ZoneRungs.Select(r => (r.Text, r.Type)).ToArray());
+        var s = await SetupAsync(Export(ZoneRungs), zone);
+
+        var (response, audit) = await ObserveWithAuditAsync(s);
+
+        Assert.False(response.TryGetProperty("reconciled", out _));
+        Assert.Empty(audit);
+        Assert.Null(SessionImageState.StalenessOf(s.Session));
+    }
+
+    [Fact]
+    public async Task NoZoneOnTheController_ReconcilesNothing()
+    {
+        var s = await SetupAsync(Export(Plain(Original1, Original2, Original3)));
+
+        var root = await ObserveAsync(s);
+
+        Assert.False(root.TryGetProperty("reconciled", out _));
+        Assert.Null(SessionImageState.StalenessOf(s.Session));
+    }
 }
 
 #endif

@@ -617,7 +617,7 @@ public class ImportDatatypeTests
         // Only the Target type; no Context entries
         Assert.Single(allTypes);
         Assert.Equal("Target", allTypes[0].Attribute("Use")?.Value);
-        Assert.Equal("false",  doc.Root.Attribute("ContainsContext")?.Value);
+        Assert.Equal("true",   doc.Root.Attribute("ContainsContext")?.Value);
     }
 
     [Fact]
@@ -895,7 +895,7 @@ public class ImportDatatypeTests
             new DataTypeMemberEntry("Enable", "BOOL", "0", "NullType", false, "Read/Write"),
             new DataTypeMemberEntry("Speed",  "REAL", "0", "NullType", false, "Read/Write"),
         };
-        Action<string, string, string, ImportCollisionOption> sdkRunner = (_, _, _, _) => { };
+        Func<string, string, string, ImportCollisionOption, IReadOnlyList<string>> sdkRunner = (_, _, _, _) => Array.Empty<string>();
         var acd      = FakeAcd();
         var tmpSave1 = TempPath(".ACD");
         var tmpSave2 = TempPath(".ACD");
@@ -909,8 +909,8 @@ public class ImportDatatypeTests
             Assert.True(ok1.Verified,
                 "verified must be true when the re-exported members match the target");
 
-            // Mismatched re-export → verified false
-            var ok2 = Assert.IsType<ImportDatatypeResult>(ImportDatatypeHandler.Execute(
+            // Mismatched re-export → typed ImportNotApplied, nothing written
+            var err2 = Assert.IsType<ImportNotAppliedError>(ImportDatatypeHandler.Execute(
                 acdPath: acd, datatypeName: "MotorCmd", l5xPath: null, members: members,
                 saveAs: tmpSave2, service: DemoService(), dryRun: false, confirm: true,
                 sdkImportRunner: sdkRunner,
@@ -918,8 +918,8 @@ public class ImportDatatypeTests
                 {
                     new DataTypeMemberEntry("WrongMember", "DINT", "0", "NullType", false, "Read/Write"),
                 }));
-            Assert.False(ok2.Verified,
-                "verified must be false when the re-exported members differ from the target");
+            Assert.Equal(ErrorKinds.ImportNotApplied, err2.Kind);
+            Assert.False(File.Exists(tmpSave2), "no file may be left at saveAs when the import did not apply");
         }
         finally
         {
@@ -1026,8 +1026,8 @@ public class ImportDatatypeTests
             File.WriteAllText(tmpL5x, fragment);
 
             // SDK import runner: no-op (simulates open/PartialImport/SaveAsync succeeding)
-            Action<string, string, string, ImportCollisionOption> sdkRunner =
-                (_, __, ___, ____) => { /* no-op */ };
+            Func<string, string, string, ImportCollisionOption, IReadOnlyList<string>> sdkRunner =
+                (_, __, ___, ____) => Array.Empty<string>();
 
             // Build runner: throws "Operation not supported" — simulates Logix Designer 36.05
             // where BuildAsync is not available on the SDK version installed on the bench.
@@ -1391,13 +1391,14 @@ public class ImportDatatypeTests
         // Recording fake: appends the SDK calls it represents to callLog and
         // captures the temp L5X path so we can verify it is deleted afterwards.
         string? capturedTempL5x = null;
-        Action<string, string, string, ImportCollisionOption> sdkRunner =
+        Func<string, string, string, ImportCollisionOption, IReadOnlyList<string>> sdkRunner =
             (_, tempL5x, ___, collision) =>
             {
                 capturedTempL5x = tempL5x;
                 callLog.Add("export");
                 callLog.Add($"import({collision})");
                 callLog.Add("save");
+                return Array.Empty<string>();
             };
 
         // Re-export fake: appends "re-export" and returns the expected members.
@@ -1457,7 +1458,7 @@ public class ImportDatatypeTests
     /// </para>
     /// </summary>
     [Fact]
-    public void RealRun_Verified_IsFalse_WhenReexportDiffers()
+    public void RealRun_ReexportDiffers_ReturnsImportNotApplied_AndWritesNothing()
     {
         var members = new[]
         {
@@ -1466,8 +1467,8 @@ public class ImportDatatypeTests
         };
 
         // SDK runner fake: succeeds without side-effects.
-        Action<string, string, string, ImportCollisionOption> sdkRunner =
-            (_, __, ___, ____) => { /* no-op */ };
+        Func<string, string, string, ImportCollisionOption, IReadOnlyList<string>> sdkRunner =
+            (_, __, ___, ____) => Array.Empty<string>();
 
         // Re-export fake: returns a DIFFERENT member list.
         Func<string, IReadOnlyList<DataTypeMemberEntry>> mismatchReader =
@@ -1494,9 +1495,8 @@ public class ImportDatatypeTests
                 sdkImportRunner: sdkRunner,
                 reexportReader:  mismatchReader);
 
-            var ok = Assert.IsType<ImportDatatypeResult>(result);
-            Assert.False(ok.Verified,
-                "verified must be false when re-exported members differ from the target list");
+            var err = Assert.IsType<ImportNotAppliedError>(result);
+            Assert.False(File.Exists(tmpSave), "no file may be left at saveAs when the import did not apply");
         }
         finally
         {
@@ -1539,8 +1539,8 @@ public class ImportDatatypeTests
             };
 
             // SDK runner fake: operates only on saveAs and tempL5x (never acdPath).
-            Action<string, string, string, ImportCollisionOption> sdkRunner =
-                (saveAs, tempL5x, xpath, collision) => { /* no-op on saveAs */ };
+            Func<string, string, string, ImportCollisionOption, IReadOnlyList<string>> sdkRunner =
+                (saveAs, tempL5x, xpath, collision) => Array.Empty<string>(); // no-op on saveAs
 
             var result = ImportDatatypeHandler.Execute(
                 acdPath:         tmpAcd,
@@ -1594,12 +1594,53 @@ public class ImportDatatypeTests
         return acd;
     }
 
+    /// <summary>
+    /// Reader fake for a new type: throws for the source ACD (type absent) and returns
+    /// <paramref name="afterImport"/> for any other path (the imported temp result).
+    /// </summary>
+    private static Func<string, IReadOnlyList<DataTypeMemberEntry>> NewTypeReader(
+        string sourceAcd, IReadOnlyList<DataTypeMemberEntry> afterImport) =>
+        path => string.Equals(path, sourceAcd, StringComparison.Ordinal)
+            ? throw new InvalidOperationException("type not found in ACD")
+            : afterImport;
+
     [Fact]
-    public void NewType_RealRun_ReturnsNewDatatypeUnsupported_WritesNothing()
+    public void NewType_RealRun_ImportsAtControllerDataTypes_AndVerifiesAtTypePath()
     {
         var acd     = FakeAcd();
         var tmpSave = TempPath(".ACD");
-        var sdkCalls = 0;
+        string? seenXpath = null;
+        try
+        {
+            var result = ImportDatatypeHandler.Execute(
+                acdPath:         acd,
+                datatypeName:    "BrandNewType",
+                l5xPath:         null,
+                members:         OneMember,
+                saveAs:          tmpSave,
+                dryRun:          false,
+                confirm:         true,
+                reexportReader:  NewTypeReader(acd, OneMember),
+                sdkImportRunner: (_, _, xpath, _) => { seenXpath = xpath; return Array.Empty<string>(); });
+
+            var ok = Assert.IsType<ImportDatatypeResult>(result);
+            Assert.Equal("Controller/DataTypes", seenXpath);
+            Assert.True(ok.Verified);
+            Assert.True(File.Exists(tmpSave));
+            Assert.Null(ok.WillCreate);
+        }
+        finally
+        {
+            try { File.Delete(acd); }     catch { /* best effort */ }
+            try { File.Delete(tmpSave); } catch { /* best effort */ }
+        }
+    }
+
+    [Fact]
+    public void NewType_RealRun_TypeMissingAfterImport_ReturnsImportNotApplied()
+    {
+        var acd     = FakeAcd();
+        var tmpSave = TempPath(".ACD");
         try
         {
             var result = ImportDatatypeHandler.Execute(
@@ -1611,14 +1652,11 @@ public class ImportDatatypeTests
                 dryRun:          false,
                 confirm:         true,
                 reexportReader:  TypeAbsentReader,
-                sdkImportRunner: (_, _, _, _) => sdkCalls++);
+                sdkImportRunner: (_, _, _, _) => Array.Empty<string>());
 
-            var err = Assert.IsType<ImportDatatypeError>(result);
-            Assert.Equal("NewDatatypeUnsupported", err.Kind);
-            Assert.Contains("not supported", err.Error, StringComparison.OrdinalIgnoreCase);
-            Assert.Contains("Studio 5000", err.Error, StringComparison.Ordinal);
-            Assert.Equal(0, sdkCalls);
-            Assert.False(File.Exists(tmpSave), "no saveAs file may be written for a new type");
+            var err = Assert.IsType<ImportNotAppliedError>(result);
+            Assert.Empty(err.ActualMembers);
+            Assert.False(File.Exists(tmpSave));
         }
         finally
         {
@@ -1648,7 +1686,8 @@ public class ImportDatatypeTests
             Assert.NotNull(ok.Delta);
             Assert.NotEmpty(ok.L5XFragment);
             var warning = Assert.Single(ok.Warnings!);
-            Assert.Equal(ImportDatatypeHandler.NewDatatypeUnsupportedMessage, warning);
+            Assert.Equal("this real run will create the type", warning);
+            Assert.Equal(OneMember.Length, ok.Delta!.Added.Count());
 
             using var json = JsonDocument.Parse(JsonSerializer.Serialize(ok));
             Assert.True(json.RootElement.GetProperty("willCreate").GetBoolean());
@@ -1657,42 +1696,6 @@ public class ImportDatatypeTests
         finally
         {
             try { File.Delete(acd); } catch { /* best effort */ }
-        }
-    }
-
-    [Fact]
-    public void NewType_Refusal_IsAudited()
-    {
-        var logDir  = Path.Combine(Path.GetTempPath(), $"logixmcp-audit-{Guid.NewGuid():N}");
-        var acd     = FakeAcd();
-        var tmpSave = TempPath(".L5X");
-        AuditLogger.OverrideLogDir(logDir);
-        try
-        {
-            var result = ImportDatatypeHandler.Execute(
-                acdPath:        acd,
-                datatypeName:   "BrandNewType",
-                l5xPath:        null,
-                members:        OneMember,
-                saveAs:         tmpSave,
-                dryRun:         false,
-                confirm:        true,
-                reexportReader: TypeAbsentReader);
-            Assert.IsType<ImportDatatypeError>(result);
-
-            var evt = Assert.Single(
-                File.ReadAllLines(Path.Combine(logDir, "audit.jsonl"))
-                    .Select(l => JsonDocument.Parse(l).RootElement)
-                    .Where(e => e.GetProperty("event").GetString() == "datatype_import"));
-            Assert.Equal("refused",      evt.GetProperty("outcome").GetString());
-            Assert.Equal("BrandNewType", evt.GetProperty("datatypeName").GetString());
-        }
-        finally
-        {
-            AuditLogger.OverrideLogDir(null);
-            try { File.Delete(acd); }     catch { /* best effort */ }
-            try { File.Delete(tmpSave); } catch { /* best effort */ }
-            try { Directory.Delete(logDir, recursive: true); } catch { /* best effort */ }
         }
     }
 
@@ -1713,7 +1716,7 @@ public class ImportDatatypeTests
                 dryRun:          false,
                 confirm:         true,
                 reexportReader:  _ => OneMember,
-                sdkImportRunner: (_, _, _, _) => sdkCalls++);
+                sdkImportRunner: (_, _, _, _) => { sdkCalls++; return Array.Empty<string>(); });
 
             var ok = Assert.IsType<ImportDatatypeResult>(result);
             Assert.Equal(1, sdkCalls);
@@ -1759,6 +1762,453 @@ public class ImportDatatypeTests
         {
             try { File.Delete(acd); }     catch { /* best effort */ }
             try { File.Delete(tmpSave); } catch { /* best effort */ }
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    //  Truthful import, verification, collision outcomes, SDK messages
+    // ─────────────────────────────────────────────────────────────────────────
+
+    private static readonly DataTypeMemberEntry[] TwoMembers =
+    {
+        new("Enable", "BOOL", "0", "NullType", false, "Read/Write"),
+        new("Speed",  "REAL", "0", "NullType", false, "Read/Write"),
+    };
+
+    private static readonly IReadOnlyList<string> NoMessages = Array.Empty<string>();
+
+    /// <summary>
+    /// Reader fake for an existing type: <paramref name="before"/> for the source ACD,
+    /// <paramref name="after"/> for any other path (the imported temp result).
+    /// </summary>
+    private static Func<string, IReadOnlyList<DataTypeMemberEntry>> ExistingTypeReader(
+        string sourceAcd, IReadOnlyList<DataTypeMemberEntry> before, IReadOnlyList<DataTypeMemberEntry> after) =>
+        path => string.Equals(path, sourceAcd, StringComparison.Ordinal) ? before : after;
+
+    /// <summary>Directory entries beside <paramref name="saveAs"/> whose names mark leaked temp files.</summary>
+    private static string[] LeakedTemps(string saveAs) =>
+        Directory.GetFiles(Path.GetDirectoryName(saveAs)!, "*.tmp*")
+            .Where(f => Path.GetFileName(f).Contains(Path.GetFileNameWithoutExtension(saveAs), StringComparison.Ordinal))
+            .ToArray();
+
+    private static object RealRun(
+        string acd, string saveAs, IReadOnlyList<DataTypeMemberEntry> members,
+        Func<string, IReadOnlyList<DataTypeMemberEntry>>? reader,
+        Func<string, string, string, ImportCollisionOption, IReadOnlyList<string>> runner,
+        ImportCollisionOption collision = ImportCollisionOption.Overwrite) =>
+        ImportDatatypeHandler.Execute(
+            acdPath: acd, datatypeName: "MotorCmd", l5xPath: null, members: members,
+            saveAs: saveAs, service: DemoService(), collision: collision, dryRun: false, confirm: true,
+            reexportReader: reader, sdkImportRunner: runner);
+
+    [Fact]
+    public void RenderedFragment_ContainsContextTrue_WithContextTypes()
+    {
+        var members = new[]
+        {
+            new DataTypeMemberEntry("Motor",  "MotorCmd", "0", "NullType", false, "Read/Write"),
+            new DataTypeMemberEntry("Enable", "BOOL",     "0", "NullType", false, "Read/Write"),
+        };
+        var ok = Assert.IsType<ImportDatatypeResult>(ImportDatatypeHandler.Execute(
+            acdPath: "/tmp/project.ACD", datatypeName: "NewControlType", l5xPath: null,
+            members: members, saveAs: "/tmp/output.L5X", service: DemoService()));
+        var doc = XDocument.Parse(ok.L5XFragment);
+        Assert.Equal("true", doc.Root!.Attribute("ContainsContext")?.Value);
+        Assert.Contains(doc.Root.Element("Controller")!.Element("DataTypes")!.Elements("DataType"),
+            e => e.Attribute("Use")?.Value == "Context");
+    }
+
+    [Fact]
+    public void RealRun_ReexportEqualsTarget_VerifiedTrue_FilePresent_NoSdkMessagesWhenEmpty()
+    {
+        var acd = FakeAcd(); var save = TempPath(".ACD");
+        try
+        {
+            var ok = Assert.IsType<ImportDatatypeResult>(
+                RealRun(acd, save, TwoMembers, _ => TwoMembers, (_, _, _, _) => NoMessages));
+            Assert.True(ok.Verified);
+            Assert.True(File.Exists(save));
+            Assert.Null(ok.SdkMessages);
+            Assert.DoesNotContain("sdkMessages", JsonSerializer.Serialize(ok), StringComparison.Ordinal);
+        }
+        finally { File.Delete(acd); File.Delete(save); }
+    }
+
+    [Fact]
+    public void RealRun_ReexportDiffers_ImportNotApplied_CarriesMembersAndMessages_NoFileNoTemp()
+    {
+        var acd = FakeAcd(); var save = TempPath(".ACD");
+        try
+        {
+            var result = RealRun(acd, save, TwoMembers, ExistingTypeReader(acd, OneMember, OneMember),
+                (_, _, _, _) => new[] { "import log: nothing to do" });
+            var err = Assert.IsType<ImportNotAppliedError>(result);
+            Assert.Equal("ImportNotApplied", err.Kind);
+            Assert.Equal("MotorCmd", err.DatatypeName);
+            Assert.Equal(2, err.ExpectedMembers.Count);
+            Assert.Single(err.ActualMembers);
+            Assert.Equal("Overwrite", err.Collision);
+            Assert.Equal(new[] { "import log: nothing to do" }, err.SdkMessages);
+            Assert.Contains("collision: Overwrite", err.Hint, StringComparison.Ordinal);
+            Assert.False(File.Exists(save));
+            Assert.Empty(LeakedTemps(save));
+
+            using var json = JsonDocument.Parse(JsonSerializer.Serialize(result));
+            var root = json.RootElement;
+            foreach (var absent in new[] { "savedTo", "advisory", "buildVerify", "build" })
+                Assert.False(root.TryGetProperty(absent, out _), $"'{absent}' must not appear on ImportNotApplied");
+            Assert.Equal(2, root.GetProperty("expectedMembers").GetArrayLength());
+            Assert.Equal(1, root.GetProperty("actualMembers").GetArrayLength());
+        }
+        finally { File.Delete(acd); File.Delete(save); }
+    }
+
+    [Fact]
+    public void RealRun_ImportNotApplied_BuildRunnerNotCalled()
+    {
+        var acd = FakeAcd(); var save = TempPath(".ACD");
+        var builds = 0;
+        try
+        {
+            var result = ImportDatatypeHandler.Execute(
+                acdPath: acd, datatypeName: "MotorCmd", l5xPath: null, members: TwoMembers,
+                saveAs: save, service: DemoService(), dryRun: false, confirm: true,
+                reexportReader: ExistingTypeReader(acd, OneMember, OneMember),
+                sdkImportRunner: (_, _, _, _) => NoMessages,
+                buildRunner: _ => { builds++; return 0; });
+            Assert.IsType<ImportNotAppliedError>(result);
+            Assert.Equal(0, builds);
+        }
+        finally { File.Delete(acd); File.Delete(save); }
+    }
+
+    [Fact]
+    public void RealRun_NoReexportReader_VerifiedNull_NoteSaysUnverified()
+    {
+        var acd = FakeAcd(); var save = TempPath(".ACD");
+        try
+        {
+            var ok = Assert.IsType<ImportDatatypeResult>(
+                RealRun(acd, save, OneMember, null, (_, _, _, _) => NoMessages));
+            Assert.Null(ok.Verified);
+            Assert.Contains("could not be verified", ok.Note, StringComparison.Ordinal);
+            Assert.True(File.Exists(save));
+        }
+        finally { File.Delete(acd); File.Delete(save); }
+    }
+
+    [Fact]
+    public void Discard_ExistingType_UnchangedReexport_ImportNotApplied_WithDiscardReason()
+    {
+        var acd = FakeAcd(); var save = TempPath(".ACD");
+        try
+        {
+            var err = Assert.IsType<ImportNotAppliedError>(RealRun(
+                acd, save, TwoMembers, ExistingTypeReader(acd, OneMember, OneMember),
+                (_, _, _, _) => NoMessages, ImportCollisionOption.Discard));
+            Assert.Equal("collision=Discard kept the existing type", err.Reason);
+            Assert.Equal("Discard", err.Collision);
+            Assert.False(File.Exists(save));
+            Assert.Empty(LeakedTemps(save));
+        }
+        finally { File.Delete(acd); File.Delete(save); }
+    }
+
+    [Fact]
+    public void Discard_TargetAlreadyEqualsCurrent_NoOpSuccess_WithNote()
+    {
+        var acd = FakeAcd(); var save = TempPath(".ACD");
+        try
+        {
+            var ok = Assert.IsType<ImportDatatypeResult>(RealRun(
+                acd, save, OneMember, ExistingTypeReader(acd, OneMember, OneMember),
+                (_, _, _, _) => NoMessages, ImportCollisionOption.Discard));
+            Assert.True(ok.Verified);
+            Assert.Equal("the type already had these members", ok.Note);
+            Assert.True(File.Exists(save));
+        }
+        finally { File.Delete(acd); File.Delete(save); }
+    }
+
+    [Fact]
+    public void Cancel_SdkAbort_ReturnsImportCancelledOnCollision_WithSdkMessage_NothingWritten()
+    {
+        var acd = FakeAcd(); var save = TempPath(".ACD");
+        try
+        {
+            var result = RealRun(acd, save, TwoMembers, ExistingTypeReader(acd, OneMember, OneMember),
+                (_, _, _, _) => throw new SdkImportException(
+                    "XMLSrv_E_IMPORT_ABORTED_NO_CHANGES: import aborted, no changes made",
+                    new[] { "Data type MotorCmd already exists" }),
+                ImportCollisionOption.Cancel);
+            var err = Assert.IsType<ImportCancelledOnCollisionError>(result);
+            Assert.Equal("ImportCancelledOnCollision", err.Kind);
+            Assert.Contains("XMLSrv_E_IMPORT_ABORTED_NO_CHANGES", err.Error, StringComparison.Ordinal);
+            Assert.Equal(new[] { "Data type MotorCmd already exists" }, err.SdkMessages);
+            Assert.False(File.Exists(save));
+            Assert.Empty(LeakedTemps(save));
+        }
+        finally { File.Delete(acd); File.Delete(save); }
+    }
+
+    [Fact]
+    public void Cancel_AbortMnemonicOnlyInSdkMessages_StillImportCancelledOnCollision()
+    {
+        var acd = FakeAcd(); var save = TempPath(".ACD");
+        try
+        {
+            var result = RealRun(acd, save, TwoMembers, ExistingTypeReader(acd, OneMember, OneMember),
+                (_, _, _, _) => throw new SdkImportException(
+                    "import failed", new[] { "XMLSrv_E_IMPORT_ABORTED_NO_CHANGES" }),
+                ImportCollisionOption.Cancel);
+            Assert.IsType<ImportCancelledOnCollisionError>(result);
+        }
+        finally { File.Delete(acd); File.Delete(save); }
+    }
+
+    [Fact]
+    public void ExistingType_ImportsAtPerTypeXPath()
+    {
+        var acd = FakeAcd(); var save = TempPath(".ACD");
+        string? seen = null;
+        try
+        {
+            Assert.IsType<ImportDatatypeResult>(RealRun(
+                acd, save, TwoMembers, ExistingTypeReader(acd, OneMember, TwoMembers),
+                (_, _, xpath, _) => { seen = xpath; return NoMessages; }));
+            Assert.Equal("Controller/DataTypes/DataType[@Name='MotorCmd']", seen);
+        }
+        finally { File.Delete(acd); File.Delete(save); }
+    }
+
+    [Fact]
+    public void SdkMessages_FlowThroughOnSuccess_AndIntoAuditLine()
+    {
+        var logDir = Path.Combine(Path.GetTempPath(), $"logixmcp-audit-{Guid.NewGuid():N}");
+        var acd = FakeAcd(); var save = TempPath(".ACD");
+        AuditLogger.OverrideLogDir(logDir);
+        try
+        {
+            var ok = Assert.IsType<ImportDatatypeResult>(RealRun(
+                acd, save, TwoMembers, ExistingTypeReader(acd, OneMember, TwoMembers),
+                (_, _, _, _) => new[] { "Imported DataType MotorCmd" }));
+            Assert.Equal(new[] { "Imported DataType MotorCmd" }, ok.SdkMessages);
+
+            var evt = Assert.Single(
+                File.ReadAllLines(Path.Combine(logDir, "audit.jsonl"))
+                    .Select(l => JsonDocument.Parse(l).RootElement)
+                    .Where(e => e.GetProperty("event").GetString() == "datatype_import"));
+            var outcome = evt.GetProperty("outcome").GetString();
+            Assert.StartsWith("success", outcome, StringComparison.Ordinal);
+            Assert.Contains("Imported DataType MotorCmd", outcome, StringComparison.Ordinal);
+        }
+        finally
+        {
+            AuditLogger.OverrideLogDir(null);
+            File.Delete(acd); File.Delete(save);
+            try { Directory.Delete(logDir, recursive: true); } catch { /* best effort */ }
+        }
+    }
+
+    [Fact]
+    public void ImportNotApplied_IsAudited_WithKindAndSdkMessages()
+    {
+        var logDir = Path.Combine(Path.GetTempPath(), $"logixmcp-audit-{Guid.NewGuid():N}");
+        var acd = FakeAcd(); var save = TempPath(".ACD");
+        AuditLogger.OverrideLogDir(logDir);
+        try
+        {
+            Assert.IsType<ImportNotAppliedError>(RealRun(
+                acd, save, TwoMembers, ExistingTypeReader(acd, OneMember, OneMember),
+                (_, _, _, _) => new[] { "kept existing" }));
+            var evt = Assert.Single(
+                File.ReadAllLines(Path.Combine(logDir, "audit.jsonl"))
+                    .Select(l => JsonDocument.Parse(l).RootElement)
+                    .Where(e => e.GetProperty("event").GetString() == "datatype_import"));
+            var outcome = evt.GetProperty("outcome").GetString();
+            Assert.StartsWith("error:ImportNotApplied", outcome, StringComparison.Ordinal);
+            Assert.Contains("kept existing", outcome, StringComparison.Ordinal);
+        }
+        finally
+        {
+            AuditLogger.OverrideLogDir(null);
+            File.Delete(acd); File.Delete(save);
+            try { Directory.Delete(logDir, recursive: true); } catch { /* best effort */ }
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    //  BOOL members: visible-member verification, delta, no .bak
+    // ─────────────────────────────────────────────────────────────────────────
+
+    private static readonly DataTypeMemberEntry CountMember =
+        new("Count", "DINT", "0", "Decimal", false, "Read/Write");
+
+    private static readonly DataTypeMemberEntry RunMember =
+        new("Run", "BOOL", "0", "", false, "Read/Write");
+
+    private static DataTypeMemberEntry[] Reexported(string boolType) => new[]
+    {
+        CountMember,
+        new DataTypeMemberEntry("ZZZZZZZZZZFlags0", "SINT", "0", "Decimal", true, "Read/Write"),
+        new DataTypeMemberEntry("Run", boolType, "0", "", false, "Read/Write",
+            Target: "ZZZZZZZZZZFlags0", BitNumber: 0),
+    };
+
+    private static string MakeAcd()
+    {
+        var path = Path.GetTempFileName();
+        File.WriteAllBytes(path, new byte[101 * 1024]);
+        return path;
+    }
+
+    private static object RunGainBool(
+        string acd, string saveAs, Func<string, IReadOnlyList<DataTypeMemberEntry>> reader,
+        Func<string, string, string, ImportCollisionOption, IReadOnlyList<string>>? runner = null) =>
+        ImportDatatypeHandler.Execute(
+            acdPath:         acd,
+            datatypeName:    "Flags",
+            l5xPath:         null,
+            members:         new[] { CountMember, RunMember },
+            saveAs:          saveAs,
+            dryRun:          false,
+            confirm:         true,
+            sdkImportRunner: runner ?? ((_, __, ___, ____) => Array.Empty<string>()),
+            reexportReader:  reader);
+
+    [Theory]
+    [InlineData("BOOL")]
+    [InlineData("BIT")]
+    public void RealRun_TypeGainingBoolMember_VerifiesTrue(string boolType)
+    {
+        var acd = MakeAcd();
+        var saveAs = TempPath(".out.ACD");
+        try
+        {
+            var result = RunGainBool(acd, saveAs,
+                path => path == acd ? new[] { CountMember } : Reexported(boolType));
+
+            var ok = Assert.IsType<ImportDatatypeResult>(result);
+            Assert.True(ok.Verified);
+            Assert.Equal(saveAs, ok.SavedTo);
+            Assert.True(File.Exists(saveAs));
+        }
+        finally
+        {
+            File.Delete(acd);
+            if (File.Exists(saveAs)) File.Delete(saveAs);
+        }
+    }
+
+    [Fact]
+    public void DryRunDelta_AddingBool_ListsOneAddedMember()
+    {
+        var current = new[] { CountMember };
+        var target  = Reexported("BIT");
+
+        var delta = ImportDatatypeHandler.ComputeDelta(current, target);
+        Assert.Equal(new[] { "Run" }, delta.Added.ToArray());
+        Assert.Empty(delta.Removed);
+        Assert.Empty(delta.Retyped);
+
+        // Hosts on both sides, BIT vs BOOL: nothing changed.
+        var same = ImportDatatypeHandler.ComputeDelta(Reexported("BOOL"), Reexported("BIT"));
+        Assert.Empty(same.Added);
+        Assert.Empty(same.Removed);
+        Assert.Empty(same.Retyped);
+        Assert.False(same.Reordered);
+    }
+
+    [Fact]
+    public void ImportNotApplied_ListsVisibleMembers_AndReportsHiddenHostsSeparately()
+    {
+        var acd = MakeAcd();
+        var saveAs = TempPath(".out.ACD");
+        try
+        {
+            var result = RunGainBool(acd, saveAs,
+                path => new[]
+                {
+                    CountMember,
+                    new DataTypeMemberEntry("ZZZZZZZZZZFlags0", "SINT", "0", "Decimal", true, "Read/Write"),
+                });
+
+            var err = Assert.IsType<ImportNotAppliedError>(result);
+            Assert.DoesNotContain(err.ExpectedMembers, m => m.Hidden);
+            Assert.DoesNotContain(err.ActualMembers, m => m.Hidden);
+            Assert.Equal(new[] { "Count" }, err.ActualMembers.Select(m => m.Name).ToArray());
+            var host = Assert.Single(err.HiddenHosts!);
+            Assert.Equal("ZZZZZZZZZZFlags0", host.Name);
+            Assert.False(File.Exists(saveAs));
+        }
+        finally
+        {
+            File.Delete(acd);
+        }
+    }
+
+    private static Func<string, string, string, ImportCollisionOption, IReadOnlyList<string>> BakWritingRunner(
+        List<string> baks) =>
+        (dest, _, __, ___) =>
+        {
+            var dir  = Path.GetDirectoryName(dest)!;
+            var stem = Path.GetFileNameWithoutExtension(dest);
+            var a = dest + ".bak";
+            var b = Path.Combine(dir, stem + ".1.bak");
+            File.WriteAllText(a, "bak");
+            File.WriteAllText(b, "bak");
+            baks.Add(a);
+            baks.Add(b);
+            return Array.Empty<string>();
+        };
+
+    [Fact]
+    public void RealRun_BakBesideTemp_RemovedOnSuccess()
+    {
+        var acd = MakeAcd();
+        var dir = Path.Combine(Path.GetTempPath(), $"logixmcp-bak-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(dir);
+        var saveAs = Path.Combine(dir, "out.ACD");
+        var baks = new List<string>();
+        try
+        {
+            var result = RunGainBool(acd, saveAs,
+                path => path == acd ? new[] { CountMember } : Reexported("BIT"),
+                BakWritingRunner(baks));
+
+            Assert.True(Assert.IsType<ImportDatatypeResult>(result).Verified);
+            Assert.Equal(2, baks.Count);
+            Assert.Equal(new[] { saveAs }, Directory.GetFileSystemEntries(dir));
+        }
+        finally
+        {
+            File.Delete(acd);
+            Directory.Delete(dir, true);
+        }
+    }
+
+    [Fact]
+    public void RealRun_BakBesideTemp_RemovedOnImportNotApplied()
+    {
+        var acd = MakeAcd();
+        var dir = Path.Combine(Path.GetTempPath(), $"logixmcp-bak-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(dir);
+        var saveAs = Path.Combine(dir, "out.ACD");
+        var baks = new List<string>();
+        try
+        {
+            var result = RunGainBool(acd, saveAs,
+                path => new[] { CountMember },
+                BakWritingRunner(baks));
+
+            Assert.IsType<ImportNotAppliedError>(result);
+            Assert.Equal(2, baks.Count);
+            Assert.Empty(Directory.GetFileSystemEntries(dir));
+        }
+        finally
+        {
+            File.Delete(acd);
+            Directory.Delete(dir, true);
         }
     }
 }

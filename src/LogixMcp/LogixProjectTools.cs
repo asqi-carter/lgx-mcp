@@ -89,6 +89,25 @@ public class LogixProjectTools
         JsonSerializer.Serialize(GetRoutineHandler.Execute(_service, program, routine, _tagSessionService));
 
     /// <summary>
+    /// Refreshes the session's controller image if this session changed the controller since it was taken, then
+    /// runs <see cref="GetFindTagsResponse"/>.
+    /// </summary>
+    public async Task<string> GetFindTagsResponseAsync(
+        string? namePattern, string? dataType, int? limit = null, string? cursor = null, CancellationToken ct = default)
+    {
+        return await AnalysisImage.ReadAsync(_tagSessionService, () => GetFindTagsResponse(namePattern, dataType, limit, cursor), ct: ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Refreshes the session's controller image if this session changed the controller since it was taken, then
+    /// runs <see cref="GetGetRoutineResponse"/>.
+    /// </summary>
+    public async Task<string> GetGetRoutineResponseAsync(string program, string routine, CancellationToken ct = default)
+    {
+        return await AnalysisImage.ReadAsync(_tagSessionService, () => GetGetRoutineResponse(program, routine), ct: ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
     /// Draws rungs of the open project file as ladder text and/or SVG.
     /// </summary>
     public string GetGetRungDiagramResponse(string program, string routine, string rung, string? format = "text") =>
@@ -101,14 +120,16 @@ public class LogixProjectTools
     public async System.Threading.Tasks.Task<string> GetGetRungDiagramResponseAsync(
         string program, string routine, string rung, string? format = "text", CancellationToken ct = default)
     {
+        var because = await AnalysisImage.PrepareAsync(_tagSessionService, ct).ConfigureAwait(false);
+        if (AnalysisImage.ChangedErrorOf(_tagSessionService) is { } changed) return JsonSerializer.Serialize(changed);
         var svc = TagRouteResolver.Backend(_tagSessionService.Service);
         if (svc is IRoutineL5xSource live)
         {
-            var drawn = await RungDiagramHandler.ExecuteAsync(live, program, routine, rung, format, ct)
+            var drawn = await RungDiagramHandler.ExecuteAsync(live, program, routine, rung, format, ct, _tagSessionService.ZoneTested)
                 .ConfigureAwait(false);
-            return JsonSerializer.Serialize(drawn);
+            return AnalysisImage.StampRefreshed(JsonSerializer.Serialize(drawn), because);
         }
-        return GetGetRungDiagramResponse(program, routine, rung, format);
+        return AnalysisImage.StampRefreshed(GetGetRungDiagramResponse(program, routine, rung, format), because);
     }
 
     /// <summary>
@@ -123,17 +144,24 @@ public class LogixProjectTools
     /// </summary>
     public async Task<string> GetCrossReferenceResponseAsync(string tagName, bool? includePending = null, CancellationToken ct = default)
     {
-        await AnalysisImage.PrepareAsync(_tagSessionService, ct).ConfigureAwait(false);
-        return GetCrossReferenceResponse(tagName, includePending);
+        return await AnalysisImage.ReadAsync(_tagSessionService, () => GetCrossReferenceResponse(tagName, includePending), ct: ct).ConfigureAwait(false);
     }
 
     /// <summary>
-    /// Delegates to <see cref="TraceOriginHandler.Execute(ProjectService, string, int?, string?, string?)"/>
+    /// Delegates to <see cref="TraceOriginHandler.Execute(ProjectService, string, int?, string?, string?, int?, TagSessionService?, bool?)"/>
     /// and serializes the result.
     /// </summary>
     public string GetTraceOriginResponse(string tag, int maxDepth = 6, string? focus = null, string format = "text",
-        int maxChars = TraceOriginHandler.DefaultMaxChars) =>
-        JsonSerializer.Serialize(TraceOriginHandler.Execute(_service, tag, maxDepth, focus, format, maxChars, _tagSessionService));
+        int maxChars = TraceOriginHandler.DefaultMaxChars, bool? includePending = null) =>
+        JsonSerializer.Serialize(TraceOriginHandler.Execute(_service, tag, maxDepth, focus, format, maxChars, _tagSessionService, includePending));
+
+    /// <summary>Refreshes a stale session image first, then runs <see cref="GetTraceOriginResponse"/>.</summary>
+    public async Task<string> GetTraceOriginResponseAsync(string tag, int maxDepth = 6, string? focus = null,
+        string format = "text", int maxChars = TraceOriginHandler.DefaultMaxChars, bool? includePending = null,
+        CancellationToken ct = default)
+    {
+        return await AnalysisImage.ReadAsync(_tagSessionService, () => GetTraceOriginResponse(tag, maxDepth, focus, format, maxChars, includePending), ct: ct).ConfigureAwait(false);
+    }
 
     /// <summary>
     /// Delegates to <see cref="DiffProjectsHandler.Execute"/> and serializes the result.
@@ -146,6 +174,16 @@ public class LogixProjectTools
     /// </summary>
     public string GetDiffAgainstControllerResponse(string l5xPath) =>
         JsonSerializer.Serialize(DiffAgainstControllerHandler.Execute(l5xPath, _tagSessionService));
+
+    /// <summary>
+    /// Refreshes the session's controller image if this session changed the controller since it was taken, then
+    /// runs <see cref="GetDiffAgainstControllerResponse"/>.
+    /// </summary>
+    public async Task<string> GetDiffAgainstControllerResponseAsync(string l5xPath, CancellationToken ct = default)
+    {
+        return JsonSerializer.Serialize(
+            await DiffAgainstControllerHandler.ExecuteAsync(l5xPath, _tagSessionService, ct).ConfigureAwait(false));
+    }
 
     /// <summary>
     /// Delegates to <see cref="ListDatatypesHandler.Execute"/> and serializes the result.
@@ -189,7 +227,7 @@ public class LogixProjectTools
         Func<string, bool>?                 studioLockChecker = null,
         Func<string, IReadOnlyList<DataTypeMemberEntry>>? reexportReader = null,
         Func<string, int>?                  buildRunner      = null,
-        Action<string, string, string, ImportCollisionOption>? sdkImportRunner = null,
+        Func<string, string, string, ImportCollisionOption, IReadOnlyList<string>>? sdkImportRunner = null,
         bool                                overwrite        = false)
     {
         var (lockChk, reexport, build, import) = ResolveImportDatatypeDelegates(
@@ -216,13 +254,13 @@ public class LogixProjectTools
         Func<string, bool>?,
         Func<string, IReadOnlyList<DataTypeMemberEntry>>?,
         Func<string, int>?,
-        Action<string, string, string, ImportCollisionOption>?)
+        Func<string, string, string, ImportCollisionOption, IReadOnlyList<string>>?)
         ResolveImportDatatypeDelegates(
             string datatypeName,
             Func<string, bool>? studioLockChecker,
             Func<string, IReadOnlyList<DataTypeMemberEntry>>? reexportReader,
             Func<string, int>? buildRunner,
-            Action<string, string, string, ImportCollisionOption>? sdkImportRunner)
+            Func<string, string, string, ImportCollisionOption, IReadOnlyList<string>>? sdkImportRunner)
     {
         var lockChk = studioLockChecker ?? SdkImportDelegates.StudioLockChecker;
         var import  = sdkImportRunner   ?? SdkImportDelegates.SdkImportRunner;
@@ -272,8 +310,7 @@ public class LogixProjectTools
     public async Task<string> GetVerifyInterlockResponseAsync(
         string outputTag, string conditionTag, bool? includePending = null, CancellationToken ct = default)
     {
-        await AnalysisImage.PrepareAsync(_tagSessionService, ct).ConfigureAwait(false);
-        return GetVerifyInterlockResponse(outputTag, conditionTag, includePending);
+        return await AnalysisImage.ReadAsync(_tagSessionService, () => GetVerifyInterlockResponse(outputTag, conditionTag, includePending), ct: ct).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -289,8 +326,7 @@ public class LogixProjectTools
     public async Task<string> GetLintResponseAsync(
         string? program = null, string? routine = null, string? namingPattern = null, CancellationToken ct = default)
     {
-        await AnalysisImage.PrepareAsync(_tagSessionService, ct).ConfigureAwait(false);
-        return GetLintResponse(program, routine, namingPattern);
+        return await AnalysisImage.ReadAsync(_tagSessionService, () => GetLintResponse(program, routine, namingPattern), ct: ct).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -299,6 +335,17 @@ public class LogixProjectTools
     public string GetDocumentResponse(
         string? scope = null, string? program = null, string? routine = null, bool includeRungText = true) =>
         DocumentHandler.Serialize(DocumentHandler.Execute(_service, scope, program, routine, includeRungText, session: _tagSessionService));
+
+    /// <summary>
+    /// Refreshes the session's controller image if this session changed the controller since it was taken, then
+    /// runs <see cref="GetDocumentResponse"/>.
+    /// </summary>
+    public async Task<string> GetDocumentResponseAsync(
+        string? scope = null, string? program = null, string? routine = null, bool includeRungText = true,
+        CancellationToken ct = default)
+    {
+        return await AnalysisImage.ReadAsync(_tagSessionService, () => GetDocumentResponse(scope, program, routine, includeRungText), ct: ct).ConfigureAwait(false);
+    }
 
     /// <summary>
     /// Delegates to <see cref="CloseProjectHandler.Execute"/> and serializes the result.
@@ -419,7 +466,7 @@ public class LogixProjectTools
                  "It never reads a pending (unsaved) edit. " +
 #endif
                  "Call logix_open_project first.")]
-    public string FindTags(
+    public async Task<string> FindTags(
         [Description("Optional glob-style name pattern, e.g. 'Cmd_*' or '?im_*'. Omit to match all names.")]
         string? namePattern = null,
         [Description("Optional data type filter, e.g. 'BOOL' or 'REAL' (case-insensitive). Omit to match all types.")]
@@ -427,10 +474,11 @@ public class LogixProjectTools
         [Description("Maximum tags to return per call (default 200).")]
         int? limit = null,
         [Description("Cursor from a previous response's 'nextCursor' to fetch the next page. Omit for the first page.")]
-        string? cursor = null)
+        string? cursor = null,
+        CancellationToken ct = default)
     {
         var sw     = Stopwatch.StartNew();
-        var result = GetFindTagsResponse(namePattern, dataType, limit, cursor);
+        var result = await GetFindTagsResponseAsync(namePattern, dataType, limit, cursor, ct).ConfigureAwait(false);
         sw.Stop();
         TrafficLogger.Append(
             "logix_find_tags",
@@ -461,14 +509,15 @@ public class LogixProjectTools
 #endif
                  "Returns a descriptive error object when the program or routine is not found. " +
                  "Call logix_open_project first.")]
-    public string GetRoutine(
+    public async Task<string> GetRoutine(
         [Description("Name of the program that contains the routine (case-insensitive), e.g. 'MainProgram'.")]
         string program,
         [Description("Name of the routine whose rungs should be returned (case-insensitive), e.g. 'MainRoutine'.")]
-        string routine)
+        string routine,
+        CancellationToken ct = default)
     {
         var sw     = Stopwatch.StartNew();
-        var result = GetGetRoutineResponse(program, routine);
+        var result = await GetGetRoutineResponseAsync(program, routine, ct).ConfigureAwait(false);
         sw.Stop();
         TrafficLogger.Append(
             "logix_get_routine",
@@ -622,16 +671,16 @@ public class LogixProjectTools
                  "always covers the whole trace. " +
                  "format: 'text' (indented tree, default), 'json' (nodes, edges, externalInputs, literals, gaps, " +
                  "cycles), 'mermaid' (flowchart, one box per writing rung) or 'all'. " +
-                 "Reads only the opened or uploaded project file - not the live controller - and 'source' is " +
-                 "'project-file'. " +
-#if LOGIX_SDK
-                 "It never reads the session image or a pending edit; a stale image is flagged with " +
-                 "'imageStale': true and the hint is to reconnect (logix_connect). " +
-#else
-                 "It never reads a pending edit. " +
-#endif
+                 "Reads the opened or uploaded project file - not the live controller's running state - and 'source' " +
+                 "says which image: 'project-file', 'accepted-image' or 'session-image'. " +
+                 "With includePending (default true on SDK-online sessions) it traces the session's controller image " +
+                 "with staged, pending and tested rungs applied ('session-image'). includePending: false traces " +
+                 "accepted logic only and lists the rungs left out under 'pendingWriters', each with a state of " +
+                 "'staged' (held on the workstation, not yet sent to the controller), 'pending' or 'tested' " +
+                 "(executing on the controller). A stale image is flagged with 'imageStale': true and the hint is " +
+                 "to reconnect (logix_connect). " +
                  "Call logix_open_project first.")]
-    public string TraceOrigin(
+    public async Task<string> TraceOrigin(
         [Description("Tag to trace: 'Motor_Run', a member path such as 'Source9.AirBlow', or " +
                      "'Program:Main.Tag' for a program-scoped tag. Aliases are followed.")]
         string tag,
@@ -643,14 +692,18 @@ public class LogixProjectTools
         string format = "text",
         [Description("Budget for the text output in characters (500-1000000). Default 12000. Over budget, the " +
                      "text is cut at whole lines and truncated, truncatedAt and omittedWrites are set.")]
-        int maxChars = 12000)
+        int maxChars = 12000,
+        [Description("Trace the session's controller image with staged, pending and tested rungs applied. " +
+                     "Defaults to true on SDK-online sessions, false otherwise; false lists the rungs it left out " +
+                     "under pendingWriters.")]
+        bool? includePending = null)
     {
         var sw     = Stopwatch.StartNew();
-        var result = GetTraceOriginResponse(tag, maxDepth, focus, format, maxChars);
+        var result = await GetTraceOriginResponseAsync(tag, maxDepth, focus, format, maxChars, includePending);
         sw.Stop();
         TrafficLogger.Append(
             "logix_trace_origin",
-            requestBytes:  TrafficLogger.MeasureRequestBytes(new { tag, maxDepth, focus, format, maxChars }),
+            requestBytes:  TrafficLogger.MeasureRequestBytes(new { tag, maxDepth, focus, format, maxChars, includePending }),
             responseBytes: TrafficLogger.MeasureResponseBytes(result),
             elapsedMs:     sw.ElapsedMilliseconds,
             ok:            TrafficLogger.IsOkResponse(result));
@@ -726,12 +779,13 @@ public class LogixProjectTools
                  "'NoActiveSession' or 'NotOnline'. Strictly read-only: never writes either side, never " +
                  "downloads, does not compare tag values.")]
 #endif
-    public string DiffAgainstController(
+    public async Task<string> DiffAgainstController(
         [Description("Absolute or relative path to the .L5X file to compare (the 'before').")]
-        string l5xPath)
+        string l5xPath,
+        CancellationToken ct = default)
     {
         var sw     = Stopwatch.StartNew();
-        var result = GetDiffAgainstControllerResponse(l5xPath);
+        var result = await GetDiffAgainstControllerResponseAsync(l5xPath, ct).ConfigureAwait(false);
         sw.Stop();
         TrafficLogger.Append(
             "logix_diff_against_controller",
@@ -1000,7 +1054,7 @@ public class LogixProjectTools
                  "controller state and not pending edits; 'source' is always 'project-file'. " +
                  "Returns an error object when no project is loaded or the program/routine is not found. " +
                  "Call logix_open_project first.")]
-    public string Document(
+    public async Task<string> Document(
         [Description("'controller' (default), 'program' or 'routine'. If omitted it is inferred from " +
                      "'routine' / 'program'.")]
         string? scope = null,
@@ -1009,10 +1063,11 @@ public class LogixProjectTools
         [Description("Routine name (case-insensitive). Required for scope 'routine'.")]
         string? routine = null,
         [Description("Include each rung's neutral text (default true). False keeps rung numbers and comments only.")]
-        bool includeRungText = true)
+        bool includeRungText = true,
+        CancellationToken ct = default)
     {
         var sw     = Stopwatch.StartNew();
-        var result = GetDocumentResponse(scope, program, routine, includeRungText);
+        var result = await GetDocumentResponseAsync(scope, program, routine, includeRungText, ct).ConfigureAwait(false);
         sw.Stop();
         TrafficLogger.Append(
             "logix_document",
@@ -1126,13 +1181,14 @@ public class LogixProjectTools
     [McpServerTool(Name = "logix_import_datatype")]
 #if LOGIX_SDK
     [Description("Offline-only, confirm-gated datatype import tool. " +
-                 "EXISTING TYPES ONLY: this tool changes a user-defined type that already exists " +
-                 "in acdPath; a partial import cannot create a new type. " +
-                 "If datatypeName is not in acdPath, a real run (dryRun=false) is refused up front " +
-                 "with kind NewDatatypeUnsupported and writes nothing (no saveAs file), and a dry run " +
-                 "still previews the L5X but adds willCreate=true and a warnings entry saying the real " +
-                 "run will be refused. Create new types in Studio 5000 (or import the L5X preview there), " +
-                 "then use this tool for later changes. If a real run fails after the working copy is " +
+                 "Creates the type when datatypeName is not in acdPath, otherwise changes it per " +
+                 "collision. A dry run of a new type adds willCreate=true and a warnings entry. " +
+                 "A real run is verified by re-exporting the type before the saveAs file is moved " +
+                 "into place: if the members differ it returns kind ImportNotApplied (with " +
+                 "expectedMembers, actualMembers, reason and sdkMessages) and writes nothing; " +
+                 "collision=Cancel on an existing type returns kind ImportCancelledOnCollision. " +
+                 "The SDK's import messages are returned as sdkMessages. " +
+                 "If a real run fails after the working copy is " +
                  "made, the saveAs file the tool created is deleted. " +
                  "Accepts acdPath (the project to import into — used for lock-checking only), " +
                  "datatypeName (the type to import), EITHER l5xPath (path to an existing " +
@@ -1192,13 +1248,8 @@ public class LogixProjectTools
                  "Before importing a datatype, load the playbook: logix_get_skill(\"lgx-import-datatype\").")]
 #else
     [Description("Offline-only, confirm-gated datatype import tool that renders an L5X fragment. " +
-                 "EXISTING TYPES ONLY: this tool changes a user-defined type that already exists " +
-                 "in the project; a partial import cannot create a new type. " +
-                 "If datatypeName is not in the project, a real run (dryRun=false) is refused up front " +
-                 "with kind NewDatatypeUnsupported and writes nothing (no saveAs file), and a dry run " +
-                 "still previews the L5X but adds willCreate=true and a warnings entry saying the real " +
-                 "run will be refused. Create new types in Studio 5000 (or import the L5X preview there), " +
-                 "then use this tool for later changes. " +
+                 "Creates the type when datatypeName is not in the project, otherwise changes it per " +
+                 "collision. A dry run of a new type adds willCreate=true and a warnings entry. " +
                  "Accepts datatypeName (the type to import), EITHER l5xPath (path to an existing " +
                  "<DataType Use=\"Target\"> L5X export, passed through verbatim) OR members " +
                  "(ordered member list in logix_list_datatypes shape, from which the tool " +

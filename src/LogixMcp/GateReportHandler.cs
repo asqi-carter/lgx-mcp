@@ -7,7 +7,16 @@ using System.Text.Json.Serialization;
 /// </summary>
 /// <param name="Error">Human-readable error message.</param>
 public record GateReportError(
-    [property: JsonPropertyName("error")] string Error);
+    [property: JsonPropertyName("error")] string Error)
+{
+    /// <summary>Machine-readable error kind (for example <c>NoProjectLoaded</c>); omitted for untyped errors.</summary>
+    [JsonPropertyName("kind"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Kind { get; init; }
+
+    /// <summary>Next step (for example how to recover from <c>NoProjectLoaded</c>); omitted when none.</summary>
+    [JsonPropertyName("hint"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Hint { get; init; }
+}
 
 /// <summary>
 /// Wrapper returned by <see cref="GateReportHandler.Execute"/> when
@@ -156,7 +165,10 @@ public static class GateReportHandler
         }
 
         if (!service.IsLoaded)
-            return new GateReportError("No project loaded. Call logix_open_project first.");
+        {
+            var np = service.NoProjectLoadedError("logix_gate_report");
+            return new GateReportError(np.Error) { Kind = np.Kind, Hint = np.Hint };
+        }
 
         // The open file's policy: not enforced by any session.
         var fileOrigin = new GatePolicyOrigin(

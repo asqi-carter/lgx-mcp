@@ -125,7 +125,7 @@ internal static class OfflineBuildCheck
                     return new OfflineBuildOutcome(missing.Value.Reason, null, StagedEditLost: missing.Value.Lost);
             }
 
-            // 3b. Caller-supplied work on the copy (an earlier change: replay an import), still never the session.
+            // 3b. Caller-supplied work on the copy (replay an import), still never the session.
             if (prepareCopy is not null)
             {
                 phases?.EnterSubPhase(StagePhases.ReplayCopyStep("import"));
@@ -221,6 +221,13 @@ internal static class OfflineBuildCheck
 
     private static string Describe(Exception ex) => ex is TagServiceException tse ? tse.Error.Message : ex.Message;
 
+    private static readonly System.Text.RegularExpressions.Regex RepeatedTerminator = new(
+        @";(?:\s*;)+\s*$", System.Text.RegularExpressions.RegexOptions.CultureInvariant | System.Text.RegularExpressions.RegexOptions.Compiled);
+
+    /// <summary>Reduces trailing <c>;;</c> (or <c>; ;</c>) to one <c>;</c>.</summary>
+    /// <param name="text">The staged rung text.</param>
+    internal static string CollapseRepeatedTerminator(string text) => RepeatedTerminator.Replace(text, ";");
+
     /// <summary>
     /// Reads the named routines back from the copy and checks every expected staged rung text is present.
     /// </summary>
@@ -260,7 +267,12 @@ internal static class OfflineBuildCheck
         }
 
         // The shared comparator, so an exported `TON(T,?,?)` carries the expected `TON(T,3000,0)`.
-        var absent = expectedRungTexts.Where(t => !RungTextComparer.ContainsMatch(present, t)).ToList();
+        // Logix imports `X;;` as `X;` (the empty rung between the two terminators is dropped), so a staged `X;;` is
+        // present in the copy as `X;`: compare it that way instead of reporting the edit lost.
+        var absent = expectedRungTexts
+            .Select(CollapseRepeatedTerminator)
+            .Where(t => !RungTextComparer.ContainsMatch(present, t))
+            .ToList();
         return absent.Count == 0
             ? null
             : ($"The saved copy does not carry the staged edit ({absent.Count} staged rung(s) missing from " +

@@ -11,7 +11,7 @@ using System.Text.Json.Serialization;
 public sealed record SdkServiceDiagnosisSnapshot(DateTimeOffset At, string SdkCode, string Probe, string Kind);
 
 /// <summary>
-/// A <c>rung_edit</c> <c>"sending"</c> intent line with no completing outcome line (logix-mcp-qpqy.4).
+/// A <c>rung_edit</c> <c>"sending"</c> intent line with no completing outcome line.
 /// </summary>
 /// <param name="Correlation">The intent line's correlation id.</param>
 /// <param name="Routine">Routine XPath the import targeted.</param>
@@ -19,7 +19,7 @@ public sealed record SdkServiceDiagnosisSnapshot(DateTimeOffset At, string SdkCo
 /// <param name="Destination">Destination (<c>controller</c> or <c>live</c>), when recorded.</param>
 /// <param name="Timestamp">When the intent line was written, when recorded.</param>
 /// <param name="RungTexts">
-/// Normalised texts of the rungs the import sent (logix-mcp-am0x.5); <c>null</c> or empty for a line written
+/// Normalised texts of the rungs the import sent; <c>null</c> or empty for a line written
 /// before they were recorded.
 /// </param>
 public sealed record UnfinishedRungEdit(
@@ -1025,7 +1025,7 @@ public static class AuditLogger
             designer_version    = designerVersion,
         });
 
-        // A complete publish closes every earlier intent line of the same routine (logix-mcp-am0x.5).
+        // A complete publish closes every earlier intent line of the same routine.
         if (outcome == RungEditProposedOutcome && destination is "controller" or "live")
             AbandonSupersededRungEdits(routine, correlation);
     }
@@ -1552,6 +1552,125 @@ public static class AuditLogger
             outcome,
             before_state = beforeState,
             after_state  = afterState,
+        });
+    }
+
+    /// <summary>
+    /// The audit <c>event</c> name each Studio-lifecycle verb writes (<c>cancel</c> → <c>edits_cancelled</c>, ...),
+    /// or <c>null</c> for a verb with no event of its own.
+    /// </summary>
+    /// <param name="verb">The lifecycle verb: <c>cancel</c>, <c>accept</c>, <c>test</c>, <c>untest</c> or <c>assemble</c>.</param>
+    /// <returns>The event name used by both the success and the failure line of that verb.</returns>
+    internal static string? LifecycleEventOf(string verb) => verb switch
+    {
+        "cancel"   => "edits_cancelled",
+        "accept"   => "edits_accepted",
+        "test"     => "edits_test_confirmed",
+        "untest"   => "edits_untest_confirmed",
+        "assemble" => "edits_assembled",
+        _          => null,
+    };
+
+    /// <summary>
+    /// Appends the failure line of one Studio-lifecycle call that got past the pre-launch checks and failed:
+    /// the verb's own event (see <see cref="LifecycleEventOf"/>) with <c>outcome="error"</c>, the response
+    /// <c>kind</c> and the driver <c>reason</c>. A failure line never carries a success outcome
+    /// (<c>accepted</c>, <c>cancelled</c>, ...). Pre-launch refusals are logged with <see cref="LogToolRefused"/> instead.
+    /// </summary>
+    /// <param name="verb">The lifecycle verb (<c>cancel</c>, <c>accept</c>, <c>test</c>, <c>untest</c>, <c>assemble</c>).</param>
+    /// <param name="program">Program the call targeted.</param>
+    /// <param name="routine">Routine the call targeted.</param>
+    /// <param name="kind">Machine-readable failure kind (<c>command_not_applicable</c>-style kinds, <c>StillPending</c>, ...).</param>
+    /// <param name="reason">The driver's reason, or <c>null</c> when the failure did not come from the driver.</param>
+    /// <param name="beforeState">The routine's pending-edit state before the gesture, or <c>null</c>.</param>
+    /// <param name="afterState">The routine's pending-edit state after the gesture, or <c>null</c> when it was not re-read.</param>
+    public static void LogLifecycleFailure(
+        string  verb,
+        string  program,
+        string  routine,
+        string  kind,
+        string? reason,
+        string? beforeState,
+        string? afterState)
+    {
+        Append(new
+        {
+            ts           = Timestamp(),
+            @event       = LifecycleEventOf(verb) ?? "edits_" + verb,
+            program,
+            routine,
+            outcome      = "error",
+            kind,
+            reason,
+            before_state = beforeState,
+            after_state  = afterState,
+        });
+    }
+
+    /// <summary>
+    /// Appends the audit line of a Studio-lifecycle call whose driver toggled the Errors pane: the same event and
+    /// fields as <see cref="LogLifecycleFailure"/> (when <paramref name="outcome"/> is <c>"error"</c>) or as the verb's
+    /// success line, plus <c>errors_pane_toggled:true</c>. Calls that did not toggle the pane never use this method, so
+    /// the field is omitted when false.
+    /// </summary>
+    /// <param name="verb">The lifecycle verb (<c>cancel</c>, <c>accept</c>, <c>test</c>, <c>untest</c>, <c>assemble</c>).</param>
+    /// <param name="program">Program the call targeted.</param>
+    /// <param name="routine">Routine the call targeted.</param>
+    /// <param name="outcome"><c>"error"</c> or the verb's success status.</param>
+    /// <param name="kind">Failure kind; written only when <paramref name="outcome"/> is <c>"error"</c>.</param>
+    /// <param name="reason">Driver reason; written only when <paramref name="outcome"/> is <c>"error"</c>.</param>
+    /// <param name="beforeState">The routine's pending-edit state before the gesture, or <c>null</c>.</param>
+    /// <param name="afterState">The routine's pending-edit state after the gesture, or <c>null</c>.</param>
+    /// <param name="errorsPaneLayout">The Errors pane layout the driver reported (<c>errors_pane_layout</c>); omitted from the line when <c>null</c>.</param>
+    public static void LogLifecycleWithPaneToggle(
+        string  verb,
+        string  program,
+        string  routine,
+        string  outcome,
+        string? kind,
+        string? reason,
+        string? beforeState,
+        string? afterState,
+        string? errorsPaneLayout = null)
+    {
+        var failed = string.Equals(outcome, "error", StringComparison.Ordinal);
+        var evt = new Dictionary<string, object?>
+        {
+            ["ts"]      = Timestamp(),
+            ["event"]   = LifecycleEventOf(verb) ?? "edits_" + verb,
+            ["program"] = program,
+            ["routine"] = routine,
+            ["outcome"] = outcome,
+        };
+        if (failed)
+        {
+            evt["kind"]   = kind;
+            evt["reason"] = reason;
+        }
+        evt["before_state"]        = beforeState;
+        evt["after_state"]         = afterState;
+        evt["errors_pane_toggled"] = true;
+        if (errorsPaneLayout is not null) evt["errors_pane_layout"] = errorsPaneLayout;
+        Append(evt);
+    }
+
+    /// <summary>
+    /// Appends an <c>image_reconciled</c> audit event: <c>logix_pending_edits</c> found that the pending zone this session
+    /// published to <paramref name="program"/> was resolved outside lgx-mcp (in Logix Designer) and brought the session image
+    /// in line. One line per program reconciled.
+    /// </summary>
+    /// <param name="program">Program whose recorded zone was found gone.</param>
+    /// <param name="routine">The routine(s) this session had published to, comma-separated when there are several.</param>
+    /// <param name="outcome"><c>accepted</c> (records applied), <c>cancelled</c> (image restored) or <c>stale</c> (image flagged).</param>
+    public static void LogImageReconciled(string program, string routine, string outcome)
+    {
+        Append(new
+        {
+            ts      = Timestamp(),
+            @event  = "image_reconciled",
+            program,
+            routine,
+            outcome,
         });
     }
 }

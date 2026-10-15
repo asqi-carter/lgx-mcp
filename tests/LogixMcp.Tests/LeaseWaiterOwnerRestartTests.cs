@@ -4,7 +4,7 @@ using Task = System.Threading.Tasks.Task;
 namespace LogixMcp.Tests;
 
 /// <summary>
-/// This change req 1 (G50): a connect waiting for the host upload lease whose owner restarts the SDK service gets one
+/// A connect waiting for the host upload lease whose owner restarts the SDK service gets one
 /// ceiling extension; a crash the connect survived is kept in <c>retries[]</c>/<c>sdkRestarts</c> and named in
 /// ConnectBusy; a failed connect over a dead session reports <c>connected:false</c>; <c>oldPid</c> is the pid running
 /// when the upload began. Every test uses its own <see cref="HostUploadLease"/> files, a fake clock and fakes only.

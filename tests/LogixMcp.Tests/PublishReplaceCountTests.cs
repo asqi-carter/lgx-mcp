@@ -7,7 +7,7 @@ using Task = System.Threading.Tasks.Task;
 namespace LogixMcp.Tests;
 
 /// <summary>
-/// logix-mcp-i3b6.4: a staged-set <c>target="controller"</c> publish reports the number of controller rungs
+/// A staged-set <c>target="controller"</c> publish reports the number of controller rungs
 /// it actually replaced (top-level <c>replaceCount</c>, the message, and <c>publishedRoutines[i].replaceCount</c>
 /// agree), not the caller's zero. A caller's ignored non-zero replaceCount still shows in <c>stagedReplaceCount</c>.
 /// </summary>

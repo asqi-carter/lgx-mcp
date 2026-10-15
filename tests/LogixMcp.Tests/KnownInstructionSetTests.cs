@@ -1,7 +1,7 @@
 namespace LogixMcp.Tests;
 
 /// <summary>
-/// Task logix-mcp-r7k0.3: the known-instruction set (<see cref="RungReferenceChecker.KnownInstructions"/>) covers
+/// The known-instruction set (<see cref="RungReferenceChecker.KnownInstructions"/>) covers
 /// the v38 instructions, an unfamiliar name only warns, and what a revision certainly rejects (AWT on v37+) is
 /// still refused by the catalogue in <see cref="MnemonicSetChecker"/>.
 /// </summary>

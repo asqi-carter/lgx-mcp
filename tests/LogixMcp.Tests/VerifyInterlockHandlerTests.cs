@@ -642,4 +642,40 @@ public class VerifyInterlockHandlerTests
         Assert.Null(r.UnguardedWriters);
         Assert.Single(r.Chain!);
     }
+
+    // ── includePending labels ───────────────────
+
+    [Fact]
+    public void IncludePending_LabelsStagedAndPendingRungs_AndNoteNamesThem()
+    {
+        var (svc, session) = PendingImageFixture.Online(["Cond", "Out"],
+            ("XIC(Cond)OTE(Out);", "N"), ("XIC(Cond)OTE(Out);", "e"), ("OTE(Out);", "I"));
+
+        var result = Assert.IsType<VerifyInterlockResult>(
+            VerifyInterlockHandler.Execute(svc, "Out", "Cond", session, includePending: true));
+
+        Assert.Null(result.Rungs.Single(r => r.RungNumber == 0).State);
+        Assert.Equal("staged", result.Rungs.Single(r => r.RungNumber == 1).State);
+        Assert.Contains("1 staged rung", result.Note);
+        Assert.Equal("pending", result.Rungs.Single(r => r.RungNumber == 2).State);
+        Assert.Contains("1 pending rung", result.Note);
+
+        session.SetZoneTested("MainProgram", true);
+        var tested = Assert.IsType<VerifyInterlockResult>(
+            VerifyInterlockHandler.Execute(svc, "Out", "Cond", session, includePending: true));
+        Assert.Equal("tested", tested.Rungs.Single(r => r.RungNumber == 2).State);
+        Assert.Contains("1 tested rung", tested.Note);
+    }
+
+    [Fact]
+    public void IncludePendingFalse_HasNoStateLabels()
+    {
+        var (svc, session) = PendingImageFixture.Online(["Cond", "Out"],
+            ("XIC(Cond)OTE(Out);", "N"), ("XIC(Cond)OTE(Out);", "e"));
+
+        var result = Assert.IsType<VerifyInterlockResult>(
+            VerifyInterlockHandler.Execute(svc, "Out", "Cond", session, includePending: false));
+
+        Assert.All(result.Rungs, r => Assert.Null(r.State));
+    }
 }

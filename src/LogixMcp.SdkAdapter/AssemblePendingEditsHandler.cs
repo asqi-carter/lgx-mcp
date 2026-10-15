@@ -62,6 +62,11 @@ public static class AssemblePendingEditsHandler
     /// Session whose controller image follows the result: a zone this session published is applied to the image, any
     /// other zone marks it stale (see <see cref="SessionImageState"/>). <c>null</c> leaves the image alone.
     /// </param>
+    /// <param name="acceptForeign">
+    /// <c>true</c> finalizes a pending zone this server did not publish (see <see cref="ZoneLedger"/>); the result then
+    /// carries <c>foreign: true</c>. <c>false</c> refuses such a zone with <c>ForeignPendingZone</c>.
+    /// </param>
+    /// <param name="ledgerSession">The controller session the <see cref="ZoneLedger"/> is keyed by; <c>null</c> for the default key.</param>
     /// <returns>A <see cref="CancelPendingEditsResult"/> or a <see cref="CancelPendingEditsError"/>.</returns>
     public static Task<object> ExecuteAsync(
         string                                                      program,
@@ -72,9 +77,12 @@ public static class AssemblePendingEditsHandler
         Func<bool>?                                                 isStudioInstalled,
         CancellationToken                                           ct,
         Func<(string? LaunchMode, string? RunLevel)>?               planLaunch,
-        TagSessionService?                                          imageSession) =>
+        TagSessionService?                                          imageSession,
+        bool                                                        acceptForeign = false,
+        object?                                                     ledgerSession = null) =>
         StudioLifecycleHandler.ExecuteAsync(
             StudioLifecycleVerb.Assemble, program, routine, confirm, pendingEditsReader,
-            session1Runner, isStudioInstalled, ct, planLaunch, imageSession: imageSession);
+            session1Runner, isStudioInstalled, ct, planLaunch, imageSession: imageSession,
+            acceptForeign: acceptForeign, ledgerSession: ledgerSession);
 }
 #endif

@@ -99,7 +99,7 @@ public sealed class ConnectRegistryTests : IDisposable
         Assert.NotNull(reg.Read("mine"));
     }
 
-    private static async Task<(string Id, TaskCompletionSource Release)> StartBlocked(
+    private async Task<(string Id, TaskCompletionSource Release)> StartBlocked(
         ConnectState state, string payload, string phase = ConnectPhases.Upload)
     {
         var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -109,10 +109,16 @@ public sealed class ConnectRegistryTests : IDisposable
             await release.Task;
             return payload;
         }, TimeSpan.Zero, commPath: "1,0");
-        // With a zero budget the call returns before the job reports its phase: wait until it has.
+        var id = JsonNode.Parse(response)!["connectId"]!.GetValue<string>();
+        // With a zero budget the call returns before the job reports its phase: wait until it has, in memory AND in
+        // the registry file. SetPhase updates the snapshot under the lock and writes the file afterwards, so a reader
+        // in another instance can still see the previous phase for a moment after Current shows the new one
+        // (deploy gate 2026-10-14: "Expected: upload, Actual: starting" in the exported test run).
+        var reader   = Registry(PidB, StartB);
         var deadline = DateTime.UtcNow.AddSeconds(10);
-        while (state.Current?.Phase != phase && DateTime.UtcNow < deadline) await Task.Delay(5);
-        return (JsonNode.Parse(response)!["connectId"]!.GetValue<string>(), release);
+        while ((state.Current?.Phase != phase || reader.Read(id)?.Phase != phase) && DateTime.UtcNow < deadline)
+            await Task.Delay(5);
+        return (id, release);
     }
 
     /// <summary>A second instance sees the first instance's running connect as ConnectOwnedByOtherInstance.</summary>
@@ -163,8 +169,119 @@ public sealed class ConnectRegistryTests : IDisposable
         Assert.True(s["finished"]!.GetValue<bool>());
         Assert.Equal(PidA, s["ownerPid"]!.GetValue<int>());
         Assert.NotNull(s["completedAt"]);
-        // A finished connect is not an "in-progress" one: without an id the second instance has nothing to report.
+
+        // This change req 2(b): an id-less poll after the owner finished reports that finished connect (outcome,
+        // completedAt, total elapsed) instead of NoConnectInProgress. This assertion deliberately changed.
+        var idless = Status(second);
+        Assert.Equal(ErrorKinds.ConnectOwnedByOtherInstance, idless["kind"]!.GetValue<string>());
+        Assert.True(idless["finished"]!.GetValue<bool>());
+        Assert.Equal("connected", idless["status"]!.GetValue<string>());
+        Assert.Equal(id, idless["connectId"]!.GetValue<string>());
+        Assert.NotNull(idless["completedAt"]);
+        Assert.True(idless["elapsedMs"]!.GetValue<long>() >= 0);
+        var entry = new ConnectRegistry(_dir, PidB, StartB, _ => true).Read(id)!;
+        Assert.Equal((long)(entry.CompletedAt!.Value - entry.StartedAt!.Value).TotalMilliseconds,
+            idless["elapsedMs"]!.GetValue<long>());
+    }
+
+    /// <summary>
+    /// A finished entry whose owner has exited is history. An id-less poll gives NoConnectInProgress
+    /// when nothing else exists, and FindMostRecent skips it; a finished entry of a live owner is still reported
+    /// (req 2(b)).
+    /// </summary>
+    [Fact]
+    public void DeadOwnerFinishedEntryIsNotReportedByIdlessPoll_LiveOwnerStillIs()
+    {
+        var ownerAlive = true;
+        var now = new DateTimeOffset(2026, 10, 12, 9, 0, 0, TimeSpan.Zero);
+        Registry(PidA, StartA, clock: () => now).Write(
+            Entry("done", status: ConnectRegistry.StatusFailed, completedAt: now.AddSeconds(-30))
+                with { StartedAt = now.AddSeconds(-40) });
+        File.SetLastWriteTimeUtc(Path.Combine(_dir, "done.json"), now.UtcDateTime.AddSeconds(-30));
+        var reader = Registry(PidB, StartB, alive: p => p == PidB || ownerAlive, clock: () => now);
+        var second = new ConnectState(reader);
+
+        Assert.Equal("done", Status(second)["connectId"]!.GetValue<string>());
+        Assert.Equal("done", reader.FindMostRecent(includeFinished: true)!.ConnectId);
+
+        ownerAlive = false;
+        Assert.Null(reader.FindMostRecent(includeFinished: true));
         Assert.Equal(ErrorKinds.NoConnectInProgress, Status(second)["kind"]!.GetValue<string>());
+    }
+
+    /// <summary>An entry written by an older server (no startedAt) still parses; its elapsed time is unknown (null).</summary>
+    [Fact]
+    public void OldFormatEntryWithoutStartedAtReportsUnknownElapsed()
+    {
+        Directory.CreateDirectory(_dir);
+        File.WriteAllText(Path.Combine(_dir, "old1.json"),
+            """{"connectId":"old1","ownerPid":41001,"ownerStartedAt":"2026-10-12T08:00:00+00:00","commPath":"1,0","phase":"upload","elapsedMs":1234,"status":"connected","completedAt":"2026-10-12T08:01:00+00:00"}""");
+        var now = new DateTimeOffset(2026, 10, 12, 8, 2, 0, TimeSpan.Zero);
+        File.SetLastWriteTimeUtc(Path.Combine(_dir, "old1.json"), now.UtcDateTime);
+        var second = new ConnectState(Registry(PidB, StartB, clock: () => now));
+
+        var entry = Registry(PidB, StartB).Read("old1");
+        Assert.NotNull(entry);
+        Assert.Null(entry!.StartedAt);
+
+        foreach (var s in new[] { Status(second), Status(second, "old1") })
+        {
+            Assert.Equal(ErrorKinds.ConnectOwnedByOtherInstance, s["kind"]!.GetValue<string>());
+            Assert.True(s["finished"]!.GetValue<bool>());
+            Assert.Null(s["elapsedMs"]);
+        }
+    }
+
+    /// <summary>A finished entry older than maxAge is not reported by an id-less poll.</summary>
+    [Fact]
+    public void EntryOlderThanMaxAgeIsNotReportedByIdlessPoll()
+    {
+        var now = new DateTimeOffset(2026, 10, 12, 9, 0, 0, TimeSpan.Zero);
+        var owner = Registry(PidA, StartA, clock: () => now);
+        var second = new ConnectState(Registry(PidB, StartB, clock: () => now));
+        owner.Write(Entry("aged", status: ConnectRegistry.StatusConnected, completedAt: now.AddMinutes(-11))
+            with { StartedAt = now.AddMinutes(-12) });
+        File.SetLastWriteTimeUtc(Path.Combine(_dir, "aged.json"), now.UtcDateTime.AddMinutes(-11));
+
+        Assert.Null(Registry(PidB, StartB, clock: () => now).FindMostRecent(includeFinished: true));
+        Assert.Equal(ErrorKinds.NoConnectInProgress, Status(second)["kind"]!.GetValue<string>());
+
+        owner.Write(Entry("recent", status: ConnectRegistry.StatusFailed, completedAt: now.AddMinutes(-2))
+            with { StartedAt = now.AddMinutes(-3) });
+        File.SetLastWriteTimeUtc(Path.Combine(_dir, "recent.json"), now.UtcDateTime.AddMinutes(-2));
+        var s = Status(second);
+        Assert.Equal("recent", s["connectId"]!.GetValue<string>());
+        Assert.Equal(60_000, s["elapsedMs"]!.GetValue<long>());
+    }
+
+    /// <summary>elapsedMs of a running foreign connect is now minus its start, not the last written phase value.</summary>
+    [Fact]
+    public void InProgressForeignElapsedIsNowMinusStartedAt()
+    {
+        var now = new DateTimeOffset(2026, 10, 12, 9, 0, 0, TimeSpan.Zero);
+        Registry(PidA, StartA, clock: () => now).Write(
+            Entry("run") with { StartedAt = now.AddSeconds(-90), ElapsedMs = 5 });
+        var second = new ConnectState(Registry(PidB, StartB, clock: () => now));
+
+        Assert.Equal(90_000, Status(second)["elapsedMs"]!.GetValue<long>());
+        Assert.Equal(90_000, Status(second, "run")["elapsedMs"]!.GetValue<long>());
+    }
+
+    /// <summary>The registry entry exists when the connecting payload (with the connectId) is returned.</summary>
+    [Fact]
+    public async Task ConnectIdIsRegisteredBeforeItIsReturned()
+    {
+        var first = new ConnectState(Registry(PidA, StartA));
+        var (id, release) = await StartBlocked(first, """{"status":"connected"}""");
+
+        var entry = Registry(PidB, StartB).Read(id);
+        Assert.NotNull(entry);
+        Assert.NotNull(entry!.StartedAt);
+        Assert.Equal(ConnectRegistry.StatusConnecting, entry.Status);
+
+        release.SetResult();
+        await first.Completion.WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.Equal(ConnectRegistry.StatusConnected, Registry(PidB, StartB).Read(id)!.Status);
     }
 
     /// <summary>A failed foreign connect reports status failed.</summary>

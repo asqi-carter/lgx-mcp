@@ -10,11 +10,17 @@ using L5Sharp.Core;
 /// or the program name for program-scoped tags.
 /// </param>
 /// <param name="Description">Tag description, or empty string if none.</param>
+/// <param name="Dimensions">
+/// The array dimensions of an array tag (<c>[5]</c>, <c>[2, 3]</c>); omitted for a scalar tag. The data type stays the
+/// element type, so <c>Type</c> is <c>DINT</c> for a <c>DINT[5]</c> tag.
+/// </param>
 public record TagEntry(
     [property: JsonPropertyName("name")]        string Name,
     [property: JsonPropertyName("type")]        string Type,
     [property: JsonPropertyName("scope")]       string Scope,
-    [property: JsonPropertyName("description")] string Description);
+    [property: JsonPropertyName("description")] string Description,
+    [property: JsonPropertyName("dimensions"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    IReadOnlyList<int>? Dimensions = null);
 
 /// <summary>
 /// Strongly-typed success response returned by <see cref="FindTagsHandler.Execute"/>.
@@ -83,7 +89,16 @@ public record FindTagsResult(
 /// </summary>
 /// <param name="Error">Human-readable error message.</param>
 public record FindTagsError(
-    [property: JsonPropertyName("error")] string Error);
+    [property: JsonPropertyName("error")] string Error)
+{
+    /// <summary>Machine-readable error kind (for example <c>NoProjectLoaded</c>); omitted for untyped errors.</summary>
+    [JsonPropertyName("kind"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Kind { get; init; }
+
+    /// <summary>Next step (for example how to recover from <c>NoProjectLoaded</c>); omitted when none.</summary>
+    [JsonPropertyName("hint"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Hint { get; init; }
+}
 
 /// <summary>
 /// Pure handler for the <c>logix_find_tags</c> MCP tool.
@@ -127,14 +142,18 @@ public static class FindTagsHandler
         TagSessionService? session = null)
     {
         if (!service.IsLoaded)
-            return new FindTagsError("No project loaded. Call logix_open_project first.");
+        {
+            var np = service.NoProjectLoadedError("logix_find_tags");
+            return new FindTagsError(np.Error) { Kind = np.Kind, Hint = np.Hint };
+        }
 
         var pageSize = limit is > 0 ? limit.Value : DefaultLimit;
         var offset   = 0;
         if (!string.IsNullOrEmpty(cursor)
             && (!int.TryParse(cursor, System.Globalization.NumberStyles.None,
                     System.Globalization.CultureInfo.InvariantCulture, out offset)))
-            return new FindTagsError($"Invalid cursor '{cursor}'. Pass the nextCursor value from a previous logix_find_tags response.");
+            return new FindTagsError($"Invalid cursor '{cursor}'. Pass the nextCursor value from a previous logix_find_tags response.")
+            { Kind = ErrorKinds.InvalidArguments };
 
         var project        = service.Project!;
         var entries        = new List<TagEntry>();
@@ -236,7 +255,35 @@ public static class FindTagsHandler
         // model can distinguish project content from server-authored text. A rung L5Sharp cannot
         // parse elsewhere in the project must not stop tags being listed (SafeTagReader).
         new(Name: tag.Name, Type: DeclaredType(tag), Scope: scope,
-            Description: UntrustedWrapper.WrapTagDescription(descriptions.Read(tag) ?? ""));
+            Description: UntrustedWrapper.WrapTagDescription(descriptions.Read(tag) ?? ""),
+            Dimensions: DimensionsOf(tag));
+
+    /// <summary>
+    /// The array dimensions a tag declares, read from its own <c>Dimensions</c> attribute (<c>"5"</c>, <c>"2 3"</c>,
+    /// <c>"2,3,4"</c>), or <c>null</c> for a scalar tag.
+    /// </summary>
+    /// <param name="tag">The tag.</param>
+    /// <returns>The dimension lengths in declaration order, or <c>null</c> when the tag is not an array.</returns>
+    internal static IReadOnlyList<int>? DimensionsOf(Tag tag)
+    {
+        var raw = tag.Serialize().Attribute("Dimensions")?.Value;
+        if (raw is null)
+            return tag.Dimensions.IsEmpty ? null : ParseDimensions(tag.Dimensions.ToString());
+        return ParseDimensions(raw);
+    }
+
+    /// <summary>Parses an L5X <c>Dimensions</c> value; <c>null</c> when it holds no non-zero length.</summary>
+    /// <param name="raw">The attribute text.</param>
+    internal static IReadOnlyList<int>? ParseDimensions(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) return null;
+        var dims = raw.Split([' ', ','], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(d => int.TryParse(d, System.Globalization.NumberStyles.None,
+                System.Globalization.CultureInfo.InvariantCulture, out var n) ? n : 0)
+            .Where(n => n > 0)
+            .ToList();
+        return dims.Count == 0 ? null : dims;
+    }
 
     /// <summary>
     /// The tag's data type. L5Sharp reports <c>"NULL"</c> for a tag declared without a <c>&lt;Data&gt;</c>

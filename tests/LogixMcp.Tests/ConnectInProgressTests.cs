@@ -1,5 +1,6 @@
 using System.Text.Json.Nodes;
 using ModelContextProtocol.Protocol;
+using ModelContextProtocol.Server;
 
 namespace LogixMcp.Tests;
 
@@ -140,5 +141,331 @@ public class ConnectInProgressTests
         release.SetResult();
         await state.Completion.WaitAsync(TimeSpan.FromSeconds(10));
         Assert.Null(state.Guard("b"));
+    }
+}
+
+/// <summary>
+/// The connect handler marks its own connect as started in <see cref="ConnectState"/> before any
+/// pre-work (here the outgoing-session disposal), so a status poll in that window answers connecting/starting and never
+/// ConnectOwnedByOtherInstance, even with a dead instance's finished connect in the registry.
+/// </summary>
+[Collection("StaticHandlerHooks")]
+public class OwnConnectVisibilityTests
+{
+    [Fact]
+    public async Task StatusPollIssuedBeforeThePreWorkFinishesAnswersConnectingStarting()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "lgx-own-connect-" + Guid.NewGuid().ToString("N"));
+        var saved = CloseProjectHandler.SdkSessionInspector;
+        var inPreWork = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release   = new ManualResetEventSlim(false);
+        try
+        {
+            const int deadPid = 52001, ownPid = 52002;
+            var start = new DateTimeOffset(2026, 10, 12, 8, 0, 0, TimeSpan.Zero);
+            new ConnectRegistry(dir, deadPid, start, _ => true).Write(new ConnectRegistryEntry(
+                "deadconnect", deadPid, start, "1,0", "upload", 10, ConnectRegistry.StatusFailed, DateTimeOffset.UtcNow)
+                { StartedAt = DateTimeOffset.UtcNow.AddSeconds(-5) });
+            var state = new ConnectState(new ConnectRegistry(dir, ownPid, start, p => p == ownPid));
+
+            CloseProjectHandler.SdkSessionInspector = _ =>
+            {
+                inPreWork.TrySetResult();
+                release.Wait(TimeSpan.FromSeconds(20));
+                return null;
+            };
+
+            var run = Task.Run(() => ConnectHandler.ExecuteAsync(
+                "", "", useVirtual: true, new ProjectService(), new TagSessionService(), "cip",
+                connectState: state));
+            await inPreWork.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+            var o = JsonNode.Parse(state.GetStatusJson())!.AsObject();
+            Assert.Equal("connecting", o["status"]!.GetValue<string>());
+            Assert.Equal(ConnectState.StartingPhase, o["phase"]!.GetValue<string>());
+            Assert.NotEqual(ErrorKinds.ConnectOwnedByOtherInstance, o["kind"]?.GetValue<string>());
+            Assert.True(o["elapsedMs"]!.GetValue<long>() >= 0);
+
+            release.Set();
+            var result = await run.WaitAsync(TimeSpan.FromSeconds(10));
+            var error = Assert.IsType<ConnectError>(result);
+            Assert.Equal(ErrorKinds.NoProjectLoaded, error.Kind);
+            Assert.Null(state.Current);   // the mark is cleared when the connect returns
+        }
+        finally
+        {
+            release.Set();
+            CloseProjectHandler.SdkSessionInspector = saved;
+            try { if (Directory.Exists(dir)) Directory.Delete(dir, recursive: true); } catch (IOException) { }
+        }
+    }
+
+    [Fact]
+    public async Task OwnConnectMark_IsANoOpInsideRunAsync()
+    {
+        var state = new ConnectState();
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        string? innerId = null;
+        var response = await state.RunAsync(async _ =>
+        {
+            using (state.BeginOwnConnect()) innerId = state.Current?.ConnectId;
+            entered.SetResult();
+            await release.Task;
+            return "{}";
+        }, TimeSpan.Zero);
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        // The inner mark did not replace or clear the RunAsync connect.
+        Assert.Equal(JsonNode.Parse(response)!["connectId"]!.GetValue<string>(), innerId);
+        Assert.Equal(innerId, state.Current?.ConnectId);
+        release.SetResult();
+        await state.Completion.WaitAsync(TimeSpan.FromSeconds(10));
+    }
+
+    private static RequestContext<CallToolRequestParams> NoServerContext() =>
+        (RequestContext<CallToolRequestParams>)System.Runtime.CompilerServices.RuntimeHelpers
+            .GetUninitializedObject(typeof(RequestContext<CallToolRequestParams>));
+
+    /// <summary>
+    /// The logix_connect tool marks the connect as its first statement. An id-less status poll issued
+    /// while the tool is blocked before its first await answers connecting/starting with no connectId; once released
+    /// the connect finishes under the same start time and a connectId, and a finished status follows.
+    /// </summary>
+    [Fact]
+    public async Task ConnectTool_MarksOwnConnectBeforeItsFirstAwait()
+    {
+        var saved = CloseProjectHandler.SdkSessionInspector;
+        var inPreWork = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release   = new ManualResetEventSlim(false);
+        try
+        {
+            var state = new ConnectState();
+            var tools = new LogixTagTools(new ProjectService(), new TagSessionService(), new ControllerModeService(),
+                connectState: state);
+            CloseProjectHandler.SdkSessionInspector = _ =>
+            {
+                inPreWork.TrySetResult();
+                release.Wait(TimeSpan.FromSeconds(20));
+                return null;
+            };
+
+            var run = Task.Run(() => tools.Connect(NoServerContext(), useVirtual: true));
+            await inPreWork.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+            var o = JsonNode.Parse(tools.GetConnectStatusResponse())!.AsObject();
+            Assert.Equal("connecting", o["status"]!.GetValue<string>());
+            Assert.Equal(ConnectState.StartingPhase, o["phase"]!.GetValue<string>());
+            Assert.True(o["elapsedMs"]!.GetValue<long>() >= 0);
+            Assert.Null(o["connectId"]);
+            Assert.NotEqual(ErrorKinds.NoConnectInProgress, o["kind"]?.GetValue<string>());
+
+            release.Set();
+            await run.WaitAsync(TimeSpan.FromSeconds(10));
+            Assert.Null(state.Current);   // a mark nothing adopted is cleared when the tool returns
+            Assert.NotEqual("connecting",
+                JsonNode.Parse(tools.GetConnectStatusResponse())!["status"]?.GetValue<string>());
+        }
+        finally
+        {
+            release.Set();
+            CloseProjectHandler.SdkSessionInspector = saved;
+        }
+    }
+
+    /// <summary>
+    /// A budgeted (sdk) connect through the tool: RunAsync adopts the tool-entry mark, so the connect that finishes has
+    /// a connectId and the start time taken when the tool was entered (one registry entry, no second start).
+    /// </summary>
+    [Fact]
+    public async Task ConnectTool_BudgetedConnect_AdoptsTheMark_SameStartedAtAndConnectId()
+    {
+        var saved = CloseProjectHandler.SdkSessionInspector;
+        var dir = Path.Combine(Path.GetTempPath(), "lgx-tool-mark-" + Guid.NewGuid().ToString("N"));
+        var inPreWork = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release   = new ManualResetEventSlim(false);
+        try
+        {
+            var t0 = new DateTimeOffset(2026, 10, 14, 9, 0, 0, TimeSpan.Zero);
+            var ticks = -1;
+            // Every reading of the clock is a later instant, so a start time taken twice would differ.
+            var registry = new ConnectRegistry(dir, 54001, t0, p => p == 54001,
+                clock: () => t0.AddSeconds(Interlocked.Increment(ref ticks)));
+            var state = new ConnectState(registry);
+            var tools = new LogixTagTools(new ProjectService(), new TagSessionService(), new ControllerModeService(),
+                connectState: state);
+            CloseProjectHandler.SdkSessionInspector = _ =>
+            {
+                inPreWork.TrySetResult();
+                release.Wait(TimeSpan.FromSeconds(20));
+                return null;
+            };
+
+            var run = Task.Run(() => tools.Connect(NoServerContext(), backend: "sdk", path: "1,0"));
+            await inPreWork.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+            var o = JsonNode.Parse(tools.GetConnectStatusResponse())!.AsObject();
+            Assert.Equal("connecting", o["status"]!.GetValue<string>());
+            var connectId = o["connectId"]!.GetValue<string>();   // adopted: the id is stable from here on
+
+            release.Set();
+            await run.WaitAsync(TimeSpan.FromSeconds(10));
+            await state.Completion.WaitAsync(TimeSpan.FromSeconds(10));
+
+            var done = JsonNode.Parse(tools.GetConnectStatusResponse())!.AsObject();
+            Assert.NotEqual("connecting", done["status"]!.GetValue<string>());
+            Assert.Equal(connectId, done["connectId"]!.GetValue<string>());
+            Assert.Equal(t0, registry.Read(connectId)!.StartedAt);   // the mark's start time, not a second one
+            Assert.Single(Directory.GetFiles(dir, "*", SearchOption.AllDirectories));
+        }
+        finally
+        {
+            release.Set();
+            CloseProjectHandler.SdkSessionInspector = saved;
+            try { if (Directory.Exists(dir)) Directory.Delete(dir, recursive: true); } catch (IOException) { }
+        }
+    }
+
+    /// <summary>
+    /// A second logix_connect arriving while the first is still in its pre-work gets the in-flight status for the same
+    /// arguments and is refused for different ones; neither starts a second connect.
+    /// </summary>
+    [Fact]
+    public async Task ConnectTool_DuringProvisionalMark_DuplicateAnswersInFlight_DifferentIsRefused()
+    {
+        var saved = CloseProjectHandler.SdkSessionInspector;
+        var inPreWork = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release   = new ManualResetEventSlim(false);
+        var inspections = 0;
+        try
+        {
+            var state = new ConnectState();
+            var tools = new LogixTagTools(new ProjectService(), new TagSessionService(), new ControllerModeService(),
+                connectState: state);
+            CloseProjectHandler.SdkSessionInspector = _ =>
+            {
+                Interlocked.Increment(ref inspections);
+                inPreWork.TrySetResult();
+                release.Wait(TimeSpan.FromSeconds(20));
+                return null;
+            };
+
+            var first = Task.Run(() => tools.Connect(NoServerContext(), useVirtual: true, path: "1,0"));
+            await inPreWork.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            Assert.True(state.Current!.Provisional);
+
+            var same = JsonNode.Parse(await tools.Connect(NoServerContext(), useVirtual: true, path: "1,0"))!.AsObject();
+            Assert.Equal("connecting", same["status"]!.GetValue<string>());
+
+            var other = JsonNode.Parse(await tools.Connect(NoServerContext(), useVirtual: true, path: "2,0"))!.AsObject();
+            Assert.Equal(ErrorKinds.ConnectInProgress, other["kind"]!.GetValue<string>());
+
+            Assert.Equal(1, inspections);
+            release.Set();
+            await first.WaitAsync(TimeSpan.FromSeconds(10));
+            await state.Completion.WaitAsync(TimeSpan.FromSeconds(10));
+        }
+        finally
+        {
+            release.Set();
+            CloseProjectHandler.SdkSessionInspector = saved;
+        }
+    }
+
+    /// <summary>A provisional mark whose tool call throws before the handler is cleared by its scope.</summary>
+    [Fact]
+    public void ProvisionalMark_IsClearedWhenTheScopeIsDisposed()
+    {
+        var state = new ConnectState();
+        try
+        {
+            using var mark = state.BeginOwnConnect("1,0");
+            Assert.NotNull(state.Current);
+            Assert.True(state.Current!.Provisional);
+            throw new InvalidOperationException("tool call failed before the handler");
+        }
+        catch (InvalidOperationException) { }
+        Assert.Null(state.Current);
+        Assert.Null(state.Guard("a"));
+    }
+
+    /// <summary>RunAsync adopts the provisional mark: one id and start time across the budget return and the registry.</summary>
+    [Fact]
+    public async Task RunAsync_AdoptsTheProvisionalMark_KeepingIdAndStartedAt()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "lgx-adopt-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var start = new DateTimeOffset(2026, 10, 12, 8, 0, 0, TimeSpan.Zero);
+            var registry = new ConnectRegistry(dir, 53001, start, p => p == 53001);
+            var state = new ConnectState(registry);
+            var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+            using var mark = state.BeginOwnConnect("1,0");
+            var provisionalId = state.Current!.ConnectId;
+            Assert.Null(state.Guard("a"));   // a provisional mark lets a call through
+
+            var response = await state.RunAsync(async _ => { await release.Task; return "{}"; },
+                TimeSpan.Zero, argsKey: "a");
+            var o = JsonNode.Parse(response)!.AsObject();
+            Assert.Equal(provisionalId, o["connectId"]!.GetValue<string>());
+            Assert.False(state.Current!.Provisional);
+            Assert.Equal(provisionalId, state.Current.ConnectId);
+            Assert.Single(Directory.GetFiles(dir, "*", SearchOption.AllDirectories)
+                .Where(f => File.ReadAllText(f).Contains(provisionalId)));
+
+            // Once adopted, the scope is a no-op and duplicates/different arguments are guarded as before.
+            mark.Dispose();
+            Assert.Equal(provisionalId, state.Current?.ConnectId);
+            Assert.Equal("connecting", JsonNode.Parse(state.Guard("a")!)!["status"]!.GetValue<string>());
+            Assert.Equal(ErrorKinds.ConnectInProgress, JsonNode.Parse(state.Guard("b")!)!["kind"]!.GetValue<string>());
+
+            release.SetResult();
+            await state.Completion.WaitAsync(TimeSpan.FromSeconds(10));
+            var done = JsonNode.Parse(state.GetStatusJson(provisionalId))!.AsObject();
+            Assert.Equal("connected", done["status"]!.GetValue<string>());
+            Assert.Equal(provisionalId, done["connectId"]!.GetValue<string>());
+        }
+        finally
+        {
+            try { if (Directory.Exists(dir)) Directory.Delete(dir, recursive: true); } catch (IOException) { }
+        }
+    }
+
+    /// <summary>With every argument defaulted the raw-argument key equals the tool's key of the defaults.</summary>
+    [Fact]
+    public void ArgsKeyFromArguments_Defaults_EqualsConnectArgsKeyOfDefaults()
+    {
+        var expected = LogixTagTools.ConnectArgsKey("", "", false, "cip", "offline", false, null, false);
+        Assert.Equal(expected, ConnectState.ArgsKeyFromArguments(null));
+        Assert.Equal(expected, ConnectState.ArgsKeyFromArguments(new Dictionary<string, System.Text.Json.JsonElement>()));
+    }
+
+    /// <summary>Explicit sdk arguments map to the same key as the tool builds from them.</summary>
+    [Fact]
+    public void ArgsKeyFromArguments_SdkArguments_EqualsConnectArgsKey()
+    {
+        var args = new Dictionary<string, System.Text.Json.JsonElement>
+        {
+            ["backend"] = System.Text.Json.JsonDocument.Parse("\"sdk\"").RootElement.Clone(),
+            ["sdkMode"] = System.Text.Json.JsonDocument.Parse("\"online\"").RootElement.Clone(),
+            ["sdkCommPath"] = System.Text.Json.JsonDocument.Parse("\"X\"").RootElement.Clone(),
+        };
+        Assert.Equal(
+            LogixTagTools.ConnectArgsKey("", "", false, "sdk", "online", false, "X", false),
+            ConnectState.ArgsKeyFromArguments(args));
+    }
+
+    /// <summary>The ambient scope is only offered while this state's filter mark is still provisional.</summary>
+    [Fact]
+    public void AmbientOwnConnect_IsOfferedWhileProvisional_AndClearedOnDispose()
+    {
+        var state = new ConnectState();
+        Assert.Null(state.AmbientOwnConnect());
+        var scope = state.BeginOwnConnect("1,0");
+        Assert.Same(scope, state.AmbientOwnConnect());
+        Assert.Null(new ConnectState().AmbientOwnConnect());
+        scope.Dispose();
+        Assert.Null(state.AmbientOwnConnect());
     }
 }

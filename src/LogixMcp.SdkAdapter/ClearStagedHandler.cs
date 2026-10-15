@@ -118,7 +118,7 @@ public static class ClearStagedHandler
         // A server fault during the rebuild below is recorded as a fault during "clear", so the later fast-fails say so.
         using var operation = session.BeginOperation(RockwellErrorHints.OperationClear);
 
-        // This change requirement 3 (G24): publish and clear_staged are mutually exclusive within a session. A clear that
+        // Publish and clear_staged are mutually exclusive within a session. A clear that
         // ran mid-publish would rebuild the image under the import and judge the just-published rung a staging
         // leftover. Refuse before anything is read or changed; the publish is untouched and the session stays usable.
         if (session.PublishInFlight)
@@ -166,6 +166,10 @@ public static class ClearStagedHandler
 
         foreach (var k in keys) session.StagedRungBuffer.Remove(k);
         foreach (var k in replaceKeys) session.StagedReplaceCounts.Remove(k);
+        foreach (var k in replaceKeys) session.StagedKeptNormal.Remove(k);
+        // Kept-normal sets follow their bucket: sweep any whose key is in scope but had no replace count.
+        foreach (var k in session.StagedKeptNormal.Keys.Where(k => InScope(k.RoutineXPath)).ToList())
+            session.StagedKeptNormal.Remove(k);
         foreach (var k in session.StagedUnchangedReplacements.Keys.Where(k => InScope(k.RoutineXPath)).ToList())
             session.StagedUnchangedReplacements.Remove(k);
         session.ForgetStagedImports(InScope);

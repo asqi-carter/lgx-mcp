@@ -131,7 +131,7 @@ internal sealed class ProposeRungEditRecordingFake : ILogixProject
     public string? LastCapturedXmlContent { get; private set; }
 
     /// <summary>
-    /// logix-mcp-h50h.6: a controller publish reads the program's edit state (a program-scoped export) before it
+    /// A controller publish reads the program's edit state (a program-scoped export) before it
     /// imports. While <c>true</c> (default) and before any import call, that program-scoped export is served with
     /// every rung normalised to <c>N</c>, i.e. "nothing pending yet", so tests that describe the state AFTER the
     /// publish through <c>ExportContent</c> still reach the import. Set <c>false</c> to make the program-scoped export
@@ -437,11 +437,11 @@ internal sealed class ProposeRungEditRecordingFake : ILogixProject
 
     /// <summary>
     /// Default export content: a realistic L5X skeleton for MainProgram/MainRoutine
-    /// carrying all SDK-required envelope attributes and one NOP rung. Used so that
+    /// carrying all SDK-required envelope attributes and eight NOP rungs (positions 0..8 are in range). Used so that
     /// existing tests exercising the empty-fragment controller publish path continue
     /// to work without per-test export setup.
     /// </summary>
-    private const string DefaultExportContent =
+    private static readonly string DefaultExportContent =
         "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\r\n" +
         "<RSLogix5000Content SchemaRevision=\"1.0\" SoftwareRevision=\"36.00\" " +
         "TargetName=\"MainRoutine\" TargetType=\"Routine\" TargetSubType=\"RLL\" " +
@@ -450,7 +450,8 @@ internal sealed class ProposeRungEditRecordingFake : ILogixProject
         "<Programs><Program Name=\"MainProgram\"><Routines>" +
         "<Routine Name=\"MainRoutine\" Type=\"RLL\">" +
         "<RLLContent>" +
-        "<Rung Number=\"0\" Type=\"N\"><Text><![CDATA[NOP();]]></Text></Rung>" +
+        string.Concat(Enumerable.Range(0, 8).Select(i =>
+            $"<Rung Number=\"{i}\" Type=\"N\"><Text><![CDATA[NOP();]]></Text></Rung>")) +
         "</RLLContent>" +
         "</Routine></Routines></Program></Programs>" +
         "</Controller>" +
@@ -1419,9 +1420,9 @@ public class ProposeRungEditHandlerTests
         var (session, _) = await BuildOpenSessionAsync();
 
         var result = (ProposeRungEditResult)await ProposeRungEditHandler.ExecuteAsync(
-            ValidXPath, 7, 3, ValidFragment, session);
+            ValidXPath, 5, 3, ValidFragment, session);
 
-        Assert.Contains("7", result.Message, StringComparison.Ordinal);
+        Assert.Contains("5", result.Message, StringComparison.Ordinal);
         Assert.Contains("3", result.Message, StringComparison.Ordinal);
     }
 

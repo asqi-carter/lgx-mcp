@@ -598,7 +598,7 @@ public class SdkConnectCrashRecoveryTests : IDisposable
     [Fact]
     public void BuildError_CommsFaultGiveUp_DropsManualRestartAdvice_AndKeepsOneGuidance()
     {
-        // G55 (#38): the comms-fault text said "restart the LdSdkService service" next to "Recovery will restart it".
+        // The comms-fault text said "restart the LdSdkService service" next to "Recovery will restart it".
         var text = ConnectSdkServiceUnstableError.BuildError("p",
             "Could not extract the project uploaded from 'p'. The SDK reported: \"x\" The Logix SDK service (LdSdkService) is " +
             "running but its communications layer may have faulted. Check the Windows Application event log for " +

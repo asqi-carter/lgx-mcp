@@ -197,6 +197,32 @@ public class PublishStagedSetTests
     }
 
     /// <summary>
+    /// A controller publish clears the staged same-text record with the rest of the staged state.
+    /// Before the fix a NO CHANGE publish left its "index 0 unchanged" entry behind, the next publish's census treated
+    /// the routine as a mixed publish (no landed texts), and the session image could not follow that publish's accept.
+    /// </summary>
+    [Fact]
+    public async Task ControllerPublish_ClearsStagedUnchangedReplacements()
+    {
+        var (session, fake) = await BuildOpenSessionAsync();
+        var stageResult = await ProposeRungEditHandler.ExecuteAsync(
+            ValidXPath, 0, 0, StagedRungFragment, session, target: "workstation");
+        Assert.IsType<ProposeRungEditResult>(stageResult);
+        // What an identical-text stage records (ProposeRungEditHandler, "StagedUnchangedReplacements[...] = text").
+        session.StagedUnchangedReplacements[(ValidXPath, 0)] = "XIC(A)OTE(B);";
+
+        fake.ExportContent = StagedCoilPendingExport;
+        var publishResult = await ProposeRungEditHandler.ExecuteAsync(
+            ValidXPath, 0, 0, "", session, target: "controller");
+        Assert.IsType<ProposeRungEditResult>(publishResult);
+
+        Assert.Empty(session.StagedRungBuffer);
+        Assert.Empty(session.StagedReplaceCounts);
+        Assert.Empty(session.StagedKeptNormal);
+        Assert.Empty(session.StagedUnchangedReplacements);
+    }
+
+    /// <summary>
     /// An absent (<c>null</c>) l5xFragment is accepted identically to an empty one
     /// for <c>target="controller"</c> — the acceptance criterion says "empty or
     /// absent", and callers going through the MCP tool surface may omit the
@@ -422,9 +448,9 @@ public class PublishStagedSetTests
         var success = Assert.IsType<ProposeRungEditResult>(result);
         Assert.Equal("proposed", success.Status);
 
-        // The export path was used: the name resolution (an earlier change: Controller/Programs), the envelope
-        // export and the commit-position read (an earlier change: the rung count of the session image), plus the
-        // program-scoped pending-edit pre-check read (logix-mcp-h50h.6).
+        // The export path was used: the name resolution (Controller/Programs), the envelope
+        // export and the commit-position read (the rung count of the session image), plus the
+        // program-scoped pending-edit pre-check read.
         Assert.Equal(4, fake.ExportCallCount);
         Assert.Equal(ValidXPath, fake.LastExportXPath);
 
@@ -1012,7 +1038,11 @@ public class PublishStagedSetTests
 
         // Reflect the staged rung as a pending I-type rung so the post-publish
         // census check passes.
-        fake.ExportContent = StagedCoilPendingExport;
+        // replaceCount=3 at position 1 must lie inside the routine, so the export carries three more rungs.
+        fake.ExportContent = StagedCoilPendingExport.Replace("</RLLContent>",
+            "<Rung Number=\"1\" Type=\"N\"><Text><![CDATA[NOP();]]></Text></Rung>" +
+            "<Rung Number=\"2\" Type=\"N\"><Text><![CDATA[NOP();]]></Text></Rung>" +
+            "<Rung Number=\"3\" Type=\"N\"><Text><![CDATA[NOP();]]></Text></Rung></RLLContent>");
 
         // Publish a two-rung fragment just past the staged range [0..0] (position 0
         // is refused with StagedPositionConflict). replaceCount=3 must reach the SDK unchanged.
@@ -1378,7 +1408,7 @@ public class PublishStagedSetTests
         if (expectConflict) Assert.Equal("3..4", Assert.Single(ranges));
     }
 
-    // ── logix-mcp-64f5.2: replace pairs are protected on every target ─
+    // ── Replace pairs are protected on every target ─
 
     /// <summary>
     /// Stages the replace pair {(ValidXPath, 0): n=1, rc=1} directly in the session buffer, as
@@ -1394,7 +1424,7 @@ public class PublishStagedSetTests
 
     /// <summary>
     /// Buffer {(MR,0): n=1, rc=1} over an image [staged, replaced original, last original] + a controller-target insert
-    /// on the staged rung is refused with StagedPositionConflict. Positions count visible rungs (logix-mcp-qpqy.3), so
+    /// on the staged rung is refused with StagedPositionConflict. Positions count visible rungs, so
     /// the replaced original is never addressable: visible 1 is the last original, which is allowed (see
     /// <c>StagedVisiblePositionTests</c>).
     /// </summary>
@@ -1629,7 +1659,7 @@ public class PublishStagedSetTests
         Assert.Empty(session.UnresolvedPublishMismatches);
     }
 
-    // ── logix-mcp-64f5.1: canonical routine names and typed XPath errors ───
+    // ── Canonical routine names and typed XPath errors ───
 
     private const string LowercaseXPath =
         "Controller/Programs/Program[@Name='MainProgram']/Routines/Routine[@Name='mainroutine']";
@@ -1755,7 +1785,7 @@ public class PublishStagedSetTests
         Assert.Empty(session.StagedRungBuffer);
     }
 
-    // ── logix-mcp-am0x.4: same-text replacements are N, not a PublishMismatch ──
+    // ── Same-text replacements are N, not a PublishMismatch ──
 
     private static string RoutineExport(params (string Type, string Text)[] rungs) =>
         "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\r\n" +
@@ -1811,7 +1841,7 @@ public class PublishStagedSetTests
     public async Task Publish_SameTextReplacementPlusGenuineMissingRung_StillReportsMismatch()
     {
         var (session, fake) = await BuildOpenSessionAsync();
-        fake.ExportContent = RoutineExport(("N", "XIC(StagedTag)OTE(StagedCoil);"));
+        fake.ExportContent = RoutineExport(("N", "XIC(StagedTag)OTE(StagedCoil);"), ("N", "NOP();"), ("N", "NOP();"));
 
         Assert.IsType<ProposeRungEditResult>(await ProposeRungEditHandler.ExecuteAsync(
             ValidXPath, 0, 1, StagedRungFragment, session, target: "workstation"));
@@ -1821,7 +1851,7 @@ public class PublishStagedSetTests
             "<Text><![CDATA[XIC(OtherTag)OTE(OtherCoil);]]></Text></Rung></RLLContent></Routine>" +
             "</Routines></Program></Programs></Controller></RSLogix5000Content>";
         Assert.IsType<ProposeRungEditResult>(await ProposeRungEditHandler.ExecuteAsync(
-            ValidXPath, 5, 0, other, session, target: "workstation"));
+            ValidXPath, 2, 0, other, session, target: "workstation"));
 
         // The controller never shows the second rung as pending.
         var publish = await ProposeRungEditHandler.ExecuteAsync(
@@ -1844,7 +1874,7 @@ public class PublishStagedSetTests
         Assert.Equal(new[] { "XIC(A)OTE(B);", "XIC(C)OTE(D);" }, missing);
     }
 
-    // ── logix-mcp-5642.1: replace of a routine's LAST rung publishes the new rung (G32) ──
+    // ── Replace of a routine's LAST rung publishes the new rung (G32) ──
     // These tests use the real session-image state codes captured on the bench: er (staged replacement),
     // e (staged insert), rN (replaced original), N (untouched original). Never I/R in a session image.
 
@@ -1996,7 +2026,7 @@ public class PublishStagedSetTests
         Assert.Single(session.StagedRungBuffer);                                               // staged state untouched
     }
 
-    // ── logix-mcp-5642.4 (G23): landed indices of every staged rung, per routine ──
+    // ── Landed indices of every staged rung, per routine ──
 
     /// <summary>A staged-only insert (no fragment on the publish) reports the staged rung's index from the post-publish image.</summary>
     [Fact]
@@ -2086,7 +2116,7 @@ public class PublishStagedSetTests
         Assert.Equal(new[] { 1 }, success.PublishedRoutines!.Single(r => r.Routine == SecondXPath).LandedIndices);
     }
 
-    // ── logix-mcp-wu06.4 (G38): publish prose and insertPosition derive from landedIndices ──
+    // ── Publish prose and insertPosition derive from landedIndices ──
 
     /// <summary>Staged-only insert at 1: the note, the message, insertPosition and landedIndices all say index 1.</summary>
     [Fact]
@@ -2384,5 +2414,162 @@ public class PublishStagedSetTests
         var image = states.Select((st, i) => new StagedImageRung(i, "t" + i, st)).ToList();
         Assert.Equal(expected, ProposeRungEditHandler.StagedTailNeedsExplicitCommit(image));
     }
+    // ── An identical-text-only publish never reports an ignored insert position ───────────────────────────
+
+    private const string R65 = "Controller/Programs/Program[@Name='MainProgram']/Routines/Routine[@Name='SafeRoutine']";
+
+    /// <summary>
+    /// A NO CHANGE publish (every replacement identical to the rung it displaces) lands nothing, so the
+    /// census has no landed index for the routine; before the fix that read as "position ignored" and the response
+    /// carried "Caller's insertPosition (0) was ignored" beside its own NO CHANGE message.
+    /// </summary>
+    [Fact]
+    public void IgnoredInsertPosition_IdenticalTextOnly_IsNull_EvenWithNoLandedIndices()
+    {
+        var published = new List<PublishedRoutine> { new(R65, 1, LandedIndices: null, InsertPosition: null, ReplaceCount: 1u, PublishedTexts: ["XIC(A)OTE(B);"]) };
+        Assert.Null(ProposeRungEditHandler.IgnoredInsertPositionToReport(0u, R65, published, identicalTextOnly: true));
+        Assert.Null(ProposeRungEditHandler.IgnoredInsertPositionToReport(0u, R65, null, identicalTextOnly: true));
+    }
+
+    /// <summary>G52 unchanged: with real rungs landed elsewhere the caller's position is still reported as ignored.</summary>
+    [Fact]
+    public void IgnoredInsertPosition_NotIdentical_KeepsTheG52Rule()
+    {
+        var elsewhere = new List<PublishedRoutine> { new(R65, 1, LandedIndices: [3], InsertPosition: 3u, ReplaceCount: 0u, PublishedTexts: ["XIC(A)OTE(B);"]) };
+        Assert.Equal(0u, ProposeRungEditHandler.IgnoredInsertPositionToReport(0u, R65, elsewhere, identicalTextOnly: false));
+        var honoured = new List<PublishedRoutine> { new(R65, 1, LandedIndices: [0], InsertPosition: 0u, ReplaceCount: 0u, PublishedTexts: ["XIC(A)OTE(B);"]) };
+        Assert.Null(ProposeRungEditHandler.IgnoredInsertPositionToReport(0u, R65, honoured, identicalTextOnly: false));
+        Assert.Null(ProposeRungEditHandler.IgnoredInsertPositionToReport(null, R65, elsewhere, identicalTextOnly: false));
+    }
+
+    // ── delete + add layout: the position was honoured ──────────────────────────────────────────────────────
+
+    /// <summary>Logix's delete + add layout: D original at 2, new rung landed at 3 for insertPosition 2, replaceCount 1.</summary>
+    [Fact]
+    public void CallerInsertPositionIgnored_DeleteAddLayout_IsFalse_AndMessageSaysReplacement()
+    {
+        var published = new List<PublishedRoutine>
+        {
+            new(R65, 1, LandedIndices: [3], InsertPosition: 3u, ReplaceCount: 1u,
+                PublishedTexts: ["XIC(A)OTE(B);"], DeletedIndices: [2]),
+        };
+        Assert.False(ProposeRungEditHandler.CallerInsertPositionIgnored(R65, published, 2u));
+        Assert.Null(ProposeRungEditHandler.IgnoredInsertPositionToReport(2u, R65, published, identicalTextOnly: false));
+        Assert.Equal(3u, ProposeRungEditHandler.ReportedInsertPosition(R65, published, 2u));
+        var header = ProposeRungEditHandler.DescribeLandedHeader(R65, published, 2u);
+        Assert.Contains("landed at index 3 as a replacement: Logix shows the new rung after the 2 original it deletes", header);
+        Assert.DoesNotContain("rung landed at index", header);
+
+        var two = new List<PublishedRoutine>
+        {
+            new(R65, 1, LandedIndices: [4], InsertPosition: 4u, ReplaceCount: 2u,
+                PublishedTexts: ["XIC(A)OTE(B);"], DeletedIndices: [2, 3]),
+        };
+        Assert.False(ProposeRungEditHandler.CallerInsertPositionIgnored(R65, two, 2u));
+        Assert.Contains("landed at index 4 as a replacement: Logix shows the new rung after the 2\u20133 originals it deletes",
+            ProposeRungEditHandler.DescribeLandedHeader(R65, two, 2u));
+    }
+
+    /// <summary>Edit-pair layout (new rung lands at the position, original follows): behaviour unchanged.</summary>
+    [Fact]
+    public void CallerInsertPositionIgnored_EditPairLayout_IsUnchanged()
+    {
+        var honoured = new List<PublishedRoutine>
+        {
+            new(R65, 1, LandedIndices: [2], InsertPosition: 2u, ReplaceCount: 1u, PublishedTexts: ["XIC(A)OTE(B);"]),
+        };
+        Assert.False(ProposeRungEditHandler.CallerInsertPositionIgnored(R65, honoured, 2u));
+        Assert.Equal(2u, ProposeRungEditHandler.ReportedInsertPosition(R65, honoured, 2u));
+        Assert.Equal("Routine '" + R65 + "', rung landed at index 2", ProposeRungEditHandler.DescribeLandedHeader(R65, honoured, 2u));
+        // Landed elsewhere with no D rungs before it: still ignored.
+        var elsewhere = new List<PublishedRoutine>
+        {
+            new(R65, 1, LandedIndices: [3], InsertPosition: 3u, ReplaceCount: 1u, PublishedTexts: ["XIC(A)OTE(B);"]),
+        };
+        Assert.True(ProposeRungEditHandler.CallerInsertPositionIgnored(R65, elsewhere, 2u));
+    }
+
+    /// <summary>A real ignore stays reported even when D rungs exist, unless they sit right before the landed index.</summary>
+    [Fact]
+    public void CallerInsertPositionIgnored_RealIgnore_StaysTrue_WithMismatchedDeletedRungs()
+    {
+        var wrongOffset = new List<PublishedRoutine>
+        {
+            new(R65, 1, LandedIndices: [5], InsertPosition: 5u, ReplaceCount: 1u,
+                PublishedTexts: ["XIC(A)OTE(B);"], DeletedIndices: [2]),
+        };
+        Assert.True(ProposeRungEditHandler.CallerInsertPositionIgnored(R65, wrongOffset, 2u));
+        Assert.Equal(2u, ProposeRungEditHandler.IgnoredInsertPositionToReport(2u, R65, wrongOffset, identicalTextOnly: false));
+        Assert.Equal(5u, ProposeRungEditHandler.ReportedInsertPosition(R65, wrongOffset, 2u));
+    }
+
+    // ── The replacement header, ignoredInsertPosition and the note use one rule ────────────────────────
+
+    private static List<ProposeRungEditHandler.LayoutCandidate> CallersPair(uint position, uint replace) =>
+        [new(position, replace)];
+
+    /// <summary>e1 (N/D/I): caller position 1, replaceCount 1; the census counted 2 image rungs, landed [2], D at 1.</summary>
+    [Fact]
+    public void LandedHeader_ShapeE1_PrintsReplacement_WithoutIgnoredInsertPosition()
+    {
+        var published = new List<PublishedRoutine>
+        {
+            new(R65, 1, LandedIndices: [2], InsertPosition: 2u, ReplaceCount: 2u,
+                PublishedTexts: ["XIC(A)OTE(B);"], DeletedIndices: [1]),
+        };
+        var layouts = CallersPair(1u, 1u);
+        Assert.False(ProposeRungEditHandler.CallerInsertPositionIgnored(R65, published, 1u, layouts));
+        Assert.Null(ProposeRungEditHandler.IgnoredInsertPositionToReport(1u, R65, published, identicalTextOnly: false, layouts));
+        var header = ProposeRungEditHandler.DescribeLandedHeader(R65, published, 1u, layouts);
+        Assert.Contains("landed at index 2 as a replacement: Logix shows the new rung after the 1 original it deletes", header);
+        Assert.DoesNotContain("insertPosition ignored", header);
+    }
+
+    /// <summary>e0 (D/I/N): position 0, replaceCount 1, landed [1], D at 0: replacement wording, position honoured.</summary>
+    [Fact]
+    public void LandedHeader_ShapeE0_PrintsReplacement_WithoutIgnoredInsertPosition()
+    {
+        var published = new List<PublishedRoutine>
+        {
+            new(R65, 1, LandedIndices: [1], InsertPosition: 1u, ReplaceCount: 0u,
+                PublishedTexts: ["XIC(A)OTE(B);"], DeletedIndices: [0]),
+        };
+        var layouts = CallersPair(0u, 1u);
+        Assert.False(ProposeRungEditHandler.CallerInsertPositionIgnored(R65, published, 0u, layouts));
+        Assert.Null(ProposeRungEditHandler.IgnoredInsertPositionToReport(0u, R65, published, identicalTextOnly: false, layouts));
+        Assert.Contains("landed at index 1 as a replacement: Logix shows the new rung after the 0 original it deletes",
+            ProposeRungEditHandler.DescribeLandedHeader(R65, published, 0u, layouts));
+    }
+
+    /// <summary>d2: two rungs replaced at position 0; two landed at [2, 3] after D at 0 and 1: plural header with the range.</summary>
+    [Fact]
+    public void LandedHeader_ShapeD2_IsPluralAndNamesTheLandedRange()
+    {
+        var published = new List<PublishedRoutine>
+        {
+            new(R65, 2, LandedIndices: [2, 3], InsertPosition: 2u, ReplaceCount: 2u,
+                PublishedTexts: ["XIC(A)OTE(B);", "XIC(C)OTE(D);"], DeletedIndices: [0, 1]),
+        };
+        var layouts = CallersPair(0u, 2u);
+        Assert.False(ProposeRungEditHandler.CallerInsertPositionIgnored(R65, published, 0u, layouts));
+        Assert.Null(ProposeRungEditHandler.IgnoredInsertPositionToReport(0u, R65, published, identicalTextOnly: false, layouts));
+        var header = ProposeRungEditHandler.DescribeLandedHeader(R65, published, 0u, layouts);
+        Assert.Contains("rungs landed at indices 2\u20133 as a replacement: Logix shows the new rungs after the 0\u20131 originals they delete", header);
+        Assert.DoesNotContain("rung landed at index", header);
+    }
+
+    /// <summary>A real ignore is still reported when the caller's pair does not describe the landing.</summary>
+    [Fact]
+    public void LandedHeader_RealIgnore_WithCallerPair_StaysReported()
+    {
+        var published = new List<PublishedRoutine>
+        {
+            new(R65, 1, LandedIndices: [5], InsertPosition: 5u, ReplaceCount: 1u,
+                PublishedTexts: ["XIC(A)OTE(B);"], DeletedIndices: [2]),
+        };
+        Assert.True(ProposeRungEditHandler.CallerInsertPositionIgnored(R65, published, 2u, CallersPair(2u, 1u)));
+        Assert.Equal(2u, ProposeRungEditHandler.IgnoredInsertPositionToReport(2u, R65, published, false, CallersPair(2u, 1u)));
+    }
+
 }
 #endif

@@ -147,7 +147,7 @@ public class SdkServerFaultedCoreTests
         }
     }
 
-    // #37: a healthy outgoing SDK session is closed before the connect too. Left open, LdSdkServer's
+    // A healthy outgoing SDK session is closed before the connect too. Left open, LdSdkServer's
     // keep-alive reaper disposes it later and crashes the service deleting its temp .acd.
     [Fact]
     public async Task Connect_WithHealthySession_DisposesItBeforeConnecting()
@@ -225,7 +225,7 @@ public class SdkServerFaultedCoreTests
         }
     }
 
-    // #37: the host disposes the TagSessionService singleton at shutdown; that closes the SDK session once.
+    // The host disposes the TagSessionService singleton at shutdown; that closes the SDK session once.
     [Fact]
     public void TagSessionService_Dispose_ClosesSdkSessionOnce_AndNeverThrows()
     {

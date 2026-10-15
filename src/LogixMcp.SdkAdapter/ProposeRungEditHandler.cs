@@ -321,7 +321,8 @@ public record ProposeRungEditResult(
     [property: JsonPropertyName("retries"),              JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] int? Retries = null,
     [property: JsonPropertyName("commentRestorableOnCancel"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] bool? CommentRestorableOnCancel = null,
     [property: JsonPropertyName("postImportBuildCheck"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? PostImportBuildCheck = null,
-    [property: JsonPropertyName("phaseTimings"),         JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] IReadOnlyList<PhaseTiming>? PhaseTimings = null);
+    [property: JsonPropertyName("phaseTimings"),         JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] IReadOnlyList<PhaseTiming>? PhaseTimings = null,
+    [property: JsonPropertyName("reusedTags"),           JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] IReadOnlyList<ReusedTagEntry>? ReusedTags = null);
 
 /// <summary>
 /// One routine the post-publish census confirmed (<c>publishedRoutines</c>).
@@ -352,6 +353,10 @@ public record ProposeRungEditResult(
 /// controller (a preserved original comment, an explicit new comment, or <c>null</c> for none), so the session image
 /// can keep rung comments on accept.
 /// </param>
+/// <param name="DeletedIndices">
+/// Not serialized. Zero-based indices, in the post-publish export of this routine, of every rung typed <c>D</c> (a
+/// replaced original Logix keeps visible, marked deleted). Lets the position check recognise Logix's delete + add layout.
+/// </param>
 public sealed record PublishedRoutine(
     [property: JsonPropertyName("routine")]             string Routine,
     [property: JsonPropertyName("insertedOrReplacing")] int    InsertedOrReplacing,
@@ -359,7 +364,8 @@ public sealed record PublishedRoutine(
     [property: JsonPropertyName("insertPosition"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] uint? InsertPosition = null,
     [property: JsonPropertyName("replaceCount"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] uint? ReplaceCount = null,
     [property: JsonIgnore] IReadOnlyList<string>? PublishedTexts = null,
-    [property: JsonIgnore] IReadOnlyList<string?>? PublishedComments = null);
+    [property: JsonIgnore] IReadOnlyList<string?>? PublishedComments = null,
+    [property: JsonIgnore] IReadOnlyList<int>? DeletedIndices = null);
 
 /// <summary>
 /// One routine whose post-publish pending census differed from what was expected for it alone.
@@ -574,11 +580,147 @@ public record ProposeRungEditError(
                IReadOnlyList<PhaseTiming>? PhaseTimings = null,
     [property: JsonPropertyName("retryAfterSeconds"),
                JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-               int? RetryAfterSeconds = null);
+               int? RetryAfterSeconds = null,
+    [property: JsonPropertyName("tag"),
+               JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+               string? Tag = null,
+    [property: JsonPropertyName("existingType"),
+               JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+               string? ExistingType = null,
+    [property: JsonPropertyName("declaredType"),
+               JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+               string? DeclaredType = null,
+    [property: JsonPropertyName("dataType"),
+               JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+               string? DataType = null);
+
+/// <summary>
+/// A <c>tags[]</c> declaration that named a tag the controller (or this session's staging buffer) already has with
+/// the same data type: the declaration was ignored and the existing tag is used.
+/// </summary>
+/// <param name="Name">The tag name as the controller has it.</param>
+/// <param name="DataType">The existing (and declared) data type.</param>
+/// <param name="Note">Always "already exists; declaration ignored".</param>
+public sealed record ReusedTagEntry(
+    [property: JsonPropertyName("name")]     string Name,
+    [property: JsonPropertyName("dataType")] string DataType,
+    [property: JsonPropertyName("note")]     string Note = "already exists; declaration ignored");
+
+/// <summary>
+/// What the handler knows about the tags and data types the controller already has, for the <c>tags[]</c> checks
+/// (reuse, <c>TagTypeConflict</c>, <c>UnknownDataType</c>). Built from the server's already-loaded project image.
+/// </summary>
+/// <param name="TagTypes">Data type per existing tag name (case-insensitive). A name declared with different types in different scopes is left out.</param>
+/// <param name="DataTypeNames">Names of every data type and add-on instruction the image defines; <c>null</c> when the image is not available (the unknown-type check is then skipped).</param>
+public sealed record TagDeclarationCensus(
+    IReadOnlyDictionary<string, string> TagTypes,
+    IReadOnlySet<string>? DataTypeNames);
+
+/// <summary>
+/// The first-pass checks on typed <c>tags[]</c> declarations against what already exists.
+/// </summary>
+internal static class TagDeclarationChecks
+{
+    /// <summary>Atomic and predefined types that are valid without a project definition.</summary>
+    private static readonly HashSet<string> BuiltIn = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "BOOL", "SINT", "INT", "DINT", "LINT", "USINT", "UINT", "UDINT", "ULINT", "REAL", "LREAL", "BIT",
+        "STRING", "TIMER", "COUNTER", "CONTROL", "MESSAGE", "PID", "PIDE", "SFC_STEP", "SFC_STOP",
+        "BLOCK_TRANSFER_READ", "BLOCK_TRANSFER_WRITE", "ALARM_DIGITAL", "ALARM_ANALOG", "FBD_TIMER",
+        "FBD_COUNTER", "FBD_CONVERT", "FBD_LOGICAL", "FBD_BIT_FIELD_DISTRIBUTE", "FBD_BOOLEAN_AND",
+        "FBD_BOOLEAN_OR", "FBD_BOOLEAN_XOR", "FBD_BOOLEAN_NOT", "FBD_LIMIT", "FBD_MASK_EQUAL",
+        "FBD_COMPARE", "FBD_MATH", "FBD_MAXIMUM_CAPTURE", "FBD_MINIMUM_CAPTURE", "FBD_ONESHOT",
+        "FBD_RATE_LIMITER", "FBD_FILTER_HIGH_PASS", "FBD_FILTER_LOW_PASS", "FBD_FILTER_NOTCH",
+        "FBD_DERIVATIVE", "FBD_INTEGRATOR", "FBD_LEAD_LAG", "FBD_SCALE", "FBD_SELECT", "FBD_SELECTED_SUMMER",
+        "FBD_SELECTABLE_NEGATE", "FBD_LEAD_LAG_FILTER", "FBD_MOVING_AVERAGE", "FBD_PULSE_MULTIPLIER",
+        "FBD_RAMP_SOAK", "FBD_S_CURVE", "FBD_TOTALIZER", "FBD_UP_DOWN_ACCUM", "FBD_SCALE_BASE", "FBD_ENHANCED_SELECT",
+        "HMIBC", "MOTION_GROUP", "COORDINATE_SYSTEM", "AXIS_CIP_DRIVE", "AXIS_CONSUMED", "AXIS_GENERIC",
+        "AXIS_GENERIC_DRIVE", "AXIS_SERVO", "AXIS_SERVO_DRIVE", "AXIS_VIRTUAL", "AXIS_EXTERNAL",
+    };
+
+    /// <summary>The first <c>tags[]</c> entry whose type is neither built in nor defined in the image, or <c>null</c>.</summary>
+    internal static ProposeRungEditError? UnknownType(IReadOnlyList<TagInput>? tags, TagDeclarationCensus? census)
+    {
+        if (tags is not { Count: > 0 } || census?.DataTypeNames is not { } defined) return null;
+        foreach (var tag in tags)
+        {
+            var type = BaseType(tag.DataType);
+            if (BuiltIn.Contains(type) || defined.Contains(type)) continue;
+            return new ProposeRungEditError(
+                $"Unknown data type '{tag.DataType}' for tag '{tag.Name}'. It is not an atomic type and the project " +
+                "defines no data type or add-on instruction of that name. Nothing was staged.",
+                Hint: "Call logix_list_datatypes for the data types this project defines; create a missing user type " +
+                      "with logix_import_datatype first.",
+                Kind: ErrorKinds.UnknownDataType,
+                Tag: tag.Name, DataType: tag.DataType);
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// The first declaration that names an existing tag with a different type (<c>TagTypeConflict</c>), or, when there is none,
+    /// the declarations that name an existing tag with the same type.
+    /// </summary>
+    internal static (ProposeRungEditError? Conflict, IReadOnlyList<ReusedTagEntry>? Reused) Compare(
+        IReadOnlyList<TagInput>? tags, TagDeclarationCensus? census, LogixProjectSession session)
+    {
+        if (tags is not { Count: > 0 }) return (null, null);
+        var reused = new List<ReusedTagEntry>();
+        foreach (var tag in tags)
+        {
+            string? existing = null;
+            if (census is not null && census.TagTypes.TryGetValue(tag.Name, out var censusType)) existing = censusType;
+            else if (session.StagedTagBuffer.TryGetValue(tag.Name, out var staged))
+                existing = BufferedType(staged);
+            if (existing is null) continue;
+
+            var declared = tag.DataType.Trim();
+            var declaredFull = string.IsNullOrWhiteSpace(tag.Dimensions) ? declared : $"{declared}[{tag.Dimensions!.Trim()}]";
+            if (!SameType(existing, declared, tag.Dimensions))
+                return (new ProposeRungEditError(
+                    $"Tag '{tag.Name}' already exists with data type {existing}; the declaration asks for {declaredFull}. " +
+                    "Nothing was staged.",
+                    Hint: "Use the existing tag as it is (leave it out of tags[]), or choose a different tag name.",
+                    Kind: ErrorKinds.TagTypeConflict,
+                    Tag: tag.Name, ExistingType: existing, DeclaredType: declaredFull), null);
+            reused.Add(new ReusedTagEntry(tag.Name, existing));
+        }
+        return (null, reused.Count == 0 ? null : reused);
+    }
+
+    private static string BaseType(string dataType)
+    {
+        var t = dataType.Trim();
+        var bracket = t.IndexOf('[');
+        return (bracket >= 0 ? t[..bracket] : t).Trim();
+    }
+
+    private static string? BufferedType(System.Xml.Linq.XElement tag)
+    {
+        var type = (string?)tag.Attribute("DataType");
+        if (string.IsNullOrWhiteSpace(type)) return null;
+        var dims = (string?)tag.Attribute("Dimensions");
+        return string.IsNullOrWhiteSpace(dims) || dims == "0" ? type : $"{type}[{dims}]";
+    }
+
+    private static bool SameType(string existing, string declaredType, string? declaredDims)
+    {
+        var existingBase = BaseType(existing);
+        var existingDims = existing.Contains('[') ? existing[(existing.IndexOf('[') + 1)..].TrimEnd(']').Trim() : null;
+        var declaredBase = BaseType(declaredType);
+        var dims = string.IsNullOrWhiteSpace(declaredDims) ? null : declaredDims.Trim();
+        // A declared "DINT[4]" carries its dimension in the type text.
+        if (dims is null && declaredType.Contains('['))
+            dims = declaredType[(declaredType.IndexOf('[') + 1)..].TrimEnd(']').Trim();
+        if (!string.Equals(existingBase, declaredBase, StringComparison.OrdinalIgnoreCase)) return false;
+        if (existingDims is null || dims is null) return existingDims is null && dims is null;
+        return string.Equals(existingDims.Replace(" ", ""), dims.Replace(" ", ""), StringComparison.Ordinal);
+    }
+}
 
 /// <summary>
 /// The tag and instruction pre-check finding reported alongside a <c>PendingEditsBlockImport</c> refusal, so one
-/// round trip shows both problems (logix-mcp-qpqy.12).
+/// round trip shows both problems.
 /// </summary>
 /// <param name="Kind">The pre-check refusal kind (<c>UndefinedTag</c>, <c>UnknownInstruction</c>, ...).</param>
 /// <param name="Error">The pre-check message.</param>
@@ -594,7 +736,7 @@ public sealed record PublishPreCheckReport(
                JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] IReadOnlyList<RejectReason>? RejectReasons = null);
 
 /// <summary>
-/// One rung of the session's staged routine image, as listed on a <c>StagedPositionConflict</c> (logix-mcp-qpqy.3).
+/// One rung of the session's staged routine image, as listed on a <c>StagedPositionConflict</c>.
 /// </summary>
 /// <param name="Index">The rung's index in the image (what Studio numbers the rung). Positions in hints and inserts do
 /// NOT use this index: they count only visible rungs, and rungs in state <c>R</c> or <c>D</c> are not counted.</param>
@@ -733,7 +875,7 @@ internal sealed class RungEditAuditScope
     public string? Correlation { get; private set; }
 
     /// <summary>
-    /// Writes the <c>"sending"</c> intent line before a controller-changing import (logix-mcp-qpqy.4). It is not
+    /// Writes the <c>"sending"</c> intent line before a controller-changing import. It is not
     /// this call's single outcome line: <see cref="Written"/> stays <c>false</c>, and the outcome line completes
     /// it through the shared <see cref="Correlation"/>. Only the first call writes.
     /// </summary>
@@ -928,9 +1070,35 @@ public static class ProposeRungEditHandler
         string?                 l5xFragment,
         IReadOnlyList<RungInput>? rungs,
         IReadOnlyList<TagInput>?  tags,
-        out IReadOnlyList<RungInput> normalizedRungs)
+        out IReadOnlyList<RungInput> normalizedRungs) =>
+        ValidateTypedInput(l5xFragment, rungs, tags, out normalizedRungs, out _);
+
+    private static readonly Regex RepeatedRungTerminator = new(
+        @";(?:\s*;)+", RegexOptions.CultureInvariant | RegexOptions.Compiled);
+
+    /// <summary>
+    /// <see cref="ValidateTypedInput(string?, IReadOnlyList{RungInput}?, IReadOnlyList{TagInput}?, out IReadOnlyList{RungInput})"/>
+    /// that also reports what it changed. A run of <c>;</c> (<c>X;;</c>) is one terminator: Logix imports <c>X;;</c> as
+    /// <c>X;</c>, so the text is staged that way. The empty rung between the two is dropped, and
+    /// <paramref name="notes"/> says so (otherwise the staged copy differs from the text sent and reads as
+    /// <c>StagedEditLost</c>).
+    /// </summary>
+    /// <param name="l5xFragment">The raw fragment argument, if any.</param>
+    /// <param name="rungs">Typed rungs, if any.</param>
+    /// <param name="tags">Typed tags, if any.</param>
+    /// <param name="normalizedRungs">The rungs after normalisation; empty when there are none or validation failed.</param>
+    /// <param name="notes">One note per rung whose empty rungs were dropped; empty otherwise.</param>
+    /// <returns>An error, or <c>null</c> when the input is valid.</returns>
+    public static ProposeRungEditError? ValidateTypedInput(
+        string?                 l5xFragment,
+        IReadOnlyList<RungInput>? rungs,
+        IReadOnlyList<TagInput>?  tags,
+        out IReadOnlyList<RungInput> normalizedRungs,
+        out IReadOnlyList<string> notes)
     {
         normalizedRungs = Array.Empty<RungInput>();
+        var noteList = new List<string>();
+        notes = noteList;
         bool hasRungs = rungs is { Count: > 0 };
         bool hasTags  = tags  is { Count: > 0 };
 
@@ -965,6 +1133,23 @@ public static class ProposeRungEditHandler
                         "the server builds the L5X." + TypedInputSkillPointer,
                         Hint: "Pass only the instruction text of the rung.",
                         Kind: "InvalidRungText");
+
+                // X;; is X; to Logix. A ';' inside a quoted string is not a terminator, so leave quoted text alone.
+                if (text.Contains(';') && !text.Contains('\'') && !text.Contains('"') &&
+                    RepeatedRungTerminator.IsMatch(text))
+                {
+                    var collapsed = RepeatedRungTerminator.Replace(text, ";");
+                    if (collapsed.Trim(';', ' ', '\t', '\r', '\n').Length == 0)
+                        return new ProposeRungEditError(
+                            $"Invalid rung: rungs[{i}].text has no instructions, only ';'." + TypedInputSkillPointer,
+                            Hint: "The text field takes rung text such as XIC(Start)OTE(Lamp);" +
+                                  TypedInputSkillPointer,
+                            Kind: "InvalidRungText");
+                    noteList.Add(
+                        $"rungs[{i}].text had an empty rung between two ';' ('{text}'); it was dropped and the rung " +
+                        $"staged as '{collapsed}'.");
+                    text = collapsed;
+                }
 
                 if (!text.EndsWith(';'))
                     text += ";";
@@ -1185,7 +1370,8 @@ public static class ProposeRungEditHandler
         IReadOnlyList<TagInput>?  tags  = null,
         IReadOnlyDictionary<string, string>? preExistingTagAccess = null,
         ITagService?         presetReader = null,
-        bool                 verifyOnStage = false)
+        bool                 verifyOnStage = false,
+        TagDeclarationCensus? tagCensus = null)
     {
         // Exactly one rung_edit audit line per call. The core logs its own outcome
         // (proposed / publish-mismatch / nothing-staged / error / build-failed); anything that returns
@@ -1204,7 +1390,7 @@ public static class ProposeRungEditHandler
             result = await ExecuteCoreAsync(
                 routineXPath!, insertPosition, replaceCount, l5xFragment, session, audit, policy, target,
                 preExistingTagNames, ct, confirmedByUser, expectedRungText, rungs, tags, preExistingTagAccess,
-                presetReader, verifyOnStage).ConfigureAwait(false);
+                presetReader, verifyOnStage, tagCensus).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {
@@ -1248,7 +1434,8 @@ public static class ProposeRungEditHandler
         IReadOnlyList<TagInput>?  tags,
         IReadOnlyDictionary<string, string>? preExistingTagAccess,
         ITagService?         presetReader,
-        bool                 verifyOnStage)
+        bool                 verifyOnStage,
+        TagDeclarationCensus? tagCensus)
     {
         // verifyOnStage phase timings (workstation staging with the offline replay asked for). The clock starts here, so
         // the work before the replay (reading and merging the staged session image) is the named staged-merge phase
@@ -1316,7 +1503,7 @@ public static class ProposeRungEditHandler
 
         // ── Target validation ─────────────────────────────────────────────────
         // Accept null (= workstation, pre-PRD default), "workstation", "controller", or
-        // "live" (an earlier change: controller fragment handling, imported with FinalizeEdits).
+        // "live" (controller fragment handling, imported with FinalizeEdits).
         // Any other value is rejected before any file I/O or SDK call. Validated
         // before the l5xFragment check below because the empty-fragment rule
         // Depends on knowing the resolved target.
@@ -1363,11 +1550,21 @@ public static class ProposeRungEditHandler
         // Re-validated here (LogixSdkTools validates first) so a direct caller of
         // the handler gets the same refusals. Valid typed input is turned into an
         // import fragment by RungFragmentBuilder from the real export envelope.
-        if (ValidateTypedInput(l5xFragment, rungs, tags, out var typedRungs) is { } typedError)
+        if (ValidateTypedInput(l5xFragment, rungs, tags, out var typedRungs, out var typedInputNotes) is { } typedError)
             return typedError;
         bool hasTypedRungs = typedRungs.Count > 0;
         bool hasTypedTags  = tags is { Count: > 0 };
         bool hasTypedInput = hasTypedRungs || hasTypedTags;
+
+        // ── tags[] declarations against what already exists ─────────
+        // An unknown data type, or a name that exists with another type, is refused before anything is staged or
+        // imported. A name that exists with the same type is reused: the declaration is ignored and reported.
+        // The importer's own error stays as the backstop when no census is available.
+        if (TagDeclarationChecks.UnknownType(tags, tagCensus) is { } unknownType)
+            return unknownType;
+        var (tagConflict, reusedTagEntries) = TagDeclarationChecks.Compare(tags, tagCensus, session);
+        if (tagConflict is not null)
+            return tagConflict;
 
         // ── Motion tags need an offline project (G27) ─────────────────────────
         // The session is online here (guard above). Logix creates AXIS_*, MOTION_GROUP and COORDINATE_SYSTEM tags
@@ -1482,7 +1679,7 @@ public static class ProposeRungEditHandler
                 Kind: "NothingStaged");
         }
 
-        // ── Pending-edit pre-check for a controller publish (logix-mcp-h50h.6) ─
+        // ── Pending-edit pre-check for a controller publish ─
         // The SDK refuses every import into a program that holds accepted edits and answers with the raw
         // XMLSrv_E_PIE_CONTROLLER_EDITS_EXIST_FOR_PROGRAM. Read the program's edit state first, the way
         // logix_create_routine does, and refuse with PendingEditsBlockImport before any export or import.
@@ -1612,7 +1809,7 @@ public static class ProposeRungEditHandler
             }
         }
 
-        // ── Visible positions → staged-image positions (logix-mcp-qpqy.3) ─────
+        // ── Visible positions → staged-image positions ─────
         // Callers count the rungs they will SEE once the edit is published: original rungs not replaced, plus
         // staged rungs. The session image still holds a replaced original (state R or D), so a visible position
         // is translated to the image index the SDK import and the staged buckets use. From here on insertPosition
@@ -1626,6 +1823,45 @@ public static class ProposeRungEditHandler
             stagedImage = await ReadStagedImageAsync(routineXPath, session, ct).ConfigureAwait(false);
             if (stagedImage is not null && !(sendToController && emptyFragmentControllerPublish))
                 (insertPosition, replaceCount) = ToImageCoordinates(stagedImage, insertPosition, replaceCount);
+        }
+
+        // ── Range check ───────────────────────────────
+        // The SDK import clamps an insertPosition past the end and a replaceCount that reaches past it, so the
+        // stage, the publish and the audit echo numbers that never took effect. Check the caller's values
+        // (visible coordinates) against the visible rung count before the dedup, the pre-import export or any
+        // import. Not applied when the position is server-chosen (emptyFragmentControllerPublish) or
+        // when a controller publish carries no rungs of its own (the fragmentCarriesNoNewRungs case, which
+        // is decided after the dedup, so it is probed here with the same pure dedup).
+        bool carriesNoRungsOfItsOwn = false;
+        if (sendToController && !isLiveTarget && !emptyFragmentControllerPublish)
+        {
+            // Same arithmetic as fragmentCarriesNoNewRungs below; the dedup is pure, so run it only to count.
+            DedupeFragmentRungsAgainstStagedBuffer(
+                effectiveFragment, routineXPath, insertPosition, session.StagedRungBuffer,
+                out int probeFragmentRungs, out int probeDroppedRungs);
+            carriesNoRungsOfItsOwn = probeFragmentRungs - probeDroppedRungs == 0;
+        }
+        if (!emptyFragmentControllerPublish && !carriesNoRungsOfItsOwn)
+        {
+            int? visibleRungCount = null;
+            if (stagedImage is not null)
+            {
+                visibleRungCount = VisibleRungCount(stagedImage);
+            }
+            else
+            {
+                // No staged edit (or a staged image that could not be read): use the image's rung count.
+                var (countReadable, imageCount, _) =
+                    await ReadImageRungCountAsync(routineXPath, session, ct).ConfigureAwait(false);
+                if (countReadable)
+                    visibleRungCount = imageCount;
+                // Unreadable: best effort, skip the check. Refusing a stage because an export failed would turn
+                // every export hiccup into a refusal, and the no-fragment commit path has CommitPositionUnreadable.
+            }
+
+            if (visibleRungCount is int knownCount &&
+                CheckRungRange(routineXPath, knownCount, callerInsertPosition, callerReplaceCount) is { } rangeError)
+                return rangeError;
         }
 
         // ── Duplicate rung dedup against the staged buffer ─
@@ -1788,7 +2024,7 @@ public static class ProposeRungEditHandler
                 imageRungCount,
                 CountStagedRungsForRoutine(session.StagedRungBuffer, routineXPath));
 
-            // This change requirement 1 (G32): when the routine's LAST rung (or its tail) is replaced, the image ends
+            // When the routine's LAST rung (or its tail) is replaced, the image ends
             // `..., er(new), rN(orig)`. The controller-end position above lands on rN, and the empty import there
             // drops the new rung (the original is left deleted). Such a tail is committed by an explicit import of
             // every visible staged rung (er, e) in order over the whole tail, which also removes the hidden
@@ -1951,7 +2187,7 @@ public static class ProposeRungEditHandler
         List<string> replacedRungTextsThisCall = [];
 
         // Replacement rungs of this stage whose text equals the original they replace (zero-based rung index,
-        // text). Logix keeps those as N, so the publish census must not expect them pending (logix-mcp-am0x.4).
+        // text). Logix keeps those as N, so the publish census must not expect them pending.
         List<(int Index, string Text)> unchangedReplacementsThisCall = [];
 
         // Tag declarations this call put into the staged tag buffer, with the entry each replaced (null when new).
@@ -2351,7 +2587,7 @@ public static class ProposeRungEditHandler
             // This call's own fragment rungs with the comment each carries into the import (after comment
             // preservation), so the landed rung's comment can be reported.
             List<(string Text, string? Comment)> ownFragmentComments = [];
-            // Same-text replacements per routine (logix-mcp-am0x.4): staged ones from the session, plus this call's
+            // Same-text replacements per routine: staged ones from the session, plus this call's
             // own direct replacement. Captured here because the session's record is cleared before the census runs.
             var unchangedByRoutine = new Dictionary<string, List<(int Index, string Text)>>(StringComparer.OrdinalIgnoreCase);
             var prePublishPendingByRoutine = new Dictionary<string, IReadOnlyList<string>>(StringComparer.OrdinalIgnoreCase);
@@ -2662,13 +2898,13 @@ public static class ProposeRungEditHandler
                 // "<Exception Severity=… Mnemonic='XMLSrv_E_…'>" with line/column) is
                 // available to quote in the structured error below, rather than relying on
                 // the exception's own (often terser) Message alone.
-                // Intent line (logix-mcp-qpqy.4): an import that can change the controller is recorded BEFORE it is
+                // Intent line: an import that can change the controller is recorded BEFORE it is
                 // sent, so a server killed mid-import still leaves a trace. The outcome line completes it through
                 // the same correlation id; an unfinished one is reported as orphaned on the next connect.
                 if (sendToController || isLiveTarget)
                 {
                     // The rung texts this call sends to its routine are recorded so the next connect can tell a true
-                    // orphan (its rungs sit in the pending zone) from a stale line (logix-mcp-am0x.5).
+                    // orphan (its rungs sit in the pending zone) from a stale line.
                     IReadOnlyList<string>? sendingTexts = null;
                     try
                     {
@@ -2683,7 +2919,7 @@ public static class ProposeRungEditHandler
                     audit.LogSending(insertPosition, sendingTexts);
                 }
 
-                // logix-mcp-qpqy.8: RxCsE_ASA_BLOCKING_HIGHER_EXCL_LOCK (another client or Studio holds the
+                // RxCsE_ASA_BLOCKING_HIGHER_EXCL_LOCK (another client or Studio holds the
                 // controller lock) is transient, so only that mnemonic is retried: 3 tries in all, about 10 s.
                 // Every other failure is thrown on the first try. The retries made are reported (importRetries).
                 await ControllerLockRetry.RunAsync(
@@ -2908,7 +3144,7 @@ public static class ProposeRungEditHandler
                         .ConfigureAwait(false));
             }
 
-            // This change requirement 3 (G24): "Connected" is the SDK's name for a session that is attached to the
+            // "Connected" is the SDK's name for a session that is attached to the
             // controller and holds edits; it is equivalent to Online for this check. Only a state that is neither
             // is inconclusive, and that is reported as a typed PostImportCheckInconclusive carrying what a
             // read-back saw (pendingAfterError) — never the untyped "may not have been applied".
@@ -2964,7 +3200,7 @@ public static class ProposeRungEditHandler
             else if (replayPassedImportText is not null
                      && await ImportTextUnchangedAsync(tempFile, fragmentToImport, replayPassedImportText).ConfigureAwait(false))
             {
-                // This change req. 3 (G34): verifyOnStage already imported this exact text into an offline copy and the
+                // verifyOnStage already imported this exact text into an offline copy and the
                 // copy built, and the online import did not change it. A second copy cycle would repeat that build
                 // (12 to 14 s on a large project), so it is skipped. A failing replay never gets here.
                 buildVerify         = BuildVerifyPassed;
@@ -3096,6 +3332,11 @@ public static class ProposeRungEditHandler
                 session.StagedRungCount   = 0;
                 session.StagedRungBuffer.Clear();
                 session.StagedReplaceCounts.Clear();
+                session.StagedKeptNormal.Clear();
+                // The same-text record was the one staged record this block did not clear. After a NO CHANGE
+                // publish it kept "index 0 unchanged" for the routine, so the NEXT publish's census (unchangedByRoutine,
+                // captured above) saw a mixed publish, reported no landed texts, and the session image could not follow it.
+                session.StagedUnchangedReplacements.Clear();
                 session.ForgetStagedImports();
                 // The original comments stay with the zone this publish creates, so a cancel
                 // of that zone (logix_cancel_pending_edits) can write them back.
@@ -3121,6 +3362,7 @@ public static class ProposeRungEditHandler
                     session.RecordCommentUndo(new LogixProjectSession.CommentUndoEntry(
                         routineXPath, origIdx, origText, origComment, fragmentToImport));
 
+                var bucketOffsetThisCall = 0;
                 if (stagedRungTextsThisCall.Count > 0)
                 {
                     var bufferKey = (routineXPath, insertPosition);
@@ -3129,11 +3371,23 @@ public static class ProposeRungEditHandler
                         bucket = new List<string>();
                         session.StagedRungBuffer[bufferKey] = bucket;
                     }
+                    bucketOffsetThisCall = bucket.Count;
                     bucket.AddRange(stagedRungTextsThisCall);
                 }
                 // The bucket remembers its replaceCount, so its originals' range stays reserved.
                 if (replaceCount > 0 && stagedRungTextsThisCall.Count > 0)
+                {
                     session.StagedReplaceCounts[(routineXPath, insertPosition)] = replaceCount;
+                    // The replacements identical to the rung they displace stay normal in the session image.
+                    if (unchangedReplacementsThisCall.Count > 0)
+                    {
+                        var keptKey = (routineXPath, insertPosition);
+                        if (!session.StagedKeptNormal.TryGetValue(keptKey, out var kept))
+                            session.StagedKeptNormal[keptKey] = kept = new HashSet<int>();
+                        foreach (var (unchangedIndex, _) in unchangedReplacementsThisCall)
+                            kept.Add(bucketOffsetThisCall + unchangedIndex - (int)insertPosition);
+                    }
+                }
 
                 // Record the normalised texts of the original rungs displaced by this
                 // replace/delete stage. PendingEditsHandler uses this set to move those
@@ -3284,6 +3538,9 @@ public static class ProposeRungEditHandler
                 return staged + (tailCommit is null && string.Equals(routine, routineXPath, StringComparison.OrdinalIgnoreCase)
                     ? effectiveReplaceCount : 0u);
             }
+            // With no census to read, a controller publish still left its zone in the routine it targeted.
+            if (sendToController && !isLiveTarget && expectedByRoutine is null)
+                RecordPublishedZone(session, [routineXPath]);
             if (!isLiveTarget && expectedByRoutine is not null)
             {
                 var mismatches = new List<RoutineCensusMismatch>();
@@ -3294,19 +3551,22 @@ public static class ProposeRungEditHandler
                 var  unchangedIndexes = new List<int>();
                 IReadOnlyList<string>? ownActual = null;
                 IReadOnlyList<string>? firstMismatchActual = null;
+                var zoneRoutines = new List<string>; // routines whose census shows the publish's pending zone
 
                 foreach (var (censusRoutine, expectedTexts) in expectedByRoutine)
                 {
-                    var (censusReadable, actualPendingIndexed, _) =
-                        await ReadPendingRungsWithIndexAsync(censusRoutine, session, ct)
+                    var (censusReadable, actualPendingIndexed, censusDeleted, _) =
+                        await ReadRoutineCensusAsync(censusRoutine, session, ct)
                             .ConfigureAwait(false);
 
                     if (!censusReadable)
                     {
                         anyUnreadable = true;
+                        zoneRoutines.Add(censusRoutine);   // indeterminate: assume the publish left its zone here
                         continue;
                     }
                     IReadOnlyList<string> actualPendingTexts = actualPendingIndexed.Select(p => p.Text).ToList();
+                    if (actualPendingTexts.Count > 0) zoneRoutines.Add(censusRoutine);
 
                     // A successful import that left none of this call's own rungs behind is
                     // ImportAddedNoRungs (not a partial PublishMismatch).
@@ -3336,7 +3596,7 @@ public static class ProposeRungEditHandler
 
                     // Expected text vs exported text goes through the shared comparator,
                     // so an export's `?` preset/accumulator matches the staged literal.
-                    // logix-mcp-am0x.4: a replacement whose text equals the original stays N, so it is accepted
+                    // A replacement whose text equals the original stays N, so it is accepted
                     // as N at its index instead of being counted missing from the pending set.
                     var (stillMissing, acceptedUnchanged) =
                         ApplyUnchangedReplacements(expectedTexts, actualPendingTexts, routineUnchanged);
@@ -3387,7 +3647,7 @@ public static class ProposeRungEditHandler
                             landedIndices.Count > 0 ? landedIndices : null,
                             landedIndices.Count > 0 ? (uint)landedIndices[0] : (uint?)null,
                             RoutineReplaceCount(censusRoutine),
-                            landedTexts, landedComments));
+                            landedTexts, landedComments, censusDeleted));
                     }
 
                     // Informational only: pending rungs that are neither expected nor
@@ -3399,6 +3659,8 @@ public static class ProposeRungEditHandler
                             && !RungTextComparer.AnyExpectedMatches(baseline, t));
                     }
                 }
+
+                RecordPublishedZone(session, zoneRoutines);
 
                 if (mismatches.Count > 0)
                 {
@@ -3494,7 +3756,15 @@ public static class ProposeRungEditHandler
             // and are already counted in publishRungsByRoutine (counting them again miscounted the rungs sent).
             int ownPublishRungs = sendToController && tailCommit is null ? CountFragmentRungs(fragmentToImport, routineXPath) : 0;
             // Every position sentence and the reported insertPosition come from the census's landedIndices.
-            string landedHeader = DescribeLandedHeader(routineXPath, publishedRoutines, insertPosition);
+            // The call's own routine is judged by the caller's (position, replaceCount), the image-coordinate pair and the
+            // pair the publish used, so the header and ignoredInsertPosition below agree.
+            var layoutCandidates = new List<LayoutCandidate>
+            {
+                new(callerInsertPosition, callerReplaceCount),
+                new(insertPosition, replaceCount),
+                new(insertPosition, effectiveReplaceCount),
+            };
+            string landedHeader = DescribeLandedHeader(routineXPath, publishedRoutines, insertPosition, layoutCandidates);
             uint? reportedInsertPosition = ReportedInsertPosition(routineXPath, publishedRoutines, insertPosition);
             string successMessage = isLiveDelete
                 ? $"RUNGS DELETED LIVE. Routine '{routineXPath}', deleted {Plural(replaceCount, "rung")} " +
@@ -3593,11 +3863,10 @@ public static class ProposeRungEditHandler
                 replaceCountNote = replaceCountNote is null ? visibleNote : replaceCountNote + " " + visibleNote;
             }
             // G52: one rule decides both the note and the ignoredInsertPosition field (null when the position was honoured).
-            uint? reportedIgnoredInsertPosition =
-                ignoredCallerInsertPosition.HasValue &&
-                CallerInsertPositionIgnored(routineXPath, publishedRoutines, ignoredCallerInsertPosition.Value)
-                    ? ignoredCallerInsertPosition
-                    : null;
+            // An identical-text-only publish lands nothing, so there is no landed index to compare; the rung is where
+            // the caller said, unchanged, and no position was ignored.
+            uint? reportedIgnoredInsertPosition = IgnoredInsertPositionToReport(
+                ignoredCallerInsertPosition, routineXPath, publishedRoutines, identicalTextOnly, layoutCandidates);
             if (reportedIgnoredInsertPosition.HasValue)
             {
                 var landedSentence = DescribeLandedSentence(publishedRoutines);
@@ -3617,6 +3886,11 @@ public static class ProposeRungEditHandler
                 replaceCountNote = replaceCountNote is null
                     ? passedExcludingStagedNote
                     : replaceCountNote + " " + passedExcludingStagedNote;
+            if (typedInputNotes.Count > 0)
+            {
+                var typedNote = string.Join(" ", typedInputNotes);
+                replaceCountNote = replaceCountNote is null ? typedNote : replaceCountNote + " " + typedNote;
+            }
             if (buildVerify == "unavailable")
             {
                 var unavailableNote = buildUnavailableReason ?? DesignerVersionInfo.BuildUnavailableNote;
@@ -3648,6 +3922,7 @@ public static class ProposeRungEditHandler
                 StagedTags:           stagedTagNames,
                 TagsCreated:          publishedTagEntries,
                 ContextTags:          contextTagNames,
+                ReusedTags:           reusedTagEntries,
                 StagedRungs:          stagedRungCountAtPosition,
                 FragmentRungs:        sendToController ? fragmentRungCount : (int?)null,
                 DroppedDuplicates:    sendToController ? droppedDuplicateRungCount : (int?)null,
@@ -4286,8 +4561,8 @@ public static class ProposeRungEditHandler
     }
 
     /// <summary>
-    /// Pairs each replacement rung with the original it displaces and returns those whose text is identical
-    /// (logix-mcp-am0x.4). Logix keeps such a rung as normal (<c>N</c>), not pending (<c>I</c>).
+    /// Pairs each replacement rung with the original it displaces and returns those whose text is identical.
+    /// Logix keeps such a rung as normal (<c>N</c>), not pending (<c>I</c>).
     /// </summary>
     /// <param name="replacementTexts">Normalised texts of the replacement rungs, in order.</param>
     /// <param name="routineTexts">Normalised texts of ALL the routine's rungs before the import.</param>
@@ -4311,7 +4586,7 @@ public static class ProposeRungEditHandler
     }
 
     /// <summary>
-    /// Census check that accepts same-text replacements as <c>N</c> (logix-mcp-am0x.4): every expected text not
+    /// Census check that accepts same-text replacements as <c>N</c>: every expected text not
     /// found among the pending rungs is matched against the remaining same-text replacements (each used once);
     /// what is still unmatched is a genuine mismatch.
     /// </summary>
@@ -4762,6 +5037,52 @@ public static class ProposeRungEditHandler
         image.Count(r => !IsHiddenState(r.State));
 
     /// <summary>
+    /// Checks the caller's <c>insertPosition</c> and <c>replaceCount</c> against the routine's visible rung count
+    /// before anything is staged or imported. The SDK import clamps an out-of-range position or count silently, so the
+    /// response would otherwise echo numbers that never took effect. <c>insertPosition == N</c> is the legal append.
+    /// </summary>
+    /// <param name="routineXPath">The routine the edit targets (named in the message).</param>
+    /// <param name="visibleRungCount">N: the rungs the caller sees (originals not replaced, plus staged rungs).</param>
+    /// <param name="insertPosition">The caller's insert position, in visible rungs.</param>
+    /// <param name="replaceCount">The caller's replace count, in visible rungs.</param>
+    /// <returns>
+    /// <c>InsertPositionOutOfRange</c> when <paramref name="insertPosition"/> &gt; N; else <c>ReplaceCountOutOfRange</c>
+    /// when <paramref name="insertPosition"/> + <paramref name="replaceCount"/> &gt; N; otherwise <c>null</c>.
+    /// </returns>
+    internal static ProposeRungEditError? CheckRungRange(
+        string routineXPath, int visibleRungCount, uint insertPosition, uint replaceCount)
+    {
+        long n = Math.Max(0, visibleRungCount);
+        string shape = n == 0
+            ? $"'{routineXPath}' has no rungs; only insertPosition 0 with replaceCount 0 is valid"
+            : $"'{routineXPath}' has {n} rung{(n == 1 ? "" : "s")}, positions 0..{n - 1}; {n} appends";
+        const string Hint =
+            "Read the routine with logix_get_routine (positions count the rungs it shows: originals not replaced, " +
+            "plus staged rungs). insertPosition must be from 0 to N, and insertPosition + replaceCount must be at most N.";
+
+        if (insertPosition > n)
+        {
+            return new ProposeRungEditError(
+                $"insertPosition {insertPosition} is past the end of the routine: {shape} (requested " +
+                $"insertPosition {insertPosition}, replaceCount {replaceCount}). Nothing was staged or imported.",
+                Hint: Hint,
+                Kind: "InsertPositionOutOfRange");
+        }
+
+        if ((long)insertPosition + replaceCount > n)
+        {
+            return new ProposeRungEditError(
+                $"insertPosition {insertPosition} + replaceCount {replaceCount} reaches past the end of the routine: " +
+                $"{shape} (requested insertPosition {insertPosition}, replaceCount {replaceCount}). " +
+                "Nothing was staged or imported.",
+                Hint: Hint,
+                Kind: "ReplaceCountOutOfRange");
+        }
+
+        return null;
+    }
+
+    /// <summary>
     /// Translates a position and replace count counted in visible rungs (original rungs not replaced, plus staged
     /// rungs) into the image coordinates the SDK import and the staged buckets use. Hidden replaced originals are
     /// skipped; a position at or past the visible end maps to the same distance past the image end, so an image
@@ -4931,6 +5252,25 @@ public static class ProposeRungEditHandler
             LogixProjectSession session,
             CancellationToken   ct)
     {
+        var (readable, pending, _, error) = await ReadRoutineCensusAsync(routineXPath, session, ct)
+            .ConfigureAwait(false);
+        return (readable, pending, error);
+    }
+
+    /// <summary>
+    /// The census read: as <see cref="ReadPendingRungsWithIndexAsync"/>, plus the zero-based indices of the routine's
+    /// rungs typed <c>D</c> (replaced originals Logix keeps visible), from the same export.
+    /// Never throws (cancellation excepted).
+    /// </summary>
+    /// <param name="routineXPath">The XPath of the target routine.</param>
+    /// <param name="session">The open SDK session to use for the export.</param>
+    /// <param name="ct">Cancellation token.</param>
+    private static async System.Threading.Tasks.Task<(bool IsReadable, IReadOnlyList<(int Index, string Text, string? Comment)> Pending, IReadOnlyList<int> Deleted, string? Error)>
+        ReadRoutineCensusAsync(
+            string              routineXPath,
+            LogixProjectSession session,
+            CancellationToken   ct)
+    {
         object exportResult;
         try
         {
@@ -4939,28 +5279,31 @@ public static class ProposeRungEditHandler
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            return (false, Array.Empty<(int, string, string?)>(), ex.Message);
+            return (false, Array.Empty<(int, string, string?)>(), Array.Empty<int>(), ex.Message);
         }
 
         if (exportResult is not ExportRungsResult exportSuccess)
-            return (false, Array.Empty<(int, string, string?)>(),
+            return (false, Array.Empty<(int, string, string?)>(), Array.Empty<int>(),
                 (exportResult as ExportRungsError)?.Error ?? "the routine export returned no result");
 
         try
         {
             var doc = SafeXml.ParseDocument(exportSuccess.L5X);
-            var pending = RoutineRungSelector.Select(doc, routineXPath)
+            var typed = RoutineRungSelector.Select(doc, routineXPath)
                 .Select((r, i) => (Index: i, Type: (string?)r.Attribute("Type") ?? "N", Rung: r))
+                .ToList();
+            var pending = typed
                 .Where(x => x.Type == "I" || x.Type == "IR")
                 .Select(x => (x.Index, NormalizeRungText(x.Rung.Element("Text")?.Value),
                     x.Rung.Element("Comment") is { } c && !string.IsNullOrWhiteSpace(c.Value) ? c.Value : null))
                 .ToList();
+            var deleted = typed.Where(x => x.Type == "D").Select(x => x.Index).ToList();
 
-            return (true, pending, null);
+            return (true, pending, deleted, null);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            return (false, Array.Empty<(int, string, string?)>(), ex.Message);
+            return (false, Array.Empty<(int, string, string?)>(), Array.Empty<int>(), ex.Message);
         }
     }
 
@@ -5738,6 +6081,21 @@ public static class ProposeRungEditHandler
         return SerializeWithDeclaration(doc);
     }
 
+    /// <summary>
+    /// Records the pending zone a controller publish left in the <see cref="ZoneLedger"/>: for each routine
+    /// XPath, its program and routine name. The lifecycle verbs accept a zone only when the ledger knows it.
+    /// </summary>
+    /// <param name="session">The controller session that published; the ledger is keyed by it.</param>
+    /// <param name="routineXPaths">XPaths of the routines holding the published pending edits.</param>
+    internal static void RecordPublishedZone(LogixProjectSession session, IEnumerable<string> routineXPaths)
+    {
+        foreach (var byProgram in routineXPaths
+                     .Select(x => (Program: ProgramNamePattern.Match(x), Routine: RoutineNamePattern.Match(x)))
+                     .Where(m => m.Program.Success && m.Routine.Success)
+                     .GroupBy(m => m.Program.Groups[1].Value, StringComparer.OrdinalIgnoreCase))
+            ZoneLedger.For(session).Record(byProgram.Key, byProgram.Select(m => m.Routine.Groups[1].Value));
+    }
+
     // ── Offline helpers ───────────────────────────────────────────────────────
 
     /// <summary>
@@ -6342,14 +6700,105 @@ public static class ProposeRungEditHandler
     /// <param name="routineXPath">The call's routine.</param>
     /// <param name="published">The census's per-routine result; <c>null</c> when none.</param>
     /// <param name="insertPosition">The position the import was made at (fallback).</param>
+    /// <param name="layouts">Further (position, replaceCount) pairs the call's own routine may be judged by (the caller's).</param>
     internal static string DescribeLandedHeader(
-        string routineXPath, IReadOnlyList<PublishedRoutine>? published, uint insertPosition)
+        string routineXPath, IReadOnlyList<PublishedRoutine>? published, uint insertPosition,
+        IReadOnlyList<LayoutCandidate>? layouts = null)
     {
         var landed = RoutinesWithLanded(published);
         if (landed.Count == 0)
             return $"Routine '{routineXPath}', insert position {insertPosition}";
         return string.Join("; ", landed.Select((r, i) =>
-            $"{(i == 0 ? "Routine" : "routine")} '{r.Routine}', {DescribeLandedIndices(r.LandedIndices!)}"));
+        {
+            bool own = string.Equals(r.Routine, routineXPath, StringComparison.OrdinalIgnoreCase);
+            uint matchedReplace = 0;
+            bool replacement = own
+                && TryMatchDeleteAddLayout(r, CandidatesFor(insertPosition, layouts), out matchedReplace);
+            return $"{(i == 0 ? "Routine" : "routine")} '{r.Routine}', " +
+                (replacement ? DescribeReplacementLanding(r, matchedReplace) : DescribeLandedIndices(r.LandedIndices!));
+        }));
+    }
+
+    /// <summary>
+    /// One (position, replaceCount) pair a call's own routine may have been imported with: the caller's visible values,
+    /// the image-coordinate values, or the values the publish chose. <see cref="ReplaceCount"/> <c>null</c> means "use
+    /// the census's per-routine replace count".
+    /// </summary>
+    /// <param name="Position">An insert position.</param>
+    /// <param name="ReplaceCount">The replace count that goes with it, or <c>null</c>.</param>
+    internal readonly record struct LayoutCandidate(uint Position, uint? ReplaceCount);
+
+    private static List<LayoutCandidate> CandidatesFor(uint insertPosition, IReadOnlyList<LayoutCandidate>? layouts)
+    {
+        var all = new List<LayoutCandidate> { new(insertPosition, null) };
+        if (layouts is not null)
+            all.AddRange(layouts);
+        return all;
+    }
+
+    /// <summary>
+    /// Whether a routine's rungs landed in Logix's delete + add layout: the first landed index is
+    /// <paramref name="insertPosition"/> + the replace count (<c>R</c> &gt; 0) and the <c>R</c> rungs
+    /// immediately before it are typed <c>D</c> in the census. The position was honoured; Logix shows the new rung
+    /// after the originals it deletes.
+    /// </summary>
+    /// <param name="routine">The census's result for the call's routine.</param>
+    /// <param name="insertPosition">The position the import was made at.</param>
+    /// <param name="replaceCount">The call's replace count; <c>null</c> uses the census's per-routine count.</param>
+    internal static bool IsDeleteAddLayout(PublishedRoutine routine, uint insertPosition, uint? replaceCount = null)
+    {
+        var rc = replaceCount ?? routine.ReplaceCount;
+        if (routine.LandedIndices is not { Count: > 0 } landed || rc is not > 0u)
+            return false;
+        long first = landed.Min();
+        if (first != insertPosition + (long)rc.Value || routine.DeletedIndices is null)
+            return false;
+        for (long i = insertPosition; i < first; i++)
+            if (!routine.DeletedIndices.Contains((int)i))
+                return false;
+        return true;
+    }
+
+    /// <summary>The first candidate (position, replace count) for which <see cref="IsDeleteAddLayout"/> holds.</summary>
+    private static bool TryMatchDeleteAddLayout(
+        PublishedRoutine routine, IEnumerable<LayoutCandidate> candidates, out uint replaceCount)
+    {
+        foreach (var c in candidates)
+        {
+            if (IsDeleteAddLayout(routine, c.Position, c.ReplaceCount))
+            {
+                replaceCount = c.ReplaceCount ?? routine.ReplaceCount!.Value;
+                return true;
+            }
+        }
+        replaceCount = 0;
+        return false;
+    }
+
+    /// <summary>
+    /// "landed at index N as a replacement: Logix shows the new rung after the N–M originals it deletes" for a routine in
+    /// the delete + add layout (<see cref="IsDeleteAddLayout"/>); plural ("rungs landed at indices 2–3 as a replacement:
+    /// Logix shows the new rungs after the 0–1 originals they delete") when more than one rung landed.
+    /// </summary>
+    /// <param name="routine">A routine for which <see cref="IsDeleteAddLayout"/> holds.</param>
+    /// <param name="replaceCount">The replace count that matched.</param>
+    private static string DescribeReplacementLanding(PublishedRoutine routine, uint replaceCount)
+    {
+        var landedIndices = routine.LandedIndices!.OrderBy(i => i).ToList();
+        int first = landedIndices[0];
+        int count = (int)replaceCount;
+        int firstOriginal = first - count;
+        var originals = count == 1
+            ? $"{firstOriginal} original"
+            : $"{firstOriginal}\u2013{first - 1} originals";
+        if (landedIndices.Count == 1)
+            return $"landed at index {first} as a replacement: Logix shows the new rung after the {originals} it deletes";
+        bool contiguous = landedIndices[^1] - first == landedIndices.Count - 1;
+        var where = contiguous
+            ? $"rungs landed at indices {first}\u2013{landedIndices[^1]}"
+            : DescribeLandedIndices(landedIndices);
+        return $"{where} as a replacement: Logix shows the new rungs after the {originals} " +
+               (count == 1 ? "it deletes" : "they delete");
     }
 
     /// <summary>The note sentence naming where every routine's rungs landed, or <c>null</c> without landed indices.</summary>
@@ -6396,14 +6845,41 @@ public static class ProposeRungEditHandler
     /// <param name="routineXPath">The call's routine.</param>
     /// <param name="published">The census's per-routine result.</param>
     /// <param name="callerInsertPosition">The <c>insertPosition</c> the caller passed.</param>
+    /// <summary>
+    /// The <c>ignoredInsertPosition</c> to report (G52): the caller's position when a staged-set publish landed its own
+    /// routine's block elsewhere, else <c>null</c>. An identical-text-only publish lands nothing, so nothing was
+    /// ignored and <c>null</c> is returned whatever <paramref name="published"/> holds.
+    /// </summary>
+    /// <param name="ignoredCallerInsertPosition">The caller's position when the publish chose its own, else <c>null</c>.</param>
+    /// <param name="routineXPath">The call's own routine.</param>
+    /// <param name="published">The routines the census saw, with landed indices.</param>
+    /// <param name="identicalTextOnly">Every replacement rung had the text of the rung it displaces (G35).</param>
+    /// <returns>The position to report, or <c>null</c>.</returns>
+    internal static uint? IgnoredInsertPositionToReport(
+        uint? ignoredCallerInsertPosition, string routineXPath, IReadOnlyList<PublishedRoutine>? published,
+        bool identicalTextOnly, IReadOnlyList<LayoutCandidate>? layouts = null) =>
+        ignoredCallerInsertPosition.HasValue && !identicalTextOnly
+            && CallerInsertPositionIgnored(routineXPath, published, ignoredCallerInsertPosition.Value, layouts)
+            ? ignoredCallerInsertPosition
+            : null;
+
     internal static bool CallerInsertPositionIgnored(
-        string routineXPath, IReadOnlyList<PublishedRoutine>? published, uint callerInsertPosition)
+        string routineXPath, IReadOnlyList<PublishedRoutine>? published, uint callerInsertPosition,
+        IReadOnlyList<LayoutCandidate>? layouts = null)
     {
         // G52: the caller's position belongs to the call's own routine, so the rule is applied to that routine's
         // landed indices even when several routines were published (other routines carry no caller position).
         var own = RoutinesWithLanded(published).FirstOrDefault(r =>
             string.Equals(r.Routine, routineXPath, StringComparison.OrdinalIgnoreCase));
-        return own is null || (uint)own.LandedIndices!.Min() != callerInsertPosition;
+        if (own is null)
+            return true;
+        if ((uint)own.LandedIndices!.Min() == callerInsertPosition)
+            return false;
+        // Logix's delete + add layout: the replaced originals stay as D rungs and the new rung follows them, so the
+        // first landed index is insertPosition + replaceCount. The position was honoured. This is the same rule (and
+        // the same candidate positions / replace counts) DescribeLandedHeader uses, so a shape that prints the
+        // replacement header never also reports an ignored position.
+        return !TryMatchDeleteAddLayout(own, CandidatesFor(callerInsertPosition, layouts), out _);
     }
 
     /// <summary>"replacing N rungs" with correct plurals, or "replacing no rungs" for 0.</summary>
@@ -7005,7 +7481,7 @@ public static class ProposeRungEditHandler
         return (problems.Count == 0, after, string.Join("; ", problems));
     }
 
-    // ── logix-mcp-h50h.6 — pending-edit pre-check for a controller publish ────
+    // ── Pending-edit pre-check for a controller publish ────
 
     /// <summary>
     /// Refuses a <c>target="controller"</c> publish with <c>PendingEditsBlockImport</c> when any routine
@@ -7057,7 +7533,7 @@ public static class ProposeRungEditHandler
             Kind:       "PendingEditsBlockImport");
     }
 
-    // ── logix-mcp-qpqy.12 — pre-check reported with a pending-edits block ─────
+    // ── Pre-check reported with a pending-edits block ─────
 
     /// <summary>
     /// Runs the tag and instruction pre-check for a publish that the pending-edit gate has refused, so the
@@ -7635,6 +8111,9 @@ public static class ProposeRungEditHandler
     private static ProposeRungEditError? ClassifyWorkstationPieFailure(
         string sdkDetail, ImportOperationEventCapture capture)
     {
+        if (ClassifyRungSyntaxError(sdkDetail, capture.Errors, capture.StatusMessages) is { } syntax)
+            return syntax;
+
         bool pieNamed = RockwellErrorHints.IsMatch(sdkDetail, RockwellErrorHintIds.PieEditsExistForProgram)
             || capture.Errors.Any(e => RockwellErrorHints.IsMatch(e, RockwellErrorHintIds.PieEditsExistForProgram))
             || capture.StatusMessages.Any(m => RockwellErrorHints.IsMatch(m, RockwellErrorHintIds.PieEditsExistForProgram));
@@ -7643,6 +8122,78 @@ public static class ProposeRungEditHandler
         return PendingEditsBlockImportFromSdk(
             sdkDetail, [], FormatImportLogNote(capture.Errors),
             FormatStatusNote(SelectCauseStatusMessages(capture.StatusMessages)));
+    }
+
+    /// <summary>The text the Logix scanner writes to the import log for a rung it cannot tokenise.</summary>
+    internal const string ScannerSyntaxErrorText = "Syntax error found while scanning import file";
+
+    private static readonly Regex ScanLineColumn = new(
+        @"\bline\s*[:=]?\s*(?<line>\d+)(?:\s*[,;]?\s*(?:col(?:umn)?|pos(?:ition)?|char(?:acter)?)\s*[:=]?\s*(?<col>\d+))?",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Compiled);
+
+    private static readonly Regex ScanColumnOnly = new(
+        @"\bcol(?:umn)?\s*[:=]?\s*(?<col>\d+)",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Compiled);
+
+    private static readonly Regex ScanOffending = new(
+        @"(?:near|at|token|text|found|unexpected)\s*[:=]?\s*(?:'(?<t>[^']*)'|""(?<t>[^""]*)""|`(?<t>[^`]*)`)",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Compiled);
+
+    /// <summary>
+    /// Maps an import whose log carries the scanner's "Syntax error found while scanning import file" to a
+    /// <c>RungSyntaxError</c> naming the log's line, column and offending text. Nothing was staged (the import
+    /// failed). Returns <c>null</c> when no log entry, exception text or status line carries the scanner message.
+    /// </summary>
+    /// <param name="sdkDetail">The failed import's exception message.</param>
+    /// <param name="errors">The Error-callback messages of the import.</param>
+    /// <param name="status">The Status-callback messages of the import.</param>
+    /// <returns>A <c>RungSyntaxError</c> error, or <c>null</c>.</returns>
+    internal static ProposeRungEditError? ClassifyRungSyntaxError(
+        string sdkDetail, IReadOnlyList<string> errors, IReadOnlyList<string> status)
+    {
+        static bool Names(string? s) =>
+            s is not null && s.Contains(ScannerSyntaxErrorText, StringComparison.OrdinalIgnoreCase);
+
+        var source = errors.FirstOrDefault(Names) ?? status.FirstOrDefault(Names) ?? (Names(sdkDetail) ? sdkDetail : null);
+        if (source is null)
+            return null;
+
+        // The log text may be an <Exception ...><![CDATA[...]]> element; parse it to the element text when it is.
+        var entry = ImportLogParser.ParseMessage(source).FirstOrDefault(e => Names(e.Text));
+        var text  = entry?.Text ?? source;
+
+        // Line and column may sit in the message or in a neighbouring log line; look at the message first.
+        var haystacks = new[] { text }.Concat(errors).Concat(status).Append(sdkDetail).Where(s => !string.IsNullOrEmpty(s));
+        int? line = null, column = null;
+        string? offending = null;
+        foreach (var h in haystacks)
+        {
+            if (line is null && ScanLineColumn.Match(h!) is { Success: true } lc)
+            {
+                line = int.Parse(lc.Groups["line"].Value, System.Globalization.CultureInfo.InvariantCulture);
+                if (lc.Groups["col"].Success)
+                    column = int.Parse(lc.Groups["col"].Value, System.Globalization.CultureInfo.InvariantCulture);
+            }
+            if (column is null && ScanColumnOnly.Match(h!) is { Success: true } cm)
+                column = int.Parse(cm.Groups["col"].Value, System.Globalization.CultureInfo.InvariantCulture);
+            if (offending is null && ScanOffending.Match(h!) is { Success: true } om && om.Groups["t"].Value.Length > 0)
+                offending = om.Groups["t"].Value;
+        }
+
+        var where = line is null
+            ? "the log gave no position"
+            : $"line {line}" + (column is null ? string.Empty : $", column {column}");
+        var message =
+            $"RungSyntaxError: the Logix scanner rejected the rung text ({ScannerSyntaxErrorText}; {where}" +
+            (offending is null ? string.Empty : $"; offending text '{offending}'") +
+            $"). Nothing was staged. Import log: \"{text}\"";
+
+        return new ProposeRungEditError(
+            message,
+            Hint: "Fix the rung text at the reported position and stage again. Check for an unbalanced '[' or ']', a " +
+                  "missing ',' between branch legs, a missing ';', or a stray character." + ProposeRungChangeSkillPointer,
+            DocsAnchor: RungEditDocsAnchor,
+            Kind: ErrorKinds.RungSyntaxError);
     }
 
     /// <summary>

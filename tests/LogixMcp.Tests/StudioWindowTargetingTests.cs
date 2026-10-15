@@ -19,6 +19,16 @@ namespace LogixMcp.Tests;
 /// </summary>
 public class StudioWindowTargetingTests
 {
+    /// <summary>Each test starts with a ledger that knows the zone this server "published", isolated from other tests' connects.</summary>
+    public StudioWindowTargetingTests() => ZoneLedger.TestOverride = KnownZoneLedger();
+
+    private static ZoneLedger KnownZoneLedger()
+    {
+        var ledger = new ZoneLedger();
+        ledger.Record("MainProgram", new[] { "MainRoutine" });
+        return ledger;
+    }
+
     private sealed class FakeProbe : IEnvironmentProbe
     {
         public int CurrentSessionId { get; init; } = 2;

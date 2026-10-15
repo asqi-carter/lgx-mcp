@@ -20,6 +20,16 @@ public class TestPendingEditsToolTests
     private const string Program = "MainProgram";
     private const string Routine = "MainRoutine";
 
+    /// <summary>Each test starts with a ledger that knows the zone this server "published", isolated from other tests' connects.</summary>
+    public TestPendingEditsToolTests() => ZoneLedger.TestOverride = KnownZoneLedger(Program, Routine);
+
+    private static ZoneLedger KnownZoneLedger(string program, string routine)
+    {
+        var ledger = new ZoneLedger();
+        ledger.Record(program, new[] { routine });
+        return ledger;
+    }
+
     private static RoutinePendingEditState RoutineState(string state) =>
         new(Program, Routine, 2,
             state == "none"

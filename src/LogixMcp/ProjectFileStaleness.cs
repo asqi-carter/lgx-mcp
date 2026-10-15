@@ -94,7 +94,8 @@ internal static class ProjectFileStaleness
 
     /// <summary>
     /// The image to serve <paramref name="program"/>/<paramref name="routine"/> from when this session applied an edit
-    /// to it, otherwise <c>null</c> (the project file is read).
+    /// to it, or when the session image holds the routine and the project file does not (a routine created this
+    /// session, whatever the fingerprint baseline holds); otherwise <c>null</c> (the project file is read).
     /// </summary>
     /// <param name="session">Tag session, or <c>null</c>.</param>
     /// <param name="service">Project holder, used to start the baseline; optional.</param>
@@ -104,11 +105,35 @@ internal static class ProjectFileStaleness
     internal static L5X? ImageFor(TagSessionService? session, ProjectService? service, string program, string routine)
     {
         lock (Gate)
-            return AppliedLocked(session, service).Any(r =>
-                       string.Equals(r.Program, program, StringComparison.OrdinalIgnoreCase) &&
-                       string.Equals(r.Routine, routine, StringComparison.OrdinalIgnoreCase))
-                ? session!.AcceptedControllerImage
-                : null;
+        {
+            if (AppliedLocked(session, service).Any(r =>
+                    string.Equals(r.Program, program, StringComparison.OrdinalIgnoreCase) &&
+                    string.Equals(r.Routine, routine, StringComparison.OrdinalIgnoreCase)))
+                return session!.AcceptedControllerImage;
+        }
+        return IsCreatedThisSession(session, service, program, routine) ? session!.AcceptedControllerImage : null;
+    }
+
+    /// <summary>
+    /// Whether the session's accepted image holds <paramref name="program"/>/<paramref name="routine"/> and the project
+    /// file does not, which is a routine created this session. Independent of the applied-edit baseline.
+    /// </summary>
+    /// <param name="session">Tag session, or <c>null</c>.</param>
+    /// <param name="service">Project holder whose project is the file side of the comparison.</param>
+    /// <param name="program">Program name (case-insensitive).</param>
+    /// <param name="routine">Routine name (case-insensitive).</param>
+    /// <returns><c>true</c> when the routine exists only in the session image.</returns>
+    internal static bool IsCreatedThisSession(TagSessionService? session, ProjectService? service, string program, string routine)
+    {
+        if (session?.AcceptedControllerImage is not { } image || service is not { IsLoaded: true }) return false;
+        var inImage = image.Programs
+            .FirstOrDefault(p => string.Equals(p.Name, program, StringComparison.OrdinalIgnoreCase))?.Routines
+            .Any(r => string.Equals(r.Name, routine, StringComparison.OrdinalIgnoreCase)) ?? false;
+        if (!inImage) return false;
+        var inFile = service.Project!.Programs
+            .FirstOrDefault(p => string.Equals(p.Name, program, StringComparison.OrdinalIgnoreCase))?.Routines
+            .Any(r => string.Equals(r.Name, routine, StringComparison.OrdinalIgnoreCase)) ?? false;
+        return !inFile;
     }
 
     private static List<RoutineFingerprint> AppliedLocked(TagSessionService? session, ProjectService? service)
@@ -118,7 +143,8 @@ internal static class ProjectFileStaleness
         var tracker = Trackers.GetOrCreateValue(session);
         var now     = Fingerprints(accepted, ref tracker.SeenImage, ref tracker.SeenPrint);
         if (now is null) return [];
-        return now.Where(kv => baseline.TryGetValue(kv.Key, out var was) && was.Fingerprint != kv.Value.Fingerprint)
+        // A routine the baseline does not hold was created after connect: it counts as an applied edit too.
+        return now.Where(kv => !baseline.TryGetValue(kv.Key, out var was) || was.Fingerprint != kv.Value.Fingerprint)
             .Select(kv => kv.Value).ToList();
     }
 

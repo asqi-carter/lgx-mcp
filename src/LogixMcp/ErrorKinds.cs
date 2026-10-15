@@ -108,10 +108,29 @@ public static class ErrorKinds
     public const string CapabilityDisabled = "CapabilityDisabled";
 
     /// <summary>
-    /// <c>logix_import_datatype</c> named a type that does not exist in the open project; a partial
-    /// import can change a type but not create one. A real run is refused and nothing is written.
+    /// <c>logix_import_datatype</c> ran the SDK import but the re-exported type does not have the requested
+    /// members (for example <c>collision: Discard</c> kept the existing type). The temp file was removed;
+    /// nothing was written.
     /// </summary>
-    public const string NewDatatypeUnsupported = "NewDatatypeUnsupported";
+    public const string ImportNotApplied = "ImportNotApplied";
+
+    /// <summary>
+    /// <c>logix_import_datatype</c> with <c>collision: Cancel</c> met an existing type, so the SDK aborted the
+    /// import (<c>XMLSrv_E_IMPORT_ABORTED_NO_CHANGES</c>). Nothing was written.
+    /// </summary>
+    public const string ImportCancelledOnCollision = "ImportCancelledOnCollision";
+
+    /// <summary>
+    /// <c>logix_connect</c> found a registered project whose file no longer exists on disk (an upload's copy is removed
+    /// when its session closes). Nothing was connected; reconnect with a comm path or open a project file.
+    /// </summary>
+    public const string ProjectFileMissing = "ProjectFileMissing";
+
+    /// <summary>
+    /// <c>logix_connect</c> needs a loaded project (virtual mode, <c>backend="l5x"</c>, or an offline SDK connect) and none
+    /// is loaded. Nothing was connected; the <c>hint</c> names the next steps.
+    /// </summary>
+    public const string NoProjectLoaded = "NoProjectLoaded";
 
     /// <summary>
     /// The tool needs an SDK capability that is unavailable on this Logix Designer version or install
@@ -199,4 +218,66 @@ public static class ErrorKinds
     /// never merged. Returned by <c>logix_verify_interlock</c> and <c>logix_cross_reference</c>.
     /// </summary>
     public const string AmbiguousTagName = "AmbiguousTagName";
+
+    /// <summary>
+    /// <c>logix_connect</c> with <c>backend="sdk"</c> could not route the <c>commPath</c> (the SDK route error).
+    /// The status mirror carries the same kind.
+    /// </summary>
+    public const string CommPathInvalid = "CommPathInvalid";
+
+    /// <summary>
+    /// A <c>routine</c> argument names a routine the program does not have. The message lists the routines the
+    /// program does have.
+    /// </summary>
+    public const string RoutineNotFound = "RoutineNotFound";
+
+    /// <summary>
+    /// A <c>tags[]</c> declaration names a tag that already exists with a different data type than the one
+    /// declared. Nothing was staged or published.
+    /// </summary>
+    public const string TagTypeConflict = "TagTypeConflict";
+
+    /// <summary>
+    /// A <c>tags[]</c> declaration names a data type that is neither an atomic type nor a type in the project.
+    /// Refused at stage; nothing was staged.
+    /// </summary>
+    public const string UnknownDataType = "UnknownDataType";
+
+    /// <summary>
+    /// A workstation-stage import was refused because the importer's log carries the rung-text scanner's syntax
+    /// error (for example <c>XIC(A)[OTE(B);</c>). The error carries the log's line and column and the offending
+    /// text. Nothing was staged.
+    /// </summary>
+    public const string RungSyntaxError = "RungSyntaxError";
+
+    /// <summary>
+    /// A tag path indexes an array past its dimension (<c>Arr[5]</c> on a <c>[5]</c> array). The error names the
+    /// tag, the index and the dimension. Nothing was read or written.
+    /// </summary>
+    public const string IndexOutOfRange = "IndexOutOfRange";
+
+    /// <summary>
+    /// A tag path names a member the tag's data type does not have. The error lists the members the type has.
+    /// Nothing was read or written.
+    /// </summary>
+    public const string MemberNotFound = "MemberNotFound";
+
+    /// <summary>
+    /// <c>logix_write</c> targeted a whole structure, user-defined type, STRING or TIMER. Writes are one leaf at
+    /// a time; the error lists the members. Nothing was written.
+    /// </summary>
+    public const string StructureWriteUnsupported = "StructureWriteUnsupported";
+
+    /// <summary>
+    /// The controller behind the session changed outside this session in a way the session image cannot follow: a
+    /// different controller name or serial, or a re-download of the project (routines the image holds are gone).
+    /// Image readers refuse until <c>logix_connect</c> runs again; live tag reads and <c>logix_pending_edits</c> still work.
+    /// </summary>
+    public const string ControllerChanged = "ControllerChanged";
+
+    /// <summary>
+    /// An accept was refused because the program's pending zone is a pending zone this server did not publish
+    /// (another tool or person staged it), so accepting would make edits permanent that nobody here reviewed.
+    /// </summary>
+    public const string ForeignPendingZone = "ForeignPendingZone";
 }

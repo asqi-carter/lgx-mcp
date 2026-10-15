@@ -60,7 +60,7 @@ public sealed record MnemonicCheckResult(
 /// <summary>Scans rung text for mnemonics the target revision does not accept.</summary>
 public static class MnemonicSetChecker
 {
-    // NOTE (2026-10-08 SDK probe, as reported in task logix-mcp-vazn.6; not independently reproduced in this
+    // NOTE (2026-10-08 SDK probe, as reported; not independently reproduced in this
     // repo, no probe log is checked in): CMP(dA=>dB) and CMP(dA=<dB) are reported to import, verify and go
     // live on v38.02, so the "=>" / "=<" UnsupportedOnRevision refusal from an earlier change was removed. The ASCII
     // serial instruction refusal (v37 and later) is unaffected.

@@ -401,10 +401,10 @@ public class RungDiagramTests
     // ── Pending edits ────────────────────────────────────────────────────────
 
     [Theory]
-    [InlineData("I", "pending insert, untested")]
-    [InlineData("D", "pending delete, untested")]
-    [InlineData("R", "pending replace, untested: old rung")]
-    [InlineData("IR", "pending replace, untested: new rung")]
+    [InlineData("I", "pending insert")]
+    [InlineData("D", "pending delete")]
+    [InlineData("R", "pending replace: old rung")]
+    [InlineData("IR", "pending replace: new rung")]
     [InlineData("dN", "pending delete, tested")]
         [InlineData("rI", "accepted insert, awaiting assembly")]
     [InlineData("rR", "accepted replace, awaiting assembly")]
@@ -433,7 +433,7 @@ public class RungDiagramTests
     {
         var text = Draw("Edits", "1").Text!;
 
-        Assert.Contains("[pending insert, untested]", text);
+        Assert.Contains("[pending insert]", text);
     }
 
     [Fact]
@@ -441,7 +441,7 @@ public class RungDiagramTests
     {
         var text = Draw("Edits", "4").Text!;
 
-        Assert.Contains("[pending delete, untested]", text);
+        Assert.Contains("[pending delete]", text);
         Assert.Contains("Drain_Valve", text);
     }
 
@@ -453,8 +453,8 @@ public class RungDiagramTests
         var result = Draw("Edits", rung);
 
         Assert.Equal(2, result.Rungs.Count);
-        Assert.Contains("[pending replace, untested: old rung]", result.Text);
-        Assert.Contains("[pending replace, untested: new rung]", result.Text);
+        Assert.Contains("[pending replace: old rung]", result.Text);
+        Assert.Contains("[pending replace: new rung]", result.Text);
         Assert.Contains("// Old reset rung.", result.Text);
         Assert.Contains("// New reset rung.", result.Text);
     }
@@ -471,7 +471,7 @@ public class RungDiagramTests
         var result = Assert.IsType<RungDiagramResult>(RungDiagramHandler.Execute(root, "test", "P", "R", "1", "text"));
 
         Assert.Equal(2, result.Rungs.Count);
-        Assert.Equal("staged replacement (workstation)", result.Rungs[1].Edit);
+        Assert.Equal("staged (not sent to the controller)", result.Rungs[1].Edit);
     }
 
     [Fact]
@@ -480,8 +480,8 @@ public class RungDiagramTests
         var result = Assert.IsType<RungDiagramResult>(RungDiagramHandler.Execute(
             OneRung("XIC(A)OTE(B);", type: "er"), "test", "P", "R", "0", "text"));
 
-        Assert.Equal("staged replacement (workstation)", result.Rungs[0].Edit);
-        Assert.Contains("[staged replacement (workstation)]", result.Text);
+        Assert.Equal("staged (not sent to the controller)", result.Rungs[0].Edit);
+        Assert.Contains("[staged (not sent to the controller)]", result.Text);
         Assert.DoesNotContain("pending replace, tested", result.Text!);
     }
 
@@ -490,7 +490,7 @@ public class RungDiagramTests
     {
         var text = Draw("Edits", "5-6").Text!;
 
-        Assert.Contains("[staged locally (not on controller)]", text);
+        Assert.Contains("[staged (not sent to the controller)]", text);
         Assert.Contains("[pending delete, tested]", text);
     }
 
@@ -499,8 +499,8 @@ public class RungDiagramTests
     {
         var result = Assert.IsType<RungDiagramResult>(Draw("Edits", "5"));
 
-        Assert.Equal("staged locally (not on controller)", result.Rungs[0].Edit);
-        Assert.Contains("[staged locally (not on controller)]", result.Text);
+        Assert.Equal("staged (not sent to the controller)", result.Rungs[0].Edit);
+        Assert.Contains("[staged (not sent to the controller)]", result.Text);
         Assert.DoesNotContain("pending insert, tested", result.Text);
     }
 
@@ -638,6 +638,18 @@ public class RungDiagramTests
 
         Assert.Contains("Rung 99 not found", error.Error);
         Assert.Contains("0 to 12", error.Error);
+    }
+
+    [Fact]
+    public void UnknownRung_HintNamesPendingEditsThenSessionImageGetRoutine()
+    {
+        var error = Fail("Main", "99");
+
+        Assert.NotNull(error.Hint);
+        var pending = error.Hint!.IndexOf("logix_pending_edits", StringComparison.Ordinal);
+        var getRoutine = error.Hint.IndexOf("logix_get_routine", StringComparison.Ordinal);
+        Assert.True(pending >= 0 && getRoutine > pending);
+        Assert.Contains("source:\"session-image\"", error.Hint);
     }
 
     [Fact]
@@ -828,8 +840,8 @@ public class RungDiagramTests
             await RungDiagramHandler.ExecuteAsync(source, Program, "Edits", "2", "text"));
 
         Assert.Equal(RungDiagramHandler.SourceSdkSession, result.Source);
-        Assert.Contains("[pending replace, untested: old rung]", result.Text);
-        Assert.Contains("[pending replace, untested: new rung]", result.Text);
+        Assert.Contains("[pending replace: old rung]", result.Text);
+        Assert.Contains("[pending replace: new rung]", result.Text);
     }
 
     [Fact]
@@ -921,7 +933,7 @@ public class RungDiagramTests
         using var doc = JsonDocument.Parse(await tools.GetRungDiagram(Program, "Edits", "1"));
 
         Assert.Equal("sdk-session", doc.RootElement.GetProperty("source").GetString());
-        Assert.Contains("[pending insert, untested]", doc.RootElement.GetProperty("text").GetString());
+        Assert.Contains("[pending insert]", doc.RootElement.GetProperty("text").GetString());
     }
 
     [Theory]

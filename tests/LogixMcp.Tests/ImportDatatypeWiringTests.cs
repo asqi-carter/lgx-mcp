@@ -13,7 +13,7 @@ namespace LogixMcp.Tests;
 public class ImportDatatypeWiringTests : System.IDisposable
 {
     // Snapshot registry state so each test restores it (static global state).
-    private readonly System.Action<string, string, string, ImportCollisionOption>? _import  = SdkImportDelegates.SdkImportRunner;
+    private readonly System.Func<string, string, string, ImportCollisionOption, IReadOnlyList<string>>? _import  = SdkImportDelegates.SdkImportRunner;
     private readonly System.Func<string, string, IReadOnlyList<DataTypeMemberEntry>>? _reexp = SdkImportDelegates.ReexportReader;
     private readonly System.Func<string, int>? _build  = SdkImportDelegates.BuildRunner;
     private readonly System.Func<string, bool>? _lock   = SdkImportDelegates.StudioLockChecker;
@@ -30,7 +30,7 @@ public class ImportDatatypeWiringTests : System.IDisposable
     public void Resolve_UsesRegistry_WhenNoExplicitDelegates_AndBakesXpath()
     {
         string? seenXpath = null;
-        SdkImportDelegates.SdkImportRunner   = (_, _, _, _) => { };
+        SdkImportDelegates.SdkImportRunner   = (_, _, _, _) => System.Array.Empty<string>();
         SdkImportDelegates.BuildRunner       = _ => 0;
         SdkImportDelegates.StudioLockChecker = _ => false;
         SdkImportDelegates.ReexportReader    = (_, xpath) =>
@@ -60,7 +60,7 @@ public class ImportDatatypeWiringTests : System.IDisposable
         SdkImportDelegates.SdkImportRunner = (_, _, _, _) => throw new System.Exception("registry");
         SdkImportDelegates.BuildRunner     = _ => throw new System.Exception("registry");
 
-        System.Action<string, string, string, ImportCollisionOption> myImport = (_, _, _, _) => { };
+        System.Func<string, string, string, ImportCollisionOption, IReadOnlyList<string>> myImport = (_, _, _, _) => System.Array.Empty<string>();
         System.Func<string, int> myBuild = _ => 7;
         System.Func<string, IReadOnlyList<DataTypeMemberEntry>> myReexport =
             _ => System.Array.Empty<DataTypeMemberEntry>();

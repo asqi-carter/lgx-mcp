@@ -91,7 +91,6 @@ public class ReadToolDescriptionsTests
 
     [Theory]
     [InlineData("logix_find_tags")]
-    [InlineData("logix_trace_origin")]
     [InlineData("logix_list_datatypes")]
     public void FileOnlyReadTool_Description_SaysItNeverReadsTheSessionImageAndFlagsStaleness(string toolName)
     {
@@ -105,7 +104,7 @@ public class ReadToolDescriptionsTests
     [InlineData("logix_project_summary", "appliedEditsSource: \"session-image\"")]
     [InlineData("logix_get_routine", "source: \"session-image\"")]
     [InlineData("logix_find_tags", "never reads the session image")]
-    [InlineData("logix_trace_origin", "never reads the session image")]
+    [InlineData("logix_trace_origin", "`pendingWriters`")]
     [InlineData("logix_list_datatypes", "never reads the session image")]
     public void ToolReferenceRow_MatchesTheDescription(string toolName, string expected)
     {
@@ -120,7 +119,6 @@ public class ReadToolDescriptionsTests
     [InlineData("logix_project_summary")]
     [InlineData("logix_find_tags")]
     [InlineData("logix_get_routine")]
-    [InlineData("logix_trace_origin")]
     [InlineData("logix_list_datatypes")]
     public void ReadTool_Description_DoesNotMentionTheSessionImage(string toolName)
     {

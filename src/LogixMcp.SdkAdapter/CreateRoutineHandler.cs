@@ -241,7 +241,7 @@ public static class CreateRoutineHandler
                     "conversation, and only then call again with confirmedByUser=true. The server cannot " +
                     "verify that approval; never set it on your own judgement or to retry this refusal.");
 
-        // Option (b) of logix-mcp-h50h.5: an offline SDK session has no path that saves a created routine
+        // Option (b): an offline SDK session has no path that saves a created routine
         // back to the project file, so the routine would exist only in a throwaway in-memory image. Refuse
         // before any import rather than report a "created" routine that is lost when the session closes.
         if (!session.IsOnline)

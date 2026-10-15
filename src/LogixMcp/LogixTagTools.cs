@@ -62,6 +62,7 @@ public class LogixTagTools
         _capabilities   = capabilities;   // null = fail closed (gates refuse)
         _sdkFactory     = sdkFactory;     // null = ConnectHandler.DefaultSdkFactory
         _connectState   = connectState ?? new ConnectState();
+        sessionService.ConnectState = _connectState;   // logix_close_project marks it closed (id-less status)
     }
 
     // ── Agent-facing text (differs between the SDK and no-SDK builds) ─────────
@@ -450,7 +451,7 @@ public class LogixTagTools
             string.IsNullOrWhiteSpace(sdkCommPath) ? path : sdkCommPath);
     }
 
-    private static string ConnectArgsKey(
+    internal static string ConnectArgsKey(
         string gateway, string path, bool useVirtual, string backend, string sdkMode,
         bool allowControllerDownload, string? sdkCommPath, bool confirmedByUser) =>
         ConnectState.ArgsKeyFor(gateway, path, useVirtual, backend, sdkMode, allowControllerDownload,
@@ -549,6 +550,18 @@ public class LogixTagTools
         const bool allowControllerDownload = false;
         const string? sdkCommPath = null;
 #endif
+        // Own connect visible at once: the first statement, before CreateConnectProgress, Guard and any
+        // await, so an id-less status poll never falls through to the registry's history of other instances. RunAsync
+        // adopts the mark; on any other path it clears when this call returns or throws.
+        // When the tool filter already took the mark for this call, that scope is used and the filter
+        // disposes it; otherwise this call takes the mark itself.
+        var ambientConnect = _connectState.AmbientOwnConnect();
+        using var ownedConnect = ambientConnect is not null ? null : _connectState.BeginOwnConnect(
+            string.IsNullOrWhiteSpace(sdkCommPath) ? path : sdkCommPath,
+            ConnectArgsKey(gateway, path, useVirtual, backend, sdkMode, allowControllerDownload, sdkCommPath,
+                confirmedByUser));
+        var ownConnect = ambientConnect ?? ownedConnect!;
+
         // Extract the raw argument keys from the MCP request context so we can detect
         // caller typos such as mode="online" instead of sdkMode="online".  The MCP
         // framework silently drops unrecognised keys before binding C# parameters, so
@@ -566,9 +579,10 @@ public class LogixTagTools
         var budgeted = string.Equals(backend, "sdk", StringComparison.OrdinalIgnoreCase)
                        && !TasksSupport.ClientDeclaresTasks(context);
         // A connect that does not use the background job (cip, l5x, Tasks clients) must not start beside one in flight.
-        var inFlight = budgeted ? null : _connectState.Guard(
+        // The tool-entry mark is this call's own and never blocks it; another call's mark or an adopted connect does.
+        var inFlight = _connectState.GuardAfterOwnMark(
             ConnectArgsKey(gateway, path, useVirtual, backend, sdkMode, allowControllerDownload, sdkCommPath,
-                confirmedByUser));
+                confirmedByUser), ownConnect);
         var result = inFlight is not null
             ? inFlight
             : budgeted
@@ -601,13 +615,26 @@ public class LogixTagTools
         SessionLostSupport.AnnotateStatus(_sessionService, _connectState.GetStatusJson(connectId));
 
     /// <summary>
+    /// Async form of <see cref="GetConnectStatusResponse"/>: an id-less poll that finds no connect at all waits briefly
+    /// for the connect call's own mark (see <see cref="ConnectState.GetStatusJsonAsync"/>).
+    /// </summary>
+    /// <param name="connectId">Connect id to look up; optional.</param>
+    /// <param name="cancellationToken">Stops the wait early.</param>
+    /// <returns>The serialized tool payload.</returns>
+    public async Task<string> GetConnectStatusResponseAsync(string? connectId, CancellationToken cancellationToken) =>
+        SessionLostSupport.AnnotateStatus(_sessionService,
+            await _connectState.GetStatusJsonAsync(connectId, cancellationToken).ConfigureAwait(false));
+
+    /// <summary>
     /// Reports the state of a background SDK connect started by <c>logix_connect</c>.
     /// </summary>
     [McpServerTool(Name = "logix_connect_status", ReadOnly = true, Idempotent = true, Destructive = false)]
     [Description(
         "Read-only. Poll this after logix_connect answers status=\"connecting\" (an SDK connect that outlived its " +
-        "sync budget keeps running in the server). Returns { status: connecting|connected|failed, connectId, phase, " +
-        "elapsedMs, phaseTimings: [{phase, startedMs, durationMs}] }. connecting: still running (phase is the last " +
+        "sync budget keeps running in the server). Returns { status: connecting|connected|failed|closed, connectId, phase, " +
+        "elapsedMs, phaseTimings: [{phase, startedMs, durationMs}] }. connected and failed also carry phaseTimingsSummary, " +
+        "the summary object logix_connect returns as phaseTimings (the phaseTimings array here is the live per-phase log). " +
+        "closed: an id-less poll after logix_close_project, with reason and closedAt; logix_connect clears it. connecting: still running (phase is the last " +
         "phase reached). connected: the same payload logix_connect returns when it finishes in time, plus those " +
         "fields; the session is then attached. failed: the connect's original typed error (error, kind, hint), plus " +
         "those fields. With no connect in flight it returns the last outcome, or kind=NoConnectInProgress when none " +
@@ -615,14 +642,14 @@ public class LogixTagTools
         "(see the cross-instance registry), it returns kind=ConnectOwnedByOtherInstance with ownerPid, phase, " +
         "elapsedMs, status (connecting, or the outcome connected|failed once finished) and a hint: that connection " +
         "cannot be used from this instance, so call logix_connect here after the other finishes and do not start a " +
-        "parallel upload. Every response carries " +
+        "parallel upload. An id-less poll reports the most recent connect by any instance, finished or in progress. Every response carries " +
         "serverInstance {pid, startedAt}. Every response also carries connected (bool): false when no session is attached or the session " +
         "lost its project (a call found it closed, typically after another server process reconnected); then " +
         "sessionLost {cause, at} is present and a former connected status reads lost. It never starts, cancels or changes a connect, a session or the controller.")]
-    public string ConnectStatus()
+    public async Task<string> ConnectStatus()
     {
         var sw     = Stopwatch.StartNew();
-        var result = GetConnectStatusResponse();
+        var result = await GetConnectStatusResponseAsync(null, CancellationToken.None).ConfigureAwait(false);
         sw.Stop();
         TrafficLogger.Append(
             "logix_connect_status",

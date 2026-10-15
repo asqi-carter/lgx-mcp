@@ -1,6 +1,6 @@
 # Testing: global static state audit
 
-Audit for epic "Eliminate flaky `make test` by isolating global static state in tests" (task logix-mcp-htj9.1).
+Audit for epic "Eliminate flaky `make test` by isolating global static state in tests".
 Audit only: no production or test code was changed by this task. Follow-up tasks apply the fixes below.
 
 ## Why `make test` is flaky
@@ -205,6 +205,6 @@ site by running the affected classes with a recording hook, e.g.
 adding a counter to `StudioConfirmWait.Record`, and `grep -rn "SetEnvironmentVariable\|\.Now = \|Console.Set" tests/`
 to re-check the writer list.
 
-## Status (logix-mcp-htj9.2)
+## Status
 
 Applied: `StudioConfirmWait` is an instance (`StudioConfirmWait.Shared` in production; `LogixSdkTools` takes an optional instance; `StudioConfirmWaitTests` uses its own). `DoctorEnvironment` takes an optional `observations` argument (`DoctorEnvironment.NoObservations` = no adapter), so `DoctorAvailabilityTests` no longer writes `SdkObservations`. Classes that write hook statics or env vars now join the `StaticHandlerHooks` / `ProcessEnvironment` collections, and `AuditLoggerDir` has a `[CollectionDefinition]` with `DisableParallelization`. `GlobalStateGuardTests` checks env vars, stderr and the shared tracker after the run. Serial collections never overlap each other or parallel ones, so a separate merged `ProcessGlobals` collection is not needed. Not done (still fix (b) only): per-handler injection for `CloseProjectHandler`/`OpenProjectHandler`/`ConnectHandler` hooks, `ConnectState` budget.

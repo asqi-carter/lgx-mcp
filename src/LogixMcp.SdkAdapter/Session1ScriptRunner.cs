@@ -173,6 +173,8 @@ public static class Session1ScriptRunner
     /// <c>ConfirmTimeoutSeconds</c> / <c>ConfirmDialogTimeoutSeconds</c>
     /// parameters) so the poll timeout
     /// does not race the driver's own internal timeouts.
+    /// The Errors-pane layout step (one read-only UIA query, at most one extra toggle post and its 600 ms
+    /// wait, then a re-read) also stays inside this budget.
     /// </summary>
     internal const int GestureBudgetSeconds = 60;
 
@@ -517,7 +519,11 @@ public static class Session1ScriptRunner
                 Malformed:         false,
                 GestureTier:       gestureTier,
                 DialogText:        dialogText,
-                DialogWarnings:    dialogWarnings);
+                DialogWarnings:    dialogWarnings,
+                ErrorsPaneToggled:      ReadBool(root, "errorsPaneToggled"),
+                RetriedAfterPaneToggle: ReadBool(root, "retriedAfterPaneToggle"),
+                PaneToggleRestored:     ReadBool(root, "paneToggleRestored"),
+                ErrorsPaneLayout:       ReadPaneLayout(root));
         }
         catch (Exception ex) when (ex is JsonException or InvalidOperationException)
         {
@@ -530,6 +536,33 @@ public static class Session1ScriptRunner
                 ParsedResultJson:  null,
                 Malformed:         true);
         }
+    }
+
+    /// <summary>
+    /// Reads an optional boolean property of the driver's RESULT_JSON root (pane-toggle fields).
+    /// </summary>
+    /// <param name="root">The RESULT_JSON root object.</param>
+    /// <param name="name">Property name, e.g. <c>errorsPaneToggled</c>.</param>
+    /// <returns><c>true</c> only when the property is present and the JSON value <c>true</c>; <c>false</c> when absent, false or not a boolean (older scripts).</returns>
+    private static bool ReadBool(JsonElement root, string name) =>
+        root.TryGetProperty(name, out var p) && p.ValueKind == JsonValueKind.True;
+
+    /// <summary>The Errors-pane layouts the driver may report in <c>errorsPaneLayout</c>.</summary>
+    internal static readonly IReadOnlyList<string> KnownPaneLayouts = new[] { "auto-hide", "docked", "hidden", "unknown" };
+
+    /// <summary>
+    /// Reads the optional <c>errorsPaneLayout</c> string of the driver's RESULT_JSON root.
+    /// </summary>
+    /// <param name="root">The RESULT_JSON root object.</param>
+    /// <returns>The layout (<c>auto-hide</c>, <c>docked</c>, <c>hidden</c> or <c>unknown</c>); <c>null</c> (absent) when the property is missing, not a string or not one of those values.</returns>
+    private static string? ReadPaneLayout(JsonElement root)
+    {
+        if (!root.TryGetProperty("errorsPaneLayout", out var p) || p.ValueKind != JsonValueKind.String)
+            return null;
+        var v = p.GetString();
+        foreach (var known in KnownPaneLayouts)
+            if (string.Equals(v, known, StringComparison.Ordinal)) return known;
+        return null;
     }
 
     /// <summary>

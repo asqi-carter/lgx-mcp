@@ -31,6 +31,8 @@ public class ProposeRungEditLiveTests
         await session.OpenAsync("dummy.ACD");
         session.IsOnline     = true;
         session.IsCorrelated = true;
+        // One rung: the live tests were written against a one-rung routine (positions 0 and 1 are in range).
+        fake.ExportContent   = ExportWithRungs(("N", "NOP();"));
         return (session, fake);
     }
 
@@ -337,7 +339,7 @@ public class ProposeRungEditLiveTests
         Assert.IsType<ProposeRungEditResult>(ok);
         Assert.Equal(new[] { PartialImportOption.FinalizeEdits }, fake.CapturedImportOptions);
 
-        // Replacing a rung that does not exist is stale too.
+        // Replacing a rung that does not exist is stale too (the live stale-target check runs before the range check).
         var (s2, f2) = await BuildOpenSessionAsync();
         var beyond = await ProposeRungEditHandler.ExecuteAsync(
             ValidXPath, 5, 1, ValidFragment, s2, policy: null, target: "live",

@@ -24,6 +24,9 @@ public sealed record ServerInstance(
 /// <see cref="ConnectRegistry.StatusFailed"/>).
 /// </param>
 /// <param name="CompletedAt">When the connect finished; <c>null</c> while it runs.</param>
+/// <param name="StartedAt">
+/// When the connect began (UTC); <c>null</c> in an entry written by an older server, whose elapsed time is then unknown.
+/// </param>
 public sealed record ConnectRegistryEntry(
     [property: JsonPropertyName("connectId")]      string ConnectId,
     [property: JsonPropertyName("ownerPid")]       int OwnerPid,
@@ -32,7 +35,8 @@ public sealed record ConnectRegistryEntry(
     [property: JsonPropertyName("phase")]          string Phase,
     [property: JsonPropertyName("elapsedMs")]      long ElapsedMs,
     [property: JsonPropertyName("status")]         string Status,
-    [property: JsonPropertyName("completedAt")]    DateTimeOffset? CompletedAt = null);
+    [property: JsonPropertyName("completedAt")]    DateTimeOffset? CompletedAt = null,
+    [property: JsonPropertyName("startedAt")]      DateTimeOffset? StartedAt = null);
 
 /// <summary>
 /// A per-user, advisory record of the connects that server instances on this machine are running or have
@@ -44,6 +48,9 @@ public sealed class ConnectRegistry
 {
     /// <summary>Entries older than this are deleted on every write.</summary>
     public static readonly TimeSpan DefaultMaxAge = TimeSpan.FromHours(1);
+
+    /// <summary>Default age limit for a finished connect reported by <see cref="FindMostRecent"/>: 10 minutes.</summary>
+    public static readonly TimeSpan DefaultReportMaxAge = TimeSpan.FromMinutes(10);
 
     /// <summary>Status of a connect that is still running.</summary>
     public const string StatusConnecting = "connecting";
@@ -76,6 +83,9 @@ public sealed class ConnectRegistry
 
     /// <summary>Age after which an entry is deleted.</summary>
     public TimeSpan MaxAge { get; }
+
+    /// <summary>The current time according to this registry's clock (UTC).</summary>
+    public DateTimeOffset Now => _clock();
 
     /// <summary>Who this server instance is.</summary>
     public ServerInstance Instance => new(Pid, StartedAt);
@@ -200,6 +210,39 @@ public sealed class ConnectRegistry
         }
         catch (Exception ex) { Failed("find", ex); return null; }
     }
+
+    /// <summary>
+    /// The most recent entry of a connect run by another instance, in progress or (with <paramref name="includeFinished"/>)
+    /// finished, that is not older than <paramref name="maxAge"/>. An in-progress entry counts only while its owner is alive;
+    /// a finished entry counts only while its owner still runs: one left by an exited instance is history, not a connect
+    /// the caller can act on.
+    /// </summary>
+    /// <param name="includeFinished">When <c>false</c> only in-progress connects are considered.</param>
+    /// <param name="maxAge">Age limit (file write time, and completion time for a finished entry); default <see cref="DefaultReportMaxAge"/>.</param>
+    /// <returns>The entry, or <c>null</c> when there is none or the registry fails.</returns>
+    public ConnectRegistryEntry? FindMostRecent(bool includeFinished, TimeSpan? maxAge = null)
+    {
+        try
+        {
+            if (!System.IO.Directory.Exists(_dir)) return null;
+            var limit = maxAge ?? DefaultReportMaxAge;
+            var now = _clock();
+            return System.IO.Directory.EnumerateFiles(_dir, "*.json")
+                .Select(f => (Entry: SafeReadFile(f), Written: SafeWriteTime(f)))
+                .Where(x => x.Entry is { } e && e.OwnerPid != Pid
+                            && now.UtcDateTime - x.Written <= limit
+                            && (e.CompletedAt is not { } done || now - done <= limit)
+                            && (IsFinished(e) ? includeFinished && IsOwnerAlive(e) : IsOwnerAlive(e)))
+                .OrderByDescending(x => x.Written)
+                .Select(x => x.Entry)
+                .FirstOrDefault();
+        }
+        catch (Exception ex) { Failed("find", ex); return null; }
+    }
+
+    /// <summary>Whether <paramref name="e"/> records a connect that has finished.</summary>
+    private static bool IsFinished(ConnectRegistryEntry e) =>
+        e.CompletedAt is not null || e.Status != StatusConnecting;
 
     /// <summary>Whether the process that owns <paramref name="entry"/> is still running.</summary>
     /// <param name="entry">The entry to check.</param>

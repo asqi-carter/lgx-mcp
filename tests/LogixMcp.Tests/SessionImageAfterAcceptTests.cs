@@ -5,9 +5,11 @@ using Task = System.Threading.Tasks.Task;
 namespace LogixMcp.Tests;
 
 /// <summary>
-/// After accept, assemble or cancel the session image either follows the change this session
-/// published or says it is stale (<c>imageStale</c>, <c>staleSince</c>, <c>staleReason</c>, reconnect hint), and a
-/// reconnect clears the mark.
+/// The session image follows the controller by export, not by replay. After a publish, accept, assemble or
+/// cancel the program is marked stale and <see cref="TagSessionService.RefreshControllerImageAsync"/> installs the
+/// controller's export; these tests script that export (<see cref="TagSessionService.ImageSourceOverride"/>) for the nine
+/// The replace shapes and the two-routine publish. A failed export marks the image stale with the error as the reason (<c>imageStale</c>,
+/// <c>staleSince</c>, <c>staleReason</c>, reconnect hint) and the next successful refresh clears it.
 /// </summary>
 [Collection("StaticHandlerHooks")]
 public class SessionImageAfterAcceptTests
@@ -23,11 +25,15 @@ public class SessionImageAfterAcceptTests
 
     private static L5X Image(params string[] rungs) => BuildImage(rungs.Select(r => (r, (string?)null)).ToArray());
 
-    private static L5X BuildImage((string Text, string? Comment)[] rungs)
+    /// <summary>An image whose rungs carry the given <c>Type</c> codes, the shape a real post-stage export has (P58 probe).</summary>
+    internal static L5X ImageOfTyped(params (string Text, string Type)[] rungs) =>
+        BuildImage(rungs.Select(r => (r.Text, (string?)null)).ToArray(), rungs.Select(r => r.Type).ToArray());
+
+    private static L5X BuildImage((string Text, string? Comment)[] rungs, string[]? types = null)
     {
         var tagXml  = string.Concat(Tags.Select(t => string.Format(Tag, t)));
         var rungXml = string.Concat(rungs.Select((r, i) =>
-            $"<Rung Number=\"{i}\" Type=\"N\">" +
+            $"<Rung Number=\"{i}\" Type=\"{(types is null ? "N" : types[i])}\">" +
             (r.Comment is null ? "" : $"<Comment><![CDATA[{r.Comment}]]></Comment>") +
             $"<Text><![CDATA[{r.Text}]]></Text></Rung>"));
         return L5X.Parse(
@@ -71,9 +77,6 @@ public class SessionImageAfterAcceptTests
     private static JsonElement DocumentJson(TagSessionService session, ProjectService service) =>
         JsonDocument.Parse(DocumentHandler.Serialize(DocumentHandler.Execute(service, session: session))).RootElement;
 
-    private static IReadOnlyList<SessionImageState.ZoneRoutine> Zone(params string[] newRungs) =>
-        [new SessionImageState.ZoneRoutine("Main", newRungs.Select((t, i) => (i < 2 ? "IR" : "I", t)).ToList())];
-
     private static void AssertStale(JsonElement root)
     {
         Assert.True(root.GetProperty("imageStale").GetBoolean());
@@ -83,118 +86,505 @@ public class SessionImageAfterAcceptTests
         Assert.Equal("session-image", root.GetProperty("source").GetString());
     }
 
+    /// <summary>A controller whose program export is a fixed image, or fails with <see cref="Fail"/>.</summary>
+    internal sealed class ScriptedExport(L5X? export = null) : IControllerImageSource, IStagedRungSource
+    {
+        public L5X? Export { get; set; } = export;
+        public Exception? Fail { get; set; }
+        public List<StagedBlock> Blocks { get; } = [];
+        public int ProgramExports { get; private set; }
+
+        public Task<string> ExportProgramL5xAsync(string program, CancellationToken ct = default)
+        {
+            ProgramExports++;
+            return Fail is null ? Task.FromResult(Export!.ToString()) : Task.FromException<string>(Fail);
+        }
+
+        public Task<string> ExportControllerTagsL5xAsync(CancellationToken ct = default) =>
+            Fail is null ? Task.FromResult(Export!.ToString()) : Task.FromException<string>(Fail);
+
+        public IReadOnlyList<StagedBlock> StagedBlocks(string program) => Blocks;
+    }
+
+    private static string[] TypesOf(TagSessionService session) =>
+        SafeXml.ParseDocument(session.ControllerImage!.ToString()).Descendants("Rung")
+            .Select(r => (string?)r.Attribute("Type") ?? "N").ToArray();
+
+    private static string[] TextsOf(L5X image) =>
+        SafeXml.ParseDocument(image.ToString()).Descendants("Rung").Select(r => r.Element("Text")!.Value).ToArray();
+
+    private static string[] TypesOfRoutine(TagSessionService session, string routine) =>
+        SafeXml.ParseDocument(session.ControllerImage!.ToString()).Descendants("Routine")
+            .Single(r => (string?)r.Attribute("Name") == routine).Descendants("Rung")
+            .Select(r => (string?)r.Attribute("Type") ?? "N").ToArray();
+
+    private static string[] TextsOfRoutine(L5X image, string routine) =>
+        SafeXml.ParseDocument(image.ToString()).Descendants("Routine")
+            .Single(r => (string?)r.Attribute("Name") == routine).Descendants("Rung")
+            .Select(r => r.Element("Text")!.Value).ToArray();
+
+    private static JsonElement RoutineJson(ProjectService service, TagSessionService session, string routine = "Main") =>
+        JsonSerializer.SerializeToElement(GetRoutineHandler.Execute(service, "MainProgram", routine, session));
+
+    private static string[] RoutineTexts(JsonElement routine) =>
+        routine.GetProperty("rungs").EnumerateArray().Select(r => r.GetProperty("text").GetString()!).ToArray();
+
+    /// <summary>
+    /// A two-routine program: <c>Main</c> and <c>Other</c>, each with the given rungs
+    /// (<c>Text</c>, <c>Type</c>).
+    /// </summary>
+    internal static L5X TwoRoutineImage((string Text, string Type)[] main, (string Text, string Type)[] other)
+    {
+        string Routine(string name, (string Text, string Type)[] rungs) =>
+            $"<Routine Name=\"{name}\" Type=\"RLL\"><RLLContent>" +
+            string.Concat(rungs.Select((r, i) => $"<Rung Number=\"{i}\" Type=\"{r.Type}\"><Text><![CDATA[{r.Text}]]></Text></Rung>")) +
+            "</RLLContent></Routine>";
+        var tagXml = string.Concat(Tags.Select(t => string.Format(Tag, t)));
+        return L5X.Parse(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>" +
+            "<RSLogix5000Content SchemaRevision=\"1.0\" SoftwareRevision=\"36.1\" TargetName=\"C\" TargetType=\"Controller\" ContainsContext=\"false\">" +
+            "<Controller Name=\"C\" MajorRev=\"36\" MinorRev=\"1\" ProcessorType=\"1756-L84E\">" +
+            "<DataTypes /><Modules /><AddOnInstructionDefinitions />" +
+            $"<Tags>{tagXml}</Tags>" +
+            "<Programs><Program Name=\"MainProgram\" Type=\"Normal\" TestEdits=\"false\" Disabled=\"false\" UseAsFolder=\"false\" MainRoutineName=\"Main\">" +
+            "<Tags /><Routines>" + Routine("Main", main) + Routine("Other", other) +
+            "</Routines></Program></Programs></Controller></RSLogix5000Content>");
+    }
+
+    /// <summary>Installs <paramref name="export"/> as what the controller exports and runs the refresh the publish / accept tools run.</summary>
+    internal static async Task<bool> RefreshFromAsync(TagSessionService session, L5X export)
+    {
+        session.ImageSourceOverride = new ScriptedExport(export);
+        session.MarkImageStale("MainProgram");
+        return await session.RefreshControllerImageAsync();
+    }
+
+    // ── The nine shapes ─────────────────────────────────────────────────────────────────────
+    // Each shape: the routine before the publish, what the controller exports after the publish (Logix decides the
+    // zone's shape: edit pairs IR/R, delete + add D/I, interleaved pairs, ...), and the plain rungs it exports after
+    // the accept. The fixtures are the codes the shape map gives; the image must hold them verbatim.
+
+    private const string R0 = "XIC(A)OTE(B);";
+    private const string R1 = "XIC(C)OTE(D);";
+    private const string R2 = "XIC(A)OTE(E);";
+    private const string N0 = "XIC(A)XIC(C)OTE(B);";   // new rung, same output as R0
+    private const string N1 = "XIC(C)XIC(A)OTE(D);";   // new rung, same output as R1
+    private const string M0 = "XIC(D)OTE(C);";          // new rung, different output
+
+    private sealed record Shape(
+        string[] Before, (string Text, string Type)[] AfterPublish, string[] AfterAccept);
+
+    private static readonly Dictionary<string, Shape> Shapes = new()
+    {
+        // a: replace one rung with a rung that keeps its output: an edit pair at the position.
+        ["a"]   = new([R0, R1, R2], [(N0, "IR"), (R0, "R"), (R1, "N"), (R2, "N")], [N0, R1, R2]),
+        // b: replace one rung with a rung whose output changes: delete + add, the new rung at position + replaceCount.
+        ["b"]   = new([R0, R1, R2], [(R0, "D"), (M0, "I"), (R1, "N"), (R2, "N")], [M0, R1, R2]),
+        // c: insert only.
+        ["c"]   = new([R0, R1, R2], [(R0, "N"), (M0, "I"), (R1, "N"), (R2, "N")], [R0, M0, R1, R2]),
+        // d: delete one rung (no new rung).
+        ["d"]   = new([R0, R1, R2], [(R0, "D"), (R1, "N"), (R2, "N")], [R1, R2]),
+        // d2: delete two rungs.
+        ["d2"]  = new([R0, R1, R2], [(R0, "D"), (R1, "D"), (R2, "N")], [R2]),
+        // e0: replace rung 0 of a two-rung routine with a different-output rung: D/I/N.
+        ["e0"]  = new([R0, R1], [(R0, "D"), (M0, "I"), (R1, "N")], [M0, R1]),
+        // e1: the same delete + add one rung further down.
+        ["e1"]  = new([R0, R1, R2], [(R0, "N"), (R1, "D"), (M0, "I"), (R2, "N")], [R0, M0, R2]),
+        // f12: replace two rungs with two edit pairs: interleaved IR/R/IR/R.
+        ["f12"] = new([R0, R1, R2], [(N0, "IR"), (R0, "R"), (N1, "IR"), (R1, "R"), (R2, "N")], [N0, N1, R2]),
+        // f21: replace two rungs with one edit pair and one deleted rung.
+        ["f21"] = new([R0, R1, R2], [(N0, "IR"), (R0, "R"), (R1, "D"), (R2, "N")], [N0, R2]),
+    };
+
+    [Theory]
+    [InlineData("a")]
+    [InlineData("b")]
+    [InlineData("c")]
+    [InlineData("d")]
+    [InlineData("d2")]
+    [InlineData("e0")]
+    [InlineData("e1")]
+    [InlineData("f12")]
+    [InlineData("f21")]
+    public async Task R24Shape_AfterPublishTheZoneIsExactlyTheExport_AfterAcceptTheAcceptedViewIsTheFixtureAndNotStale(string shape)
+    {
+        var fixture = Shapes[shape];
+        var (session, service, baseline) = ConnectOnly(fixture.Before);
+
+        // Publish: the program is marked stale and refreshed from the export before the response returns.
+        Assert.True(await RefreshFromAsync(session, ImageOfTyped(fixture.AfterPublish)));
+        Assert.Equal(fixture.AfterPublish.Select(r => r.Type).ToArray(), TypesOf(session));
+        Assert.Equal(fixture.AfterPublish.Select(r => r.Text).ToArray(), TextsOf(session.ControllerImage!));
+        Assert.Equal([.. Enumerable.Range(0, fixture.AfterPublish.Length)],
+            session.ControllerImage!.Programs.Single().Routines.Single().Rungs.Select(r => (int)r.Number).ToArray());
+        // includePending reads (the session image) show the zone; includePending: false is the controller's accepted logic.
+        Assert.Equal(baseline, ControllerImageRefresh.Accepted(session.ControllerImage!).ToString());
+        Assert.Equal(fixture.Before, TextsOf(session.AcceptedControllerImage!));
+        var pending = Assert.IsType<CrossRefResult>(CrossReferenceHandler.Execute(service, "B", session, includePending: true));
+        Assert.Equal("session-image", pending.Source);
+        Assert.Null(SessionImageState.StalenessOf(session));
+        Assert.False(session.IsImageStale);
+
+        // Accept: the export now holds the plain rungs, and the accepted view is exactly that, with no stale flag.
+        Assert.True(await RefreshFromAsync(session, ImageOf(fixture.AfterAccept)));
+        Assert.Equal(fixture.AfterAccept, TextsOf(session.ControllerImage!));
+        Assert.Equal(fixture.AfterAccept, TextsOf(session.AcceptedControllerImage!));
+        Assert.All(TypesOf(session), t => Assert.Equal("N", t));
+        Assert.Null(SessionImageState.StalenessOf(session));
+        Assert.False(session.IsImageStale);
+        Assert.Null(session.ImageStaleNote);
+
+        var routine = RoutineJson(service, session);
+        Assert.Equal("session-image", routine.GetProperty("source").GetString());
+        Assert.Equal(fixture.AfterAccept, RoutineTexts(routine));
+        Assert.False(routine.TryGetProperty("imageStale", out _));
+        Assert.False(LintJson(session, service).TryGetProperty("imageStale", out _));
+        Assert.False(DocumentJson(session, service).TryGetProperty("imageStale", out _));
+    }
+
+    /// <summary>The deleted original and the surviving rung were the two things the replay got wrong.</summary>
     [Fact]
-    public void Accept_OfOwnPublishedReplaceAndInsert_LintNoLongerReportsDuplicateAndDocumentShowsNewRung()
+    public async Task E0_ReplaceRung0OfATwoRungRoutine_AcceptedViewHasTheNewRungAndTheSurvivor_NotTheDeletedOriginal()
+    {
+        var (session, service, _) = ConnectOnly(R0, R1);
+        Assert.True(await RefreshFromAsync(session, ImageOfTyped((R0, "D"), (M0, "I"), (R1, "N"))));
+        Assert.True(await RefreshFromAsync(session, ImageOf(M0, R1)));
+
+        var routine = RoutineJson(service, session);
+        Assert.Equal("session-image", routine.GetProperty("source").GetString());
+        Assert.Equal([M0, R1], RoutineTexts(routine));
+        Assert.DoesNotContain(R0, RoutineTexts(routine));
+        Assert.False(routine.TryGetProperty("imageStale", out _));
+        Assert.Null(SessionImageState.StalenessOf(session));
+    }
+
+    /// <summary>One publish to two routines of a program; accept resolves the program's whole zone.</summary>
+    [Fact]
+    public async Task TwoRoutinePublish_AfterPublishBothZonesShow_AfterAcceptBothRoutinesArePlainAndNotStale()
+    {
+        var before = TwoRoutineImage([(R0, "N"), (R1, "N")], [(R2, "N")]);
+        var session = new TagSessionService();
+        session.Attach(new VirtualTagService(new Dictionary<string, (object, string?)>()), isVirtual: false, isLiveController: true);
+        session.SetControllerImage(before, DateTimeOffset.UtcNow.AddMinutes(-5));
+        var service = new ProjectService();
+        service.RegisterFromUpload(before, "C.ACD", "1.2.3.4");
+
+        var published = TwoRoutineImage([(N0, "IR"), (R0, "R"), (R1, "N")], [(M0, "I"), (R2, "N")]);
+        Assert.True(await RefreshFromAsync(session, published));
+        Assert.Equal(["IR", "R", "N"], TypesOfRoutine(session, "Main"));
+        Assert.Equal(["I", "N"], TypesOfRoutine(session, "Other"));
+        Assert.Equal([N0, R0, R1], TextsOfRoutine(session.ControllerImage!, "Main"));
+        Assert.Equal([M0, R2], TextsOfRoutine(session.ControllerImage!, "Other"));
+        Assert.Equal([R0, R1], TextsOfRoutine(session.AcceptedControllerImage!, "Main"));
+        Assert.Equal([R2], TextsOfRoutine(session.AcceptedControllerImage!, "Other"));
+
+        var accepted = TwoRoutineImage([(N0, "N"), (R1, "N")], [(M0, "N"), (R2, "N")]);
+        Assert.True(await RefreshFromAsync(session, accepted));
+        Assert.Equal([N0, R1], TextsOfRoutine(session.AcceptedControllerImage!, "Main"));
+        Assert.Equal([M0, R2], TextsOfRoutine(session.AcceptedControllerImage!, "Other"));
+        Assert.All(TypesOfRoutine(session, "Main").Concat(TypesOfRoutine(session, "Other")), t => Assert.Equal("N", t));
+        Assert.Null(SessionImageState.StalenessOf(session));
+        Assert.False(session.IsImageStale);
+        foreach (var name in new[] { "Main", "Other" })
+        {
+            var routine = RoutineJson(service, session, name);
+            Assert.Equal("session-image", routine.GetProperty("source").GetString());
+            Assert.False(routine.TryGetProperty("imageStale", out _));
+        }
+    }
+
+    [Fact]
+    public async Task Cancel_RefreshRestoresTheImageToTheRoutineBeforeThePublish()
     {
         var (session, service, _) = Connect();
-        Assert.True(DuplicateOutputs(session, service) > 0);
-        Assert.DoesNotContain("XIC(D)OTE(E);", DocumentMarkdown(session, service), StringComparison.Ordinal);
+        var before = session.ControllerImage!.ToString();
+        Assert.True(await RefreshFromAsync(session, ImageOfTyped((N0, "IR"), (R0, "R"), (R1, "N"), (R2, "N"))));
+        Assert.NotEqual(before, session.ControllerImage!.ToString());
 
-        Assert.True(SessionImageState.RecordPublish(session, "MainProgram", "Main", insertPosition: 0, replaceCount: 2, Published));
-        SessionImageState.OnAccepted(session, "MainProgram", Zone(Published), "accepted");
+        Assert.True(await RefreshFromAsync(session, ImageOf(R0, R1, R2)));
 
-        Assert.Equal(0, DuplicateOutputs(session, service));
-        var markdown = DocumentMarkdown(session, service);
-        Assert.Contains("XIC(D)OTE(E);", markdown, StringComparison.Ordinal);
-        Assert.Contains("XIC(A)XIC(C)OTE(B);", markdown, StringComparison.Ordinal);
-
-        // 3 new rungs + the untouched third original, numbered 0..3, all ordinary rungs; the new block is at position 0.
-        var rungs = session.ControllerImage!.Programs.Single().Routines.Single().Rungs.ToList();
-        Assert.Equal(4, rungs.Count);
-        Assert.Equal([0, 1, 2, 3], rungs.Select(r => r.Number).ToArray());
-        Assert.All(rungs, r => Assert.Equal("N", r.Type!.ToString()));
-        Assert.Equal(Published, rungs.Take(3).Select(r => r.Text.ToString()).ToArray());
-        Assert.Equal("XIC(A)OTE(D);", rungs[3].Text.ToString());
-
-        // The image is current, so nothing says it is stale.
+        Assert.Equal([R0, R1, R2], TextsOf(session.ControllerImage!));
+        Assert.All(TypesOf(session), t => Assert.Equal("N", t));
         Assert.Null(SessionImageState.StalenessOf(session));
+        _ = service;
+    }
+
+    /// <summary>The refresh copies the comment the controller holds for each rung; nothing is guessed.</summary>
+    [Fact]
+    public async Task Refresh_CarriesTheCommentsTheExportHolds()
+    {
+        var (session, service, _) = Connect(ImageWithComments((R0, "Original comment")));
+        Assert.True(await RefreshFromAsync(session, ImageWithComments(("XIC(A)OTE(E);", "Explicit comment"))));
+
+        var result = Assert.IsType<GetRoutineResult>(GetRoutineHandler.Execute(service, "MainProgram", "Main", session));
+        Assert.Equal("session-image", result.Source);
+        Assert.Contains("Explicit comment", result.Rungs[0].Comment, StringComparison.Ordinal);
+        Assert.DoesNotContain("Original comment", result.Rungs[0].Comment, StringComparison.Ordinal);
+    }
+
+    // ── A failing export ────────────────────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task FailingExport_MarksTheImageStaleWithTheErrorInTheReason_AndTheNextSuccessfulRefreshClearsIt()
+    {
+        var (session, service, _) = Connect();
+        var before = session.ControllerImage!.ToString();
+        var source = new ScriptedExport { Fail = new InvalidOperationException("the export timed out") };
+        session.ImageSourceOverride = source;
+        session.MarkImageStale("MainProgram");
+
+        Assert.False(await session.RefreshControllerImageAsync());
+
+        var stale = Assert.IsType<SessionImageStaleness>(SessionImageState.StalenessOf(session));
+        Assert.Equal("refresh of program 'MainProgram' failed: the export timed out", stale.Reason);
+        Assert.Contains("the export timed out", session.ImageStaleNote, StringComparison.Ordinal);
+        Assert.Equal(before, session.ControllerImage!.ToString());   // a failed export leaves the image as it was
+        AssertStale(LintJson(session, service));
+        Assert.Contains("the export timed out", LintJson(session, service).GetProperty("staleReason").GetString(), StringComparison.Ordinal);
+        AssertStale(DocumentJson(session, service));
+
+        // The next successful refresh clears both the service's flags and the SessionImageState mark.
+        source.Fail = null;
+        source.Export = ImageOf(N0, R1, R2);
+        Assert.True(await session.RefreshControllerImageAsync());
+
+        Assert.Null(SessionImageState.StalenessOf(session));
+        Assert.False(session.IsImageStale);
+        Assert.Null(session.ImageStaleNote);
+        Assert.Equal([N0, R1, R2], TextsOf(session.ControllerImage!));
         Assert.False(LintJson(session, service).TryGetProperty("imageStale", out _));
         Assert.False(DocumentJson(session, service).TryGetProperty("imageStale", out _));
     }
 
     [Fact]
-    public void RecordPublish_ReplaceOfOne_PutsTheNewBlockAtTheInsertPositionAndTheOriginalFollowsAsReplaced()
+    public async Task FailingExport_OfAProgramTheExportDoesNotHold_NamesTheProgram()
     {
         var (session, _, _) = Connect();
-        Assert.True(SessionImageState.RecordPublish(session, "MainProgram", "Main", 0, 1, ["XIC(A)OTE(E);"]));
+        session.ImageSourceOverride = new ScriptedExport(ImageOf(R0));
+        session.MarkImageStale("NoSuchProgram");
 
-        var rungs = session.ControllerImage!.Programs.Single().Routines.Single().Rungs.ToList();
-        Assert.Equal(4, rungs.Count);
-        Assert.Equal(["IR", "R", "N", "N"], rungs.Select(r => r.Type!.ToString()).ToArray());
-        Assert.Equal("XIC(A)OTE(E);", rungs[0].Text.ToString());
-        Assert.Equal("XIC(A)OTE(B);", rungs[1].Text.ToString());
+        Assert.False(await session.RefreshControllerImageAsync());
+
+        Assert.Contains("refresh of program 'NoSuchProgram' failed: the export held no program 'NoSuchProgram'",
+            SessionImageState.StalenessOf(session)!.Reason, StringComparison.Ordinal);
     }
 
     [Fact]
-    public void Accept_OfOwnPublish_WithoutPendingMergeAtPublish_AppliesTheSameChangeSet()
+    public async Task ASuccessfulRefresh_ClearsAStaleMarkAnEarlierFailureSet_EvenWhenTheNextExportShowsAZone()
     {
-        var (session, service, _) = Connect();
-        Assert.True(SessionImageState.RecordPublish(session, "MainProgram", "Main", 0, 2, Published, applyToImage: false));
+        var (session, _, _) = Connect();
+        session.ImageSourceOverride = new ScriptedExport { Fail = new InvalidOperationException("boom") };
+        session.MarkImageStale("MainProgram");
+        Assert.False(await session.RefreshControllerImageAsync());
+        Assert.NotNull(SessionImageState.StalenessOf(session));
 
-        SessionImageState.OnAccepted(session, "MainProgram", Zone(Published), "assembled");
+        Assert.True(await RefreshFromAsync(session, ImageOfTyped((N0, "IR"), (R0, "R"), (R1, "N"), (R2, "N"))));
 
+        Assert.Null(SessionImageState.StalenessOf(session));
+    }
+
+    // ── Workstation-staged blocks, identical text ───────────────────────────────
+
+    private static (TagSessionService Session, ProjectService Service, string Baseline) ConnectOnly(params string[] rungs)
+    {
+        var image   = ImageOf(rungs);
+        var session = new TagSessionService();
+        session.Attach(new VirtualTagService(new Dictionary<string, (object, string?)>()), isVirtual: false, isLiveController: true);
+        session.SetControllerImage(image, DateTimeOffset.UtcNow.AddMinutes(-5));
+        var service = new ProjectService();
+        service.RegisterFromUpload(image, "C.ACD", "1.2.3.4");
+        return (session, service, ControllerImageRefresh.Accepted(image).ToString());
+    }
+
+    /// <summary>
+    /// Stage against <paramref name="baseline"/>, refresh with the real post-stage export (<paramref name="export"/>, the
+    /// staged rungs as er/e and the displaced originals as rN/dN), publish (the export then holds the zone codes), and
+    /// check the accepted view stays at the baseline throughout.
+    /// </summary>
+    private static async Task StageRefreshPublishAsync(
+        string[] baseline, (string Text, string Type)[] export, int replaceCount, string[] published,
+        (string Text, string Type)[] exportAfterPublish, string[] expectedExportedTypes)
+    {
+        var (session, service, baselineAccepted) = ConnectOnly(baseline);
+        Assert.Equal("project-file", RoutineJson(service, session).GetProperty("source").GetString());
+
+        var source = new ScriptedExport(ImageOfTyped(export));
+        source.Blocks.Add(new StagedBlock("MainProgram", "Main", 0, replaceCount, published));
+        session.ImageSourceOverride = source;
+        session.MarkImageStale("MainProgram");
+        await AnalysisImage.PrepareAsync(session);
+
+        // The export's own codes are left alone, and the accepted view is the baseline.
+        Assert.Equal(expectedExportedTypes, TypesOf(session));
+        Assert.Equal(export.Select(r => r.Text).ToArray(), TextsOf(session.ControllerImage!));
+        Assert.Equal(baselineAccepted, ControllerImageRefresh.Accepted(session.ControllerImage!).ToString());
+        var staged = RoutineJson(service, session);
+        Assert.Equal("project-file", staged.GetProperty("source").GetString());
+        Assert.Equal(baseline, RoutineTexts(staged));
+
+        // Publish: the buffer empties and the refresh shows the zone exactly as the controller exports it.
+        source.Blocks.Clear();
+        source.Export = ImageOfTyped(exportAfterPublish);
+        session.MarkImageStale("MainProgram");
+        Assert.True(await session.RefreshControllerImageAsync());
+        Assert.Equal(exportAfterPublish.Select(r => r.Type).ToArray(), TypesOf(session));
+        Assert.Equal(exportAfterPublish.Select(r => r.Text).ToArray(), TextsOf(session.ControllerImage!));
+        Assert.Equal(baselineAccepted, ControllerImageRefresh.Accepted(session.ControllerImage!).ToString());
+        var after = RoutineJson(service, session);
+        Assert.Equal("project-file", after.GetProperty("source").GetString());
+        Assert.Equal(baseline, RoutineTexts(after));
         Assert.Equal(0, DuplicateOutputs(session, service));
-        Assert.Contains("XIC(D)OTE(E);", DocumentMarkdown(session, service), StringComparison.Ordinal);
+        var refs = Assert.IsType<CrossRefResult>(CrossReferenceHandler.Execute(service, "B", session, includePending: false));
+        Assert.Equal(baseline.Count(t => t.Contains("OTE(B)")), refs.References.Count(r => r.Kind == "write"));
+
+        // Accept: the export holds the published rung and what followed.
+        var acceptedRungs = published.Concat(baseline.Skip(replaceCount)).ToArray();
+        Assert.True(await RefreshFromAsync(session, ImageOf(acceptedRungs)));
         Assert.Null(SessionImageState.StalenessOf(session));
+        var accepted = RoutineJson(service, session);
+        Assert.Equal("session-image", accepted.GetProperty("source").GetString());
+        Assert.Equal(acceptedRungs, RoutineTexts(accepted));
     }
 
     [Fact]
-    public void Accept_WithUnknownChangeSet_LintDocumentAndReadsReportImageStale()
-    {
-        var (session, service, _) = Connect();
-
-        // Nothing was published by this session: the zone came from somewhere else.
-        SessionImageState.OnAccepted(session, "MainProgram", Zone("XIC(A)OTE(E);"), "accepted");
-
-        AssertStale(LintJson(session, service));
-        AssertStale(DocumentJson(session, service));
-
-        // Reads that use the session image carry the same hint in their note.
-        var xref = Assert.IsType<CrossRefResult>(CrossReferenceHandler.Execute(service, "B", session, includePending: true));
-        Assert.Equal("session-image", xref.Source);
-        Assert.Contains("reconnect (logix_connect) to refresh before relying on this result", xref.Note);
-        Assert.Contains("stale", xref.Note);
-    }
+    public Task StagedReplace_WithTheRealExportShape_PublishShowsTheZoneAndKeepsTheBaseline() =>
+        StageRefreshPublishAsync(
+            baseline: ["XIC(A)OTE(B);"],
+            export: [("XIC(A)XIC(C)OTE(B);", "er"), ("XIC(A)OTE(B);", "rN")],
+            replaceCount: 1, published: ["XIC(A)XIC(C)OTE(B);"],
+            exportAfterPublish: [("XIC(A)XIC(C)OTE(B);", "IR"), ("XIC(A)OTE(B);", "R")],
+            expectedExportedTypes: ["er", "rN"]);
 
     [Fact]
-    public void Accept_WhenZoneDiffersFromWhatThisSessionPublished_MarksImageStale()
-    {
-        var (session, service, _) = Connect();
-        Assert.True(SessionImageState.RecordPublish(session, "MainProgram", "Main", 0, 2, Published));
-        var before = session.ControllerImage!.ToString();
-
-        // Someone else added a rung to the zone, so the record is not the whole zone.
-        SessionImageState.OnAccepted(session, "MainProgram", Zone([.. Published, "XIC(A)OTE(E);"]), "accepted");
-
-        AssertStale(LintJson(session, service));
-        Assert.Equal(before, session.ControllerImage!.ToString());   // nothing half-applied
-    }
+    public Task StagedInsert_WithTheRealExportShape_PublishShowsTheZoneAndKeepsTheBaseline() =>
+        StageRefreshPublishAsync(
+            baseline: ["XIC(A)OTE(B);"],
+            export: [("XIC(A)OTE(E);", "e"), ("XIC(A)OTE(B);", "N")],
+            replaceCount: 0, published: ["XIC(A)OTE(E);"],
+            exportAfterPublish: [("XIC(A)OTE(E);", "I"), ("XIC(A)OTE(B);", "N")],
+            expectedExportedTypes: ["e", "N"]);
 
     [Fact]
-    public void Accept_WhenTheReplaceRangeIsOutsideTheImage_MarksImageStale()
+    public Task StagedDeleteReplace_WithDnInTheExport_PublishShowsTheZoneAndKeepsTheBaseline() =>
+        StageRefreshPublishAsync(
+            baseline: ["XIC(A)OTE(B);", "XIC(C)OTE(D);"],
+            export: [("XIC(A)XIC(C)OTE(B);", "er"), ("XIC(A)OTE(B);", "rN"), ("XIC(C)OTE(D);", "dN")],
+            replaceCount: 2, published: ["XIC(A)XIC(C)OTE(B);"],
+            exportAfterPublish: [("XIC(A)XIC(C)OTE(B);", "IR"), ("XIC(A)OTE(B);", "R"), ("XIC(C)OTE(D);", "D")],
+            expectedExportedTypes: ["er", "rN", "dN"]);
+
+    /// <summary>The staged block is stamped IR/R by the refresh when the export shows its rungs as plain N.</summary>
+    [Fact]
+    public async Task StagedBlock_ShownAsPlainNByTheExport_IsStampedIrAndRByTheRefresh()
     {
-        var (session, service, _) = Connect();
-        Assert.True(SessionImageState.RecordPublish(session, "MainProgram", "Main", 0, 2, Published, applyToImage: false));
-        Assert.False(SessionImageState.RecordPublish(session, "MainProgram", "Main", 0, 9, ["XIC(A)OTE(E);"]));   // not recorded
-        SessionImageState.OnAccepted(session, "MainProgram", Zone(Published), "accepted");
+        var (session, _, baseline) = ConnectOnly(R0);
+        var source = new ScriptedExport(ImageOfTyped((N0, "N"), (R0, "N")));
+        source.Blocks.Add(new StagedBlock("MainProgram", "Main", 0, 1, [N0]));
+        session.ImageSourceOverride = source;
+        session.MarkImageStale("MainProgram");
+
+        await AnalysisImage.PrepareAsync(session);
+
+        Assert.Equal(["IR", "R"], TypesOf(session));
+        Assert.Equal(baseline, ControllerImageRefresh.Accepted(session.ControllerImage!).ToString());
+    }
+
+    /// <summary>An identical-text publish leaves nothing pending, so the refresh leaves the rung plain.</summary>
+    [Fact]
+    public async Task IdenticalTextPublish_RefreshLeavesTheRungPlain_AndTheRoutineProjectFile()
+    {
+        var (session, service, baseline) = ConnectOnly(R0);
+
+        Assert.True(await RefreshFromAsync(session, ImageOfTyped((R0, "N"))));
+
+        Assert.Equal(["N"], TypesOf(session));
+        Assert.Equal([R0], TextsOf(session.ControllerImage!));
+        Assert.Equal(baseline, ControllerImageRefresh.Accepted(session.ControllerImage!).ToString());
         Assert.Null(SessionImageState.StalenessOf(session));
+        Assert.Equal(0, DuplicateOutputs(session, service));
+        var routine = RoutineJson(service, session);
+        Assert.Equal([R0], RoutineTexts(routine));
+        Assert.False(routine.TryGetProperty("imageStale", out _));
+    }
 
-        // A record whose range does not fit the image (image shrank under it) is a merge failure: stale.
-        var (s2, svc2, _) = Connect(Image("XIC(A)OTE(B);"));
-        Assert.True(SessionImageState.RecordPublish(s2, "MainProgram", "Main", 0, 1, ["XIC(A)OTE(E);"], applyToImage: false));
-        s2.SetControllerImage(Image(), s2.ControllerImageTakenAt!.Value);   // same image slot, now without the rung
-        SessionImageState.OnAccepted(s2, "MainProgram", [new("Main", [("IR", "XIC(A)OTE(E);")])], "accepted");
-        var stale = SessionImageState.StalenessOf(s2);
-        Assert.NotNull(stale);
-        Assert.Contains("outside the session image", stale!.Reason);
-        _ = svc2;
+    /// <summary>A staged replacement identical to the rung it displaces stays one normal rung with one writer.</summary>
+    [Fact]
+    public async Task IdenticalTextStage_RefreshWithExportOldN_KeepsTheImageNormal_AndOneWriter()
+    {
+        const string Old = "XIC(A)OTE(B);";
+        var (session, service, baseline) = ConnectOnly(Old);
+
+        var source = new ScriptedExport(ImageOfTyped((Old, "N")));
+        source.Blocks.Add(new StagedBlock("MainProgram", "Main", 0, 1, [Old]) { KeptNormal = new HashSet<int> { 0 } });
+        session.ImageSourceOverride = source;
+        session.MarkImageStale("MainProgram");
+        await AnalysisImage.PrepareAsync(session);
+
+        Assert.Equal(["N"], TypesOf(session));
+        Assert.Equal([Old], TextsOf(session.ControllerImage!));
+        Assert.Equal(baseline, ControllerImageRefresh.Accepted(session.ControllerImage!).ToString());
+        Assert.Equal([Old], TextsOf(ControllerImageRefresh.Accepted(session.ControllerImage!)));
+        var routine = RoutineJson(service, session);
+        Assert.Equal("project-file", routine.GetProperty("source").GetString());
+        Assert.Equal([Old], RoutineTexts(routine));
+        Assert.Equal(0, DuplicateOutputs(session, service));
+        var refs = Assert.IsType<CrossRefResult>(CrossReferenceHandler.Execute(service, "B", session, includePending: true));
+        Assert.Single(refs.References, r => r.Kind == "write");
+    }
+
+    /// <summary>Without KeptNormal the same block is stamped as before (0188/0189 behaviour).</summary>
+    [Fact]
+    public async Task IdenticalTextStage_WithoutKeptNormal_IsStampedAsBefore()
+    {
+        const string Old = "XIC(A)OTE(B);";
+        var (session, _, _) = ConnectOnly(Old);
+        var source = new ScriptedExport(ImageOfTyped((Old, "N")));
+        source.Blocks.Add(new StagedBlock("MainProgram", "Main", 0, 1, [Old]));
+        session.ImageSourceOverride = source;
+        session.MarkImageStale("MainProgram");
+        await AnalysisImage.PrepareAsync(session);
+
+        Assert.Equal(["IR"], TypesOf(session));
+    }
+
+    /// <summary>A mixed block stamps only the changed rung IR and only the rung that one displaces R.</summary>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task MixedBlock_KeptNormalOld_StampsOnlyNewAsIr_AndOnlyOld2AsR(bool exportHasStagedCodes)
+    {
+        const string Old  = "XIC(A)OTE(B);";
+        const string New  = "XIC(A)XIC(C)OTE(B);";
+        const string Old2 = "XIC(A)OTE(D);";
+        var (session, service, _) = ConnectOnly(Old, Old2);
+
+        var export = exportHasStagedCodes
+            ? ImageOfTyped((Old, "N"), (New, "er"), (Old2, "rN"))
+            : ImageOfTyped((Old, "N"), (New, "N"), (Old2, "N"));
+        var source = new ScriptedExport(export);
+        source.Blocks.Add(new StagedBlock("MainProgram", "Main", 0, 2, [Old, New]) { KeptNormal = new HashSet<int> { 0 } });
+        session.ImageSourceOverride = source;
+        session.MarkImageStale("MainProgram");
+        await AnalysisImage.PrepareAsync(session);
+
+        Assert.Equal(exportHasStagedCodes ? ["N", "er", "rN"] : ["N", "IR", "R"], TypesOf(session));
+        Assert.Equal([Old, Old2], TextsOf(ControllerImageRefresh.Accepted(session.ControllerImage!)));
+        Assert.Equal([Old, Old2], RoutineTexts(RoutineJson(service, session)));
+    }
+
+    [Fact]
+    public void TheCodeSets_AreSharedBetweenTheRefreshAndTheImage()
+    {
+        Assert.Equal(["I", "IR", "e", "er"], ControllerImageRefresh.PendingOnlyCodes.Order(StringComparer.Ordinal).ToArray());
+        Assert.Equal(["D", "R", "dN", "rN"], ControllerImageRefresh.DisplacedOriginalCodes.Order(StringComparer.Ordinal).ToArray());
     }
 
     [Fact]
     public void Reconnect_ClearsTheStaleFlag()
     {
         var (session, service, _) = Connect();
-        SessionImageState.OnAccepted(session, "MainProgram", Zone("XIC(A)OTE(E);"), "accepted");
+        SessionImageState.MarkStale(session, "refresh of program 'MainProgram' failed: boom");
+        AssertStale(LintJson(session, service));
         Assert.NotNull(SessionImageState.StalenessOf(session));
 
         // logix_connect again: a new session service and a freshly taken image.
@@ -204,42 +594,6 @@ public class SessionImageAfterAcceptTests
         Assert.Null(SessionImageState.StalenessOf(session));
         Assert.False(LintJson(session, service).TryGetProperty("imageStale", out _));
         Assert.False(DocumentJson(session, service).TryGetProperty("imageStale", out _));
-    }
-
-    [Fact]
-    public void Cancel_LeavesTheImageEqualToItsStateBeforeThePublish()
-    {
-        var (session, service, _) = Connect();
-        var before = session.ControllerImage!.ToString();
-
-        Assert.True(SessionImageState.RecordPublish(session, "MainProgram", "Main", 0, 2, Published));
-        Assert.NotEqual(before, session.ControllerImage!.ToString());   // the publish changed the image
-        Assert.Contains("XIC(D)OTE(E);", DocumentMarkdown(session, service), StringComparison.Ordinal);
-
-        SessionImageState.OnCancelled(session, "MainProgram", Zone(Published));
-
-        Assert.Equal(before, session.ControllerImage!.ToString());
-        Assert.Null(SessionImageState.StalenessOf(session));
-        Assert.True(DuplicateOutputs(session, service) > 0);
-        Assert.DoesNotContain("XIC(D)OTE(E);", DocumentMarkdown(session, service), StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public void Cancel_WhenTheImageWasNotChangedForThePublish_MarksImageStale()
-    {
-        var (session, service, _) = Connect();
-        Assert.True(SessionImageState.RecordPublish(session, "MainProgram", "Main", 0, 2, Published, applyToImage: false));
-
-        SessionImageState.OnCancelled(session, "MainProgram", Zone(Published));
-        AssertStale(LintJson(session, service));
-    }
-
-    [Fact]
-    public void Cancel_OfAZoneThisSessionDidNotPublish_MarksImageStale()
-    {
-        var (session, service, _) = Connect();
-        SessionImageState.OnCancelled(session, "MainProgram", Zone("XIC(A)OTE(E);"));
-        AssertStale(LintJson(session, service));
     }
 
     [Fact]
@@ -260,10 +614,20 @@ public class SessionImageAfterAcceptTests
 }
 
 #if LOGIX_SDK
-/// <summary>The accept / assemble / cancel handlers hand the zone they resolved to the session image.</summary>
+/// <summary>The accept / assemble / cancel handlers no longer touch the session image: the tool refreshes it.</summary>
 [Collection("StaticHandlerHooks")]
 public class SessionImageAfterLifecycleHandlerTests
 {
+    /// <summary>Each test starts with a ledger that knows the zone this server "published", isolated from other tests' connects.</summary>
+    public SessionImageAfterLifecycleHandlerTests() => ZoneLedger.TestOverride = KnownZoneLedger();
+
+    private static ZoneLedger KnownZoneLedger()
+    {
+        var ledger = new ZoneLedger();
+        ledger.Record("MainProgram", new[] { "Main" });
+        return ledger;
+    }
+
     private static readonly string[] Published = ["XIC(A)XIC(C)OTE(B);", "XIC(D)OTE(E);", "XIC(E)OTE(C);"];
 
     /// <summary>The first two reads (routine, program) see the zone; once the gesture ran it is gone.</summary>
@@ -288,10 +652,10 @@ public class SessionImageAfterLifecycleHandlerTests
     [Theory]
     [InlineData("accept")]
     [InlineData("assemble")]
-    public async Task OwnPublishedZone_IsAppliedToTheImage(string verb)
+    public async Task AcceptAndAssemble_LeaveTheImageUntouchedAndNotStale_TheToolRefreshesIt(string verb)
     {
-        var (session, service, _) = SessionImageAfterAcceptTests.Connect();
-        Assert.True(SessionImageState.RecordPublish(session, "MainProgram", "Main", 0, 2, Published));
+        var (session, _, image) = SessionImageAfterAcceptTests.Connect();
+        var before = image.ToString();
 
         var result = verb == "accept"
             ? await AcceptPendingEditsHandler.ExecuteAsync("MainProgram", "Main", true, Reader(Published), Runner, () => true,
@@ -301,395 +665,99 @@ public class SessionImageAfterLifecycleHandlerTests
 
         Assert.IsType<CancelPendingEditsResult>(result);
         Assert.Null(SessionImageState.StalenessOf(session));
-        Assert.Equal(0, SessionImageAfterAcceptTests.DuplicateOutputs(session, service));
+        Assert.Equal(before, session.ControllerImage!.ToString());
     }
 
     [Fact]
-    public async Task ZoneNotPublishedByThisSession_MarksTheImageStale()
-    {
-        var (session, service, _) = SessionImageAfterAcceptTests.Connect();
-
-        var result = await AcceptPendingEditsHandler.ExecuteAsync("MainProgram", "Main", true, Reader(Published), Runner, () => true,
-            default, () => ("direct", null), session);
-
-        Assert.IsType<CancelPendingEditsResult>(result);
-        Assert.NotNull(SessionImageState.StalenessOf(session));
-        Assert.True(SessionImageAfterAcceptTests.DuplicateOutputs(session, service) > 0);   // image untouched
-    }
-
-    [Fact]
-    public async Task NoImageSession_LeavesTheImageAlone()
+    public async Task Cancel_LeavesTheImageUntouchedAndNotStale()
     {
         var (session, _, image) = SessionImageAfterAcceptTests.Connect();
         var before = image.ToString();
 
-        await AcceptPendingEditsHandler.ExecuteAsync("MainProgram", "Main", true, Reader(Published), Runner, () => true,
-            default, () => ("direct", null));
+        var result = await CancelPendingEditsHandler.ExecuteAsync("MainProgram", "Main", true, Reader(Published), Runner, () => true,
+            default, () => ("direct", null), imageSession: session);
 
+        Assert.IsType<CancelPendingEditsResult>(result);
         Assert.Null(SessionImageState.StalenessOf(session));
         Assert.Equal(before, session.ControllerImage!.ToString());
     }
 }
 
 /// <summary>
-/// The real tool entry points (<see cref="LogixSdkTools"/>) hand the session image to accept, assemble and cancel,
-/// and a publish result is recorded for them. The Studio driver and the SDK project are fakes.
+/// The real tool entry points (<see cref="LogixSdkTools"/>) mark the program stale and refresh the session image from
+/// the controller export before they return (b, c). The export is scripted; the Studio driver is not reached
+/// (the tools refuse without <c>confirm</c>, and the refresh runs regardless, as the mark always has).
 /// </summary>
 [Collection("StaticHandlerHooks")]
 public class SessionImageThroughToolsTests
 {
-    private const string RoutineXPath = "Controller/Programs/Program[@Name='MainProgram']/Routines/Routine[@Name='Main']";
-    private static readonly string[] Published = ["XIC(A)XIC(C)OTE(B);", "XIC(D)OTE(E);", "XIC(E)OTE(C);"];
-    private static readonly string[] Originals = ["XIC(A)OTE(B);", "XIC(C)OTE(B);", "XIC(A)OTE(D);"];
+    private static readonly (string Text, string Type)[] AfterPublish =
+        [("XIC(A)XIC(C)OTE(B);", "IR"), ("XIC(A)OTE(B);", "R"), ("XIC(C)OTE(B);", "N"), ("XIC(A)OTE(D);", "N")];
 
-    /// <summary>
-    /// A routine export. Pending: the new <paramref name="rungs"/> sit at position <paramref name="insert"/>, the
-    /// <paramref name="replace"/> replaced originals follow them (as the controller lands them), then the other originals.
-    /// </summary>
-    private static string Export(bool pending, string[] rungs, int insert = 0, int replace = 2)
-    {
-        var sb = new System.Text.StringBuilder();
-        var n = 0;
-        if (pending)
-        {
-            foreach (var o in Originals.Take(insert)) sb.Append($"<Rung Number=\"{n++}\" Type=\"N\"><Text><![CDATA[{o}]]></Text></Rung>");
-            for (var i = 0; i < rungs.Length; i++)
-                sb.Append($"<Rung Number=\"{n++}\" Type=\"{(i < replace ? "IR" : "I")}\"><Text><![CDATA[{rungs[i]}]]></Text></Rung>");
-            foreach (var o in Originals.Skip(insert).Take(replace)) sb.Append($"<Rung Number=\"{n++}\" Type=\"R\"><Text><![CDATA[{o}]]></Text></Rung>");
-            foreach (var o in Originals.Skip(insert + replace)) sb.Append($"<Rung Number=\"{n++}\" Type=\"N\"><Text><![CDATA[{o}]]></Text></Rung>");
-        }
-        else
-        {
-            foreach (var r in rungs) sb.Append($"<Rung Number=\"{n++}\" Type=\"N\"><Text><![CDATA[{r}]]></Text></Rung>");
-        }
-        return "<RSLogix5000Content><Controller><Programs><Program Name=\"MainProgram\"><Routines>" +
-               "<Routine Name=\"Main\"><RLLContent>" + sb + "</RLLContent></Routine></Routines></Program></Programs></Controller></RSLogix5000Content>";
-    }
+    private static readonly string[] AfterAccept = ["XIC(A)XIC(C)OTE(B);", "XIC(C)OTE(B);", "XIC(A)OTE(D);"];
 
-    /// <summary>
-    /// A publish result with the real landed shape: the new rungs land AT <paramref name="insert"/> (the originals
-    /// follow), so by default the landed indices start there. <paramref name="landed"/> overrides them.
-    /// </summary>
-    private static ProposeRungEditResult PublishResult(
-        uint insert = 0, uint replace = 2, string[]? texts = null, int[]? landed = null, string?[]? comments = null)
-    {
-        texts  ??= Published;
-        landed ??= Enumerable.Range((int)insert, texts.Length).ToArray();
-        return new("proposed", RoutineXPath, insert, replace, "published",
-            PublishedRoutines: [new PublishedRoutine(RoutineXPath, texts.Length, landed, (uint)landed[0], replace, texts, comments)]);
-    }
-
-    private static async Task<(LogixSdkTools Tools, TagSessionService Session, ProjectService Service, LogixProjectSession Sdk, FakePendingEditsProject Fake)> SetUp()
+    private static (LogixSdkTools Tools, TagSessionService Session, ProjectService Service) SetUp()
     {
         var (session, service, _) = SessionImageAfterAcceptTests.Connect();
         var tools = new LogixSdkTools(service, session, new Capabilities(LiveWritesEnabled: true, StudioAutomationEnabled: true));
-        var fake = new FakePendingEditsProject { ExportContent = Export(true, Published) };
-        var (sdk, _) = await PendingEditsTestHelpers.OpenedSessionAsync(fake);
-        return (tools, session, service, sdk, fake);
+        return (tools, session, service);
     }
 
-    /// <summary>A Studio driver whose gesture resolves the zone: afterwards the routine holds <paramref name="after"/> as ordinary rungs.</summary>
-    private static Func<string, CancellationToken, Task<Session1ScriptResult>> Runner(FakePendingEditsProject fake, string[] after) =>
-        (verb, ct) =>
+    private static string[] Texts(TagSessionService session) =>
+        session.ControllerImage!.Programs.Single().Routines.Single().Rungs.Select(r => r.Text.ToString()).ToArray();
+
+    public static TheoryData<string> LifecycleTools => new() { "accept", "cancel", "assemble", "test", "untest", "clear_staged" };
+
+    [Theory]
+    [MemberData(nameof(LifecycleTools))]
+    public async Task LifecycleTool_RefreshesTheImageFromTheExportBeforeReturning(string tool)
+    {
+        var (tools, session, service) = SetUp();
+        session.ImageSourceOverride = new SessionImageAfterAcceptTests.ScriptedExport(SessionImageAfterAcceptTests.ImageOf(AfterAccept));
+
+        _ = tool switch
         {
-            fake.ExportContent = Export(false, after);
-            return Task.FromResult(new Session1ScriptResult(true, "gesture_sent", ["shot.png"]));
+            "accept"       => await tools.AcceptPendingEdits("MainProgram", "Main"),
+            "cancel"       => await tools.CancelPendingEdits("MainProgram", "Main"),
+            "assemble"     => await tools.AssemblePendingEdits("MainProgram", "Main"),
+            "test"         => await tools.TestPendingEdits("MainProgram", "Main"),
+            "untest"       => await tools.UntestPendingEdits("MainProgram", "Main"),
+            _              => await tools.ClearStaged(program: "MainProgram"),
         };
 
-    private static string StatusOf(string json) => JsonDocument.Parse(json).RootElement.GetProperty("status").GetString()!;
-
-    [Fact]
-    public async Task PublishResult_IsRecorded_AndAcceptThroughTheTool_KeepsTheImageCurrent()
-    {
-        var (tools, session, service, sdk, fake) = await SetUp();
-        tools.RecordPendingPublish(PublishResult());
-        Assert.Contains("XIC(D)OTE(E);", session.ControllerImage!.ToString(), StringComparison.Ordinal);   // merged as pending
-
-        var json = await tools.GetAcceptPendingEditsResponseAsync("MainProgram", "Main", true, sdk, Runner(fake, Published), () => true,
-            probe: new TestProbe());
-
-        Assert.Equal("accepted", StatusOf(json));
+        Assert.Equal(AfterAccept, Texts(session));
+        Assert.False(session.IsImageStale);
         Assert.Null(SessionImageState.StalenessOf(session));
-        Assert.Equal(0, SessionImageAfterAcceptTests.DuplicateOutputs(session, service));
+        var routine = JsonSerializer.SerializeToElement(GetRoutineHandler.Execute(service, "MainProgram", "Main", session));
+        Assert.Equal("session-image", routine.GetProperty("source").GetString());
+        Assert.False(routine.TryGetProperty("imageStale", out _));
     }
 
     [Fact]
-    public async Task AssembleThroughTheTool_OfOwnPublish_KeepsTheImageCurrent()
+    public async Task AcceptTool_WithAFailingExport_LeavesTheImageStaleWithTheExportError()
     {
-        var (tools, session, service, sdk, fake) = await SetUp();
-        tools.RecordPendingPublish(PublishResult());
-
-        var json = await tools.GetAssemblePendingEditsResponseAsync("MainProgram", "Main", true, sdk, Runner(fake, Published), () => true,
-            probe: new TestProbe());
-
-        Assert.Equal("assembled", StatusOf(json));
-        Assert.Null(SessionImageState.StalenessOf(session));
-        Assert.Equal(0, SessionImageAfterAcceptTests.DuplicateOutputs(session, service));
-    }
-
-    [Fact]
-    public async Task AcceptThroughTheTool_WithoutARecordedPublish_MarksTheImageStale()
-    {
-        var (tools, session, service, sdk, fake) = await SetUp();
-
-        await tools.GetAcceptPendingEditsResponseAsync("MainProgram", "Main", true, sdk, Runner(fake, Published), () => true,
-            probe: new TestProbe());
-
-        Assert.NotNull(SessionImageState.StalenessOf(session));
-        var lint = JsonDocument.Parse(LintHandler.Serialize(LintHandler.Execute(service, session: session))).RootElement;
-        Assert.True(lint.GetProperty("imageStale").GetBoolean());
-    }
-
-    [Fact]
-    public async Task CancelThroughTheTool_RestoresTheImageToBeforeThePublish()
-    {
-        var (tools, session, _, sdk, fake) = await SetUp();
+        var (tools, session, service) = SetUp();
         var before = session.ControllerImage!.ToString();
-        tools.RecordPendingPublish(PublishResult());
-        Assert.NotEqual(before, session.ControllerImage!.ToString());
+        session.ImageSourceOverride = new SessionImageAfterAcceptTests.ScriptedExport { Fail = new InvalidOperationException("export failed") };
 
-        var json = await tools.GetCancelPendingEditsResponseAsync("MainProgram", "Main", true, sdk, Runner(fake, Originals), () => true,
-            probe: new TestProbe());
-
-        Assert.Equal("cancelled", StatusOf(json));
-        Assert.Equal(before, session.ControllerImage!.ToString());
-        Assert.Null(SessionImageState.StalenessOf(session));
-    }
-
-    [Fact]
-    public async Task PublishResult_WhoseLandedIndicesDoNotStartAtTheInsertPosition_IsNotRecorded_SoAcceptMarksStale()
-    {
-        var (tools, session, _, sdk, fake) = await SetUp();
-        var before = session.ControllerImage!.ToString();
-        // Reported insert 1, but the rungs landed at 0..2: not the shape a publish at position 1 produces.
-        tools.RecordPendingPublish(PublishResult(insert: 1, landed: [0, 1, 2]));
+        await tools.AcceptPendingEdits("MainProgram", "Main");
 
         Assert.Equal(before, session.ControllerImage!.ToString());
-        await tools.GetAcceptPendingEditsResponseAsync("MainProgram", "Main", true, sdk, Runner(fake, Published), () => true,
-            probe: new TestProbe());
-
-        var stale = SessionImageState.StalenessOf(session);
-        Assert.NotNull(stale);
-        Assert.DoesNotContain("no publish by this session is recorded", stale!.Reason, StringComparison.Ordinal);
+        Assert.Equal("refresh of program 'MainProgram' failed: export failed", SessionImageState.StalenessOf(session)!.Reason);
+        Assert.Contains("export failed", session.ImageStaleNote, StringComparison.Ordinal);
+        var routine = JsonSerializer.SerializeToElement(GetRoutineHandler.Execute(service, "MainProgram", "Main", session));
+        Assert.True(routine.GetProperty("imageStale").GetBoolean());
     }
 
     [Fact]
-    public async Task PublishResult_WithNonContiguousLandedIndices_IsNotRecorded_SoAcceptMarksStale()
+    public async Task ZoneInTheExportAfterAPublish_IsShownByTheImageExactlyAsExported()
     {
-        var (tools, session, _, sdk, fake) = await SetUp();
-        var before = session.ControllerImage!.ToString();
-        tools.RecordPendingPublish(PublishResult(landed: [0, 1, 3]));
+        var (_, session, _) = SetUp();
+        Assert.True(await SessionImageAfterAcceptTests.RefreshFromAsync(session, SessionImageAfterAcceptTests.ImageOfTyped(AfterPublish)));
 
-        Assert.Equal(before, session.ControllerImage!.ToString());
-        await tools.GetAcceptPendingEditsResponseAsync("MainProgram", "Main", true, sdk, Runner(fake, Published), () => true,
-            probe: new TestProbe());
-
-        var stale = SessionImageState.StalenessOf(session);
-        Assert.NotNull(stale);
-        Assert.DoesNotContain("no publish by this session is recorded", stale!.Reason, StringComparison.Ordinal);
-    }
-
-    private static readonly string[] OneRung = ["XIC(A)OTE(E);"];
-
-    private static LogixSdkTools ToolsFor(TagSessionService session, ProjectService service) =>
-        new(service, session, new Capabilities(LiveWritesEnabled: true, StudioAutomationEnabled: true));
-
-    private static IReadOnlyList<Rung> ImageRungs(TagSessionService session) =>
-        session.ControllerImage!.Programs.Single().Routines.Single().Rungs.ToList();
-
-    [Fact]
-    public async Task Publish_Replace0_1_Landed0_ThenAccept_ImageRoutineIsTheNewRungOnly_AndNotStale()
-    {
-        var (session, service, _) = SessionImageAfterAcceptTests.Connect(OneRungImage());
-        var tools = ToolsFor(session, service);
-        var fake  = new FakePendingEditsProject { ExportContent = Export(true, OneRung, insert: 0, replace: 1) };
-        var (sdk, _) = await PendingEditsTestHelpers.OpenedSessionAsync(fake);
-
-        tools.RecordPendingPublish(PublishResult(insert: 0, replace: 1, texts: OneRung, landed: [0]));
-        var json = await tools.GetAcceptPendingEditsResponseAsync("MainProgram", "Main", true, sdk,
-            Runner(fake, OneRung), () => true, probe: new TestProbe());
-
-        Assert.Equal("accepted", StatusOf(json));
-        Assert.Null(SessionImageState.StalenessOf(session));
-        var rungs = ImageRungs(session);
-        Assert.Single(rungs);
-        Assert.Equal("XIC(A)OTE(E);", rungs[0].Text.ToString());
-        Assert.Equal("N", rungs[0].Type!.ToString());
-        var lint = JsonDocument.Parse(LintHandler.Serialize(LintHandler.Execute(service, session: session))).RootElement;
-        Assert.False(lint.TryGetProperty("imageStale", out _));
-        Assert.Equal(0, SessionImageAfterAcceptTests.DuplicateOutputs(session, service));
-    }
-
-    [Fact]
-    public async Task Publish_Replace0_2_Landed0_WithOneNewRung_ThenAccept_ImageHasOneRungWhereThereWereTwo()
-    {
-        var (session, service, _) = SessionImageAfterAcceptTests.Connect(TwoRungImage());
-        var tools = ToolsFor(session, service);
-        var fake  = new FakePendingEditsProject { ExportContent = Export(true, OneRung, insert: 0, replace: 2) };
-        var (sdk, _) = await PendingEditsTestHelpers.OpenedSessionAsync(fake);
-        Assert.Equal(2, ImageRungs(session).Count);
-
-        tools.RecordPendingPublish(PublishResult(insert: 0, replace: 2, texts: OneRung, landed: [0]));
-        await tools.GetAcceptPendingEditsResponseAsync("MainProgram", "Main", true, sdk,
-            Runner(fake, OneRung), () => true, probe: new TestProbe());
-
-        Assert.Null(SessionImageState.StalenessOf(session));
-        var rungs = ImageRungs(session);
-        Assert.Single(rungs);
-        Assert.Equal("XIC(A)OTE(E);", rungs[0].Text.ToString());
-        Assert.Equal(0, SessionImageAfterAcceptTests.DuplicateOutputs(session, service));
-    }
-
-    [Fact]
-    public async Task Publish_InsertOnly_AtPosition1_Landed1_IsStillRecorded_AndAcceptPutsTheRungAtPosition1()
-    {
-        var (session, service, _) = SessionImageAfterAcceptTests.Connect();
-        var tools = ToolsFor(session, service);
-        var after = new[] { Originals[0], OneRung[0], Originals[1], Originals[2] };
-        var fake  = new FakePendingEditsProject { ExportContent = Export(true, OneRung, insert: 1, replace: 0) };
-        var (sdk, _) = await PendingEditsTestHelpers.OpenedSessionAsync(fake);
-
-        tools.RecordPendingPublish(PublishResult(insert: 1, replace: 0, texts: OneRung, landed: [1]));
-        Assert.Equal(4, ImageRungs(session).Count);   // merged as pending
-        await tools.GetAcceptPendingEditsResponseAsync("MainProgram", "Main", true, sdk,
-            Runner(fake, after), () => true, probe: new TestProbe());
-
-        Assert.Null(SessionImageState.StalenessOf(session));
-        Assert.Equal(after, ImageRungs(session).Select(r => r.Text.ToString()).ToArray());
-    }
-
-    [Fact]
-    public async Task Cancel_OfARecordedReplaceZone_RestoresTheImageAsItWasBeforeThePublish()
-    {
-        var (session, service, _) = SessionImageAfterAcceptTests.Connect();
-        var tools = ToolsFor(session, service);
-        var fake  = new FakePendingEditsProject { ExportContent = Export(true, OneRung, insert: 0, replace: 1) };
-        var (sdk, _) = await PendingEditsTestHelpers.OpenedSessionAsync(fake);
-        var before = session.ControllerImage!.ToString();
-
-        tools.RecordPendingPublish(PublishResult(insert: 0, replace: 1, texts: OneRung, landed: [0]));
-        Assert.NotEqual(before, session.ControllerImage!.ToString());
-        await tools.GetCancelPendingEditsResponseAsync("MainProgram", "Main", true, sdk,
-            Runner(fake, Originals), () => true, probe: new TestProbe());
-
-        Assert.Equal(before, session.ControllerImage!.ToString());
-        Assert.Null(SessionImageState.StalenessOf(session));
-    }
-
-    private static string CommentOf(TagSessionService session, int index) => ImageRungs(session)[index].Comment?.ToString() ?? "";
-
-    private static async Task<(LogixSdkTools Tools, TagSessionService Session, ProjectService Service, LogixProjectSession Sdk, FakePendingEditsProject Fake)>
-        SetUpWith(L5X image, string[] pendingRungs, int insert, int replace)
-    {
-        var (session, service, _) = SessionImageAfterAcceptTests.Connect(image);
-        var tools = ToolsFor(session, service);
-        var fake  = new FakePendingEditsProject { ExportContent = Export(true, pendingRungs, insert, replace) };
-        var (sdk, _) = await PendingEditsTestHelpers.OpenedSessionAsync(fake);
-        return (tools, session, service, sdk, fake);
-    }
-
-    private static string GetRoutineComment(TagSessionService session, ProjectService service, int rung)
-    {
-        var result = Assert.IsType<GetRoutineResult>(GetRoutineHandler.Execute(service, "MainProgram", "Main", session));
-        Assert.Equal("session-image", result.Source);
-        return result.Rungs[rung].Comment;
-    }
-
-    [Fact]
-    public async Task Accept_OfReplace0_1_WithPreservedOriginalComment_SessionImageGetRoutineReturnsThatComment()
-    {
-        var (tools, session, service, sdk, fake) = await SetUpWith(
-            SessionImageAfterAcceptTests.ImageWithComments(("XIC(A)OTE(B);", "Original comment")), OneRung, 0, 1);
-
-        tools.RecordPendingPublish(PublishResult(insert: 0, replace: 1, texts: OneRung, landed: [0], comments: ["Original comment"]));
-        await tools.GetAcceptPendingEditsResponseAsync("MainProgram", "Main", true, sdk, Runner(fake, OneRung), () => true, probe: new TestProbe());
-
-        Assert.Null(SessionImageState.StalenessOf(session));
-        Assert.Equal("Original comment", CommentOf(session, 0));
-        Assert.Contains("Original comment", GetRoutineComment(session, service, 0), StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public async Task Accept_WithAnExplicitNewComment_TheExplicitCommentWinsOverTheOriginal()
-    {
-        var (tools, session, service, sdk, fake) = await SetUpWith(
-            SessionImageAfterAcceptTests.ImageWithComments(("XIC(A)OTE(B);", "Original comment")), OneRung, 0, 1);
-
-        // The controller lands the explicit comment (the publish result carries what the rung ended up with).
-        tools.RecordPendingPublish(PublishResult(insert: 0, replace: 1, texts: OneRung, landed: [0], comments: ["Explicit comment"]));
-        await tools.GetAcceptPendingEditsResponseAsync("MainProgram", "Main", true, sdk, Runner(fake, OneRung), () => true, probe: new TestProbe());
-
-        Assert.Equal("Explicit comment", CommentOf(session, 0));
-        var shown = GetRoutineComment(session, service, 0);
-        Assert.Contains("Explicit comment", shown, StringComparison.Ordinal);
-        Assert.DoesNotContain("Original comment", shown, StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public async Task Accept_WithNoComment_SessionImageCommentIsEmpty()
-    {
-        var (tools, session, service, sdk, fake) = await SetUpWith(
-            SessionImageAfterAcceptTests.ImageWithComments(("XIC(A)OTE(B);", null)), OneRung, 0, 1);
-
-        tools.RecordPendingPublish(PublishResult(insert: 0, replace: 1, texts: OneRung, landed: [0], comments: [null]));
-        await tools.GetAcceptPendingEditsResponseAsync("MainProgram", "Main", true, sdk, Runner(fake, OneRung), () => true, probe: new TestProbe());
-
-        Assert.Equal("", CommentOf(session, 0));
-        Assert.Equal("", GetRoutineComment(session, service, 0));
-    }
-
-    [Fact]
-    public async Task Accept_OfInsertOnlyPublish_KeepsTheCommentsOfTheExistingRungs()
-    {
-        var (tools, session, service, sdk, fake) = await SetUpWith(
-            SessionImageAfterAcceptTests.ImageWithComments(("XIC(A)OTE(B);", "First"), ("XIC(C)OTE(B);", "Second")), OneRung, 1, 0);
-        var after = new[] { "XIC(A)OTE(B);", OneRung[0], "XIC(C)OTE(B);" };
-
-        tools.RecordPendingPublish(PublishResult(insert: 1, replace: 0, texts: OneRung, landed: [1], comments: ["Inserted"]));
-        await tools.GetAcceptPendingEditsResponseAsync("MainProgram", "Main", true, sdk, Runner(fake, after), () => true, probe: new TestProbe());
-
-        Assert.Null(SessionImageState.StalenessOf(session));
-        Assert.Equal(["First", "Inserted", "Second"], Enumerable.Range(0, 3).Select(i => CommentOf(session, i)).ToArray());
-        Assert.Equal(after, ImageRungs(session).Select(r => r.Text.ToString()).ToArray());
-    }
-
-    [Fact]
-    public async Task Cancel_OfAPublishWithComments_RestoresThePrePublishImageUnchanged()
-    {
-        var (tools, session, _, sdk, fake) = await SetUpWith(
-            SessionImageAfterAcceptTests.ImageWithComments(("XIC(A)OTE(B);", "Original comment")), OneRung, 0, 1);
-        var before = session.ControllerImage!.ToString();
-
-        tools.RecordPendingPublish(PublishResult(insert: 0, replace: 1, texts: OneRung, landed: [0], comments: ["Explicit comment"]));
-        Assert.NotEqual(before, session.ControllerImage!.ToString());
-        await tools.GetCancelPendingEditsResponseAsync("MainProgram", "Main", true, sdk, Runner(fake, ["XIC(A)OTE(B);"]), () => true, probe: new TestProbe());
-
-        Assert.Equal(before, session.ControllerImage!.ToString());
-        Assert.Equal("Original comment", CommentOf(session, 0));
-    }
-
-    private static L5X OneRungImage() => SessionImageAfterAcceptTests.ImageOf("XIC(A)OTE(B);");
-
-    private static L5X TwoRungImage() => SessionImageAfterAcceptTests.ImageOf("XIC(A)OTE(B);", "XIC(C)OTE(B);");
-
-    [Fact]
-    public void PublishResult_WithoutLandedTexts_IsNotRecorded()
-    {
-        var (session, _, _) = SessionImageAfterAcceptTests.Connect();
-        var tools = new LogixSdkTools(new ProjectService(), session);
-        var before = session.ControllerImage!.ToString();
-
-        tools.RecordPendingPublish(new ProposeRungEditResult("proposed", RoutineXPath, 0u, 2u, "published"));
-
-        Assert.Equal(before, session.ControllerImage!.ToString());
-    }
-
-    private sealed class TestProbe : IEnvironmentProbe
-    {
-        public int CurrentSessionId { get; init; } = 1;
-        public bool IsElevated { get; init; }
-        public IReadOnlyList<int> LogixDesignerSessionIds { get; init; } = Array.Empty<int>();
-        public bool StudioIntegrityHigherThanCurrent { get; init; }
+        Assert.Equal(AfterPublish.Select(r => r.Text).ToArray(), Texts(session));
+        Assert.Equal(AfterPublish.Select(r => r.Type).ToArray(),
+            session.ControllerImage!.Programs.Single().Routines.Single().Rungs.Select(r => r.Type!.ToString()).ToArray());
     }
 }
 #endif

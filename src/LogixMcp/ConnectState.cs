@@ -21,6 +21,15 @@ public sealed record ConnectOutcome(
     IReadOnlyList<PhaseTiming>? PhaseTimings = null);
 
 /// <summary>
+/// The connect that produced the session the server currently holds.
+/// </summary>
+/// <param name="ConnectId">Id of the connect.</param>
+/// <param name="ConnectedAt">When that connect finished.</param>
+public sealed record LiveSessionStamp(
+    [property: JsonPropertyName("connectId")]   string         ConnectId,
+    [property: JsonPropertyName("connectedAt")] DateTimeOffset ConnectedAt);
+
+/// <summary>
 /// How long one connect phase started after the connect began, and how long it has run or ran.
 /// </summary>
 /// <param name="Phase">Phase name (a <see cref="ConnectPhases"/> value).</param>
@@ -48,9 +57,13 @@ public sealed record PhaseTiming(
 /// Progress text for a phase that is a note rather than a step (<see cref="ConnectPhases.SdkRestartText"/> while the
 /// retry waits for a restarted SDK service); <c>null</c> otherwise.
 /// </param>
+/// <param name="Provisional">
+/// <c>true</c> while the connect is only the tool-entry mark (see <see cref="ConnectState.BeginOwnConnect"/>) that no
+/// connect job has adopted yet; its id has not been handed to any caller.
+/// </param>
 public sealed record ConnectSnapshot(
     string ConnectId, string Phase, long ElapsedMs, IReadOnlyList<PhaseTiming>? PhaseTimings = null,
-    string? Message = null);
+    string? Message = null, bool Provisional = false);
 
 /// <summary>
 /// The payload returned when a connect outlives its synchronous budget.
@@ -92,6 +105,18 @@ public sealed class ConnectState
         DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull,
     };
 
+    // The tool filter's own-connect scope, visible to the tool it wraps (pattern of AuditLogger._logDirOverride).
+    private static readonly AsyncLocal<OwnScope?> _ambientScope = new();
+
+    /// <summary>
+    /// How long an id-less status poll waits for an own-connect mark when this server has no mark and no last
+    /// outcome. The tool filter marks synchronously, so a poll that arrives a moment ahead of the connect call
+    /// still answers <c>connecting</c>. Internal and settable so tests can shorten it.
+    /// </summary>
+    internal static TimeSpan NeverConnectedSettle = TimeSpan.FromMilliseconds(150);
+
+    private const int SettleStepMs = 10;
+
     private readonly object _gate = new();
     private string?   _connectId;
     private string?   _argsKey;
@@ -101,7 +126,12 @@ public sealed class ConnectState
     private Stopwatch? _clock;
     private Task?     _running;
     private ConnectOutcome? _last;
+    private (string Reason, DateTimeOffset At)? _closed;
     private string?   _commPath;
+    private bool      _provisional;
+    private DateTimeOffset _startedAt;
+    private readonly object _registryGate = new();
+    private string?   _registryFinalId;
     private readonly ConnectRegistry? _registry;
 
     /// <summary>
@@ -125,7 +155,7 @@ public sealed class ConnectState
                 return _connectId is null || _clock is null
                     ? null
                     : new ConnectSnapshot(_connectId, _phase, _clock.ElapsedMilliseconds,
-                        Timings(_clock.ElapsedMilliseconds), _message);
+                        Timings(_clock.ElapsedMilliseconds), _message, _provisional);
         }
     }
 
@@ -133,6 +163,46 @@ public sealed class ConnectState
     public ConnectOutcome? LastOutcome
     {
         get { lock (_gate) return _last; }
+    }
+
+    /// <summary>
+    /// Records that the session this server connected was closed (<c>logix_close_project</c>), so an id-less
+    /// <c>logix_connect_status</c> answers <c>status: "closed"</c> with the reason and time instead of the stale
+    /// <c>connected</c> outcome. The next <c>logix_connect</c> clears it. A connect id lookup still finds the outcome.
+    /// </summary>
+    /// <param name="reason">Why the session closed (for example <c>closed by logix_close_project</c>).</param>
+    public void MarkSessionClosed(string reason)
+    {
+        lock (_gate)
+        {
+            _closed = (reason, DateTimeOffset.UtcNow);
+            _liveSession = null;
+        }
+    }
+
+    private LiveSessionStamp? _liveSession;
+
+    /// <summary>
+    /// The connect that produced the session this server holds (set by <see cref="NoteSessionLive"/>), or <c>null</c>
+    /// when none was recorded or the session was closed. A later <c>logix_connect</c> reports it as <c>replacedSession</c>.
+    /// </summary>
+    public LiveSessionStamp? LiveSession
+    {
+        get { lock (_gate) return _liveSession; }
+    }
+
+    /// <summary>Records which connect produced the session now held; replaces any earlier record.</summary>
+    /// <param name="connectId">Id of the connect that finished.</param>
+    /// <param name="connectedAt">When it finished.</param>
+    public void NoteSessionLive(string connectId, DateTimeOffset connectedAt)
+    {
+        lock (_gate) _liveSession = new LiveSessionStamp(connectId, connectedAt);
+    }
+
+    /// <summary>Why and when the session was closed, or <c>null</c> when it was not (or a connect started since).</summary>
+    public (string Reason, DateTimeOffset At)? SessionClosed
+    {
+        get { lock (_gate) return _closed; }
     }
 
     /// <summary>Completes when the running connect (if any) has finished; used by tests and shutdown.</summary>
@@ -210,23 +280,44 @@ public sealed class ConnectState
         Stopwatch clock;
         Task<string> job;
         var detached = false;
+        DateTimeOffset startedAt;
 
         lock (_gate)
         {
             var guarded = GuardLocked(argsKey);
             if (guarded is not null) return guarded;
+            _closed = null;
 
-            id     = Guid.NewGuid().ToString("N");
-            clock  = Stopwatch.StartNew();
-            _connectId = id;
-            _argsKey   = argsKey;
-            _clock     = clock;
+            if (_provisional && _connectId is not null && _clock is not null)
+            {
+                // Adopt the tool-entry mark: same id, clock and start time, so the id-less status poll and the
+                // registry entry describe one connect from the first millisecond.
+                id         = _connectId;
+                clock      = _clock;
+                _argsKey   = argsKey;
+                _provisional = false;
+                _commPath  = commPath ?? _commPath;
+                commPath   = _commPath;
+                startedAt  = _startedAt;
+            }
+            else
+            {
+                id     = Guid.NewGuid().ToString("N");
+                clock  = Stopwatch.StartNew();
+                _connectId = id;
+                _argsKey   = argsKey;
+                _clock     = clock;
+                _provisional = false;
+                _commPath  = commPath;
+                _startedAt = _registry?.Now ?? DateTimeOffset.UtcNow;
+                startedAt  = _startedAt;
+            }
             _phase     = StartingPhase;
             _message   = null;
-            _commPath  = commPath;
             _phases.Clear();
         }
-        RegistryWrite(id, StartingPhase, 0, ConnectRegistry.StatusConnecting, null, commPath);
+        // The registry entry exists before the connectId can reach any caller.
+        RegistryWrite(id, StartingPhase, 0, ConnectRegistry.StatusConnecting, null, commPath, startedAt);
 
         var sink = new PhaseSink(this, id, forward, () => Volatile.Read(ref detached));
         try
@@ -271,8 +362,157 @@ public sealed class ConnectState
             if (_connectId == id)
                 return Serialize(id, _phase, clock.ElapsedMilliseconds);
         }
+        await tracked.ConfigureAwait(false);    // the finished entry is registered before the result is returned
         return await job.ConfigureAwait(false);
     }
+
+    /// <summary>
+    /// Marks this instance's own connect as started (phase <c>starting</c>) for a connect that does not run through
+    /// <see cref="RunAsync"/> (a cip, l5x or Tasks-client connect, or the handler called directly), so an id-less
+    /// status poll answers <c>connecting</c> from the first millisecond and never falls through to the registry.
+    /// </summary>
+    /// <param name="commPath">Communication path of the connect; may be <c>null</c>.</param>
+    /// <param name="argsKey">
+    /// Canonical argument key of the connect (see <see cref="ArgsKeyFor"/>); lets <see cref="GuardAfterOwnMark"/> compare
+    /// a concurrent call against the provisional mark. May be <c>null</c>.
+    /// </param>
+    /// <returns>
+    /// A scope that clears the mark when disposed, but only while the mark is still provisional. The mark is
+    /// provisional until <see cref="RunAsync"/> adopts it; while it is, <see cref="Guard"/> lets a call through and an
+    /// id-less status poll reports <c>connecting</c>/<c>starting</c> without a connect id. When a connect is already in
+    /// flight (the handler runs inside <see cref="RunAsync"/>, or the tool already marked it) the scope does nothing.
+    /// </returns>
+    public IDisposable BeginOwnConnect(string? commPath = null, string? argsKey = null)
+    {
+        lock (_gate)
+        {
+            if (_connectId is not null) return NoopScope.Instance;
+            _closed = null;
+            var id = Guid.NewGuid().ToString("N");
+            _connectId = id;
+            _argsKey   = argsKey;
+            _clock     = Stopwatch.StartNew();
+            _phase     = StartingPhase;
+            _message   = null;
+            _commPath  = commPath;
+            _provisional = true;
+            _startedAt = _registry?.Now ?? DateTimeOffset.UtcNow;
+            _phases.Clear();
+            var scope = new OwnScope(this, id);
+            _ambientScope.Value = scope;
+            return scope;
+        }
+    }
+
+    /// <summary>
+    /// The own-connect scope the tool filter took for this call, when one is active for this state and its mark is
+    /// still provisional (not yet adopted by <see cref="RunAsync"/>).
+    /// </summary>
+    /// <returns>The filter's scope, or <c>null</c> when the tool must take its own mark.</returns>
+    public IDisposable? AmbientOwnConnect()
+    {
+        var scope = _ambientScope.Value;
+        if (scope is null || !ReferenceEquals(scope.Owner, this)) return null;
+        lock (_gate)
+            return _connectId == scope.Id && _provisional ? scope : null;
+    }
+
+    /// <summary>
+    /// Guard for a tool call that has already taken <see cref="BeginOwnConnect"/>. The caller's own provisional mark
+    /// never blocks it (returns <c>null</c>); a mark that another call set (the scope is a no-op) or a connect that
+    /// <see cref="RunAsync"/> adopted is judged like <see cref="Guard"/>: the in-flight status for the same arguments,
+    /// <c>ConnectInProgress</c> for different ones.
+    /// </summary>
+    /// <param name="argsKey">Canonical argument key of this call.</param>
+    /// <param name="ownScope">The scope <see cref="BeginOwnConnect"/> returned to this call.</param>
+    /// <returns>The refusal or in-flight payload, or <c>null</c> when this call may proceed.</returns>
+    public string? GuardAfterOwnMark(string? argsKey, IDisposable ownScope)
+    {
+        bool provisionalOfOther;
+        lock (_gate)
+        {
+            if (_connectId is null || _clock is null) return null;
+            if (!_provisional) return GuardLocked(argsKey);
+            if (ownScope is OwnScope own && own.Id == _connectId) return null;
+            provisionalOfOther = true;
+            if (argsKey is not null && _argsKey is not null
+                && !string.Equals(argsKey, _argsKey, StringComparison.Ordinal))
+                return InProgressError(_connectId, _phase, _clock.ElapsedMilliseconds,
+                    "A logix_connect with different arguments is already in progress; this call was refused and nothing was started.");
+        }
+        // Same arguments: answer like an id-less status poll (the provisional mark has no id to hand out yet).
+        return provisionalOfOther ? GetStatusJson() : null;
+    }
+
+    private void EndOwnConnect(string id)
+    {
+        lock (_gate)
+        {
+            if (_connectId != id || !_provisional) return;
+            _clock?.Stop();
+            _connectId = null;
+            _provisional = false;
+            _argsKey   = null;
+            _clock     = null;
+            _phase     = StartingPhase;
+            _message   = null;
+            _commPath  = null;
+            _phases.Clear();
+        }
+    }
+
+    private sealed class NoopScope : IDisposable
+    {
+        public static readonly NoopScope Instance = new();
+        public void Dispose() { }
+    }
+
+    private sealed class OwnScope(ConnectState owner, string id) : IDisposable
+    {
+        public string Id => id;
+        public ConnectState Owner => owner;
+        private int _done;
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _done, 1) == 0)
+            {
+                if (ReferenceEquals(_ambientScope.Value, this)) _ambientScope.Value = null;
+                owner.EndOwnConnect(id);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Builds the canonical key of a <c>logix_connect</c> call from its raw arguments, with the tool's defaults for
+    /// anything missing. Same order and values as <c>LogixTagTools.ConnectArgsKey</c>: gateway, path, useVirtual,
+    /// backend, sdkMode, allowControllerDownload, sdkCommPath, confirmedByUser.
+    /// </summary>
+    /// <param name="arguments">The raw call arguments; may be <c>null</c>.</param>
+    /// <returns>The key, comparable with <see cref="ArgsKeyFor"/>.</returns>
+    public static string ArgsKeyFromArguments(IReadOnlyDictionary<string, JsonElement>? arguments) =>
+        ArgsKeyFor(
+            StringArg(arguments, "gateway") ?? "",
+            StringArg(arguments, "path") ?? "",
+            BoolArg(arguments, "useVirtual"),
+            StringArg(arguments, "backend") ?? "cip",
+            StringArg(arguments, "sdkMode") ?? "offline",
+            BoolArg(arguments, "allowControllerDownload"),
+            StringArg(arguments, "sdkCommPath"),
+            BoolArg(arguments, "confirmedByUser"));
+
+    /// <summary>The communication path of a <c>logix_connect</c> call: <c>sdkCommPath</c> when non-blank, else <c>path</c>.</summary>
+    /// <param name="arguments">The raw call arguments; may be <c>null</c>.</param>
+    /// <returns>The path, or <c>null</c> when neither is given.</returns>
+    public static string? CommPathFromArguments(IReadOnlyDictionary<string, JsonElement>? arguments) =>
+        StringArg(arguments, "sdkCommPath") is { } c && !string.IsNullOrWhiteSpace(c) ? c : StringArg(arguments, "path");
+
+    private static string? StringArg(IReadOnlyDictionary<string, JsonElement>? args, string name) =>
+        args is not null && args.TryGetValue(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+
+    private static bool BoolArg(IReadOnlyDictionary<string, JsonElement>? args, string name) =>
+        args is not null && args.TryGetValue(name, out var v)
+        && (v.ValueKind == JsonValueKind.True
+            || (v.ValueKind == JsonValueKind.String && bool.TryParse(v.GetString(), out var b) && b));
 
     /// <summary>
     /// Builds the canonical key of a <c>logix_connect</c> argument set, so two calls can be compared.
@@ -304,7 +544,7 @@ public sealed class ConnectState
     /// <summary>Guard body. Caller holds <c>_gate</c>.</summary>
     private string? GuardLocked(string? argsKey)
     {
-        if (_connectId is null || _clock is null) return null;
+        if (_connectId is null || _clock is null || _provisional) return null;
         var elapsed = _clock.ElapsedMilliseconds;
         return argsKey is null || _argsKey is null || string.Equals(argsKey, _argsKey, StringComparison.Ordinal)
             ? Serialize(_connectId, _phase, elapsed)
@@ -385,13 +625,16 @@ public sealed class ConnectState
 
         ConnectOutcome done;
         string? comm;
+        DateTimeOffset started;
         lock (_gate)
         {
             if (_connectId != id) return;
             done = _last = new ConnectOutcome(id, json, error, clock.ElapsedMilliseconds, DateTimeOffset.UtcNow,
                 thrown, _phase, Timings(clock.ElapsedMilliseconds));
             comm = _commPath;
+            started = _startedAt;
             _connectId = null;
+            _provisional = false;
             _argsKey   = null;
             _clock     = null;
             _phase     = StartingPhase;
@@ -401,18 +644,25 @@ public sealed class ConnectState
         }
         RegistryWrite(id, done.Phase, done.ElapsedMs,
             IsFailed(done.ResponseJson) ? ConnectRegistry.StatusFailed : ConnectRegistry.StatusConnected,
-            done.CompletedAt, comm);
+            done.CompletedAt, comm, started);
     }
 
     /// <summary>Mirrors the connect to the cross-instance registry. Advisory: never throws.</summary>
     private void RegistryWrite(
-        string id, string phase, long elapsedMs, string status, DateTimeOffset? completedAt, string? commPath)
+        string id, string phase, long elapsedMs, string status, DateTimeOffset? completedAt, string? commPath,
+        DateTimeOffset startedAt)
     {
         if (_registry is null) return;
         try
         {
-            _registry.Write(new ConnectRegistryEntry(
-                id, _registry.Pid, _registry.StartedAt, commPath, phase, elapsedMs, status, completedAt));
+            lock (_registryGate)
+            {
+                // A late progress write must not overwrite the finished entry with 'connecting'.
+                if (completedAt is not null) _registryFinalId = id;
+                else if (string.Equals(_registryFinalId, id, StringComparison.Ordinal)) return;
+                _registry.Write(new ConnectRegistryEntry(
+                    id, _registry.Pid, _registry.StartedAt, commPath, phase, elapsedMs, status, completedAt, startedAt));
+            }
         }
         catch (Exception) { /* the registry is advisory; it must never fail a connect */ }
     }
@@ -433,12 +683,15 @@ public sealed class ConnectState
     {
         string phase;
         string? comm;
+        DateTimeOffset started;
         lock (_gate)
         {
             if (_connectId != id) return;
             phase = _phase;
             comm = _commPath;
+            started = _startedAt;
             _connectId = null;
+            _provisional = false;
             _argsKey   = null;
             _clock     = null;
             _phase     = StartingPhase;
@@ -446,7 +699,7 @@ public sealed class ConnectState
             _commPath  = null;
             _phases.Clear();
         }
-        RegistryWrite(id, phase, 0, ConnectRegistry.StatusFailed, DateTimeOffset.UtcNow, comm);
+        RegistryWrite(id, phase, 0, ConnectRegistry.StatusFailed, DateTimeOffset.UtcNow, comm, started);
     }
 
     private void SetPhase(
@@ -455,6 +708,7 @@ public sealed class ConnectState
     {
         long registryElapsed;
         string? registryComm;
+        DateTimeOffset registryStarted;
         lock (_gate)
         {
             if (_connectId != id || _clock is null) return;
@@ -478,8 +732,9 @@ public sealed class ConnectState
             _phases.Add((phase, started, ownerPid, outcome, durationMs, error));
             registryElapsed = now;
             registryComm = _commPath;
+            registryStarted = _startedAt;
         }
-        RegistryWrite(id, phase, registryElapsed, ConnectRegistry.StatusConnecting, null, registryComm);
+        RegistryWrite(id, phase, registryElapsed, ConnectRegistry.StatusConnecting, null, registryComm, registryStarted);
     }
 
     /// <summary>Builds the phase timings from the recorded phase starts. Caller holds <c>_gate</c>.</summary>
@@ -515,6 +770,32 @@ public sealed class ConnectState
     }
 
     /// <summary>
+    /// Like <see cref="GetStatusJson"/>, but an id-less poll that finds neither a mark nor a last outcome first waits
+    /// (10 ms steps, up to <see cref="NeverConnectedSettle"/>) for an own-connect mark, so a poll racing the connect
+    /// call's tool-entry mark answers <c>connecting</c> instead of <c>NoConnectInProgress</c>.
+    /// </summary>
+    /// <param name="connectId">See <see cref="GetStatusJson"/>.</param>
+    /// <param name="cancellationToken">Stops the wait early.</param>
+    /// <returns>The serialized tool payload.</returns>
+    public async Task<string> GetStatusJsonAsync(string? connectId = null, CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrEmpty(connectId))
+        {
+            var deadline = Stopwatch.StartNew();
+            while (deadline.Elapsed < NeverConnectedSettle)
+            {
+                lock (_gate)
+                    if (_connectId is not null || _last is not null) break;
+                var left = NeverConnectedSettle - deadline.Elapsed;
+                if (left <= TimeSpan.Zero) break;
+                await Task.Delay(left < TimeSpan.FromMilliseconds(SettleStepMs) ? left : TimeSpan.FromMilliseconds(SettleStepMs),
+                    cancellationToken).ConfigureAwait(false);
+            }
+        }
+        return GetStatusJson(connectId);
+    }
+
+    /// <summary>
     /// Adds <c>serverInstance</c> to a tool payload.
     /// </summary>
     /// <param name="json">The payload; anything that is not a JSON object is returned unchanged.</param>
@@ -534,25 +815,51 @@ public sealed class ConnectState
     {
         ConnectSnapshot? current;
         ConnectOutcome? last;
+        (string Reason, DateTimeOffset At)? closed;
         lock (_gate)
         {
             current = Current;
             last    = _last;
+            closed  = _closed;
         }
 
+        // The session was closed (logix_close_project) and no connect has started since: the earlier outcome is
+        // history, not a live connection. A poll by connectId still reads that outcome.
+        if (closed is { } gone && current is null && string.IsNullOrEmpty(connectId))
+        {
+            var c = new JsonObject
+            {
+                ["status"]   = "closed",
+                ["reason"]   = gone.Reason,
+                ["closedAt"] = gone.At.UtcDateTime.ToString("yyyy-MM-ddTHH:mm:ssZ"),
+                ["hint"]     = $"The session was closed. Call {TasksSupport.ConnectToolName} to connect again.",
+            };
+            if (last is not null) c["lastConnectId"] = last.ConnectId;
+            return c;
+        }
+
+        // An own connect in flight is answered from this instance's state alone: the registry holds only other
+        // instances' history, and consulting it here is how a dead instance's old connect got reported.
+        var ownInFlight = current is not null && string.IsNullOrEmpty(connectId);
         var mismatch = !string.IsNullOrEmpty(connectId)
             && !string.Equals(connectId, current?.ConnectId, StringComparison.Ordinal)
             && !string.Equals(connectId, last?.ConnectId, StringComparison.Ordinal);
-        if (mismatch || (current is null && last is null))
+        if (!ownInFlight && (mismatch || (current is null && last is null)))
         {
             var foreign = FindForeign(connectId);
-            if (foreign is not null) return OwnedByOther(foreign);
+            if (foreign is not null) return OwnedByOther(foreign, _registry?.Now ?? DateTimeOffset.UtcNow);
         }
 
         if (current is not null)
         {
             var o = Head("connecting", current.ConnectId, current.Phase, current.ElapsedMs, current.PhaseTimings);
             o["pollWith"] = PollTool;
+            if (current.Provisional)
+            {
+                // The tool-entry mark: no connect job has started yet, so there is no id to hand out.
+                o.Remove("connectId");
+                o["hint"] = $"The connect is starting. Call {PollTool} again until it reports connected or failed.";
+            }
             if (current.Message is { } progressText) o["progress"] = progressText;
             return o;
         }
@@ -578,6 +885,10 @@ public sealed class ConnectState
             result["error"] = last.Error ?? body;
             return result;
         }
+        // The connect result's phaseTimings is the ConnectPhaseTimings summary object; the status keeps the live
+        // log under phaseTimings (an array), so the summary travels as phaseTimingsSummary.
+        if (original.TryGetPropertyValue("phaseTimings", out var summary) && summary is JsonObject)
+            result["phaseTimingsSummary"] = summary.DeepClone();
         foreach (var (name, value) in original.ToArray())
         {
             if (result.ContainsKey(name)) continue;
@@ -600,14 +911,22 @@ public sealed class ConnectState
                 // A connect still marked in progress whose owner is gone will never finish: not an owner to report.
                 return e.CompletedAt is null && !_registry.IsOwnerAlive(e) ? null : e;
             }
-            return _registry.FindMostRecentInProgress();
+            // This change requirement 2(b): an id-less poll reports the most recent connect by any other instance.
+            // A connect still in progress comes first; otherwise the latest one that finished within the age limit,
+            // so a poll made just after the owner finished still learns the outcome instead of "no connect".
+            return _registry.FindMostRecentInProgress() ?? _registry.FindMostRecent(includeFinished: true);
         }
         catch (Exception) { return null; }
     }
 
-    private static JsonObject OwnedByOther(ConnectRegistryEntry e)
+    private static JsonObject OwnedByOther(ConnectRegistryEntry e, DateTimeOffset now)
     {
         var finished = e.CompletedAt is not null || e.Status != ConnectRegistry.StatusConnecting;
+        // Real elapsed time: now - StartedAt while running, the final total once finished; unknown (null) for an
+        // entry written by an older server that recorded no start time.
+        long? elapsed = e.StartedAt is { } began
+            ? Math.Max(0, (long)((finished && e.CompletedAt is { } ended ? ended : now) - began).TotalMilliseconds)
+            : null;
         var o = new JsonObject
         {
             ["error"]     = finished
@@ -618,9 +937,10 @@ public sealed class ConnectState
             ["connectId"] = e.ConnectId,
             ["ownerPid"]  = e.OwnerPid,
             ["phase"]     = e.Phase,
-            ["elapsedMs"] = e.ElapsedMs,
+            ["elapsedMs"] = elapsed,
             ["finished"]  = finished,
         };
+        if (e.StartedAt is { } startedAt) o["startedAt"] = startedAt;
         if (e.CommPath is { Length: > 0 } cp) o["commPath"] = cp;
         if (e.CompletedAt is { } at) o["completedAt"] = at;
         o["hint"] = finished

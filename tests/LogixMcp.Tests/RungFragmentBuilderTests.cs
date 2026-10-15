@@ -85,6 +85,16 @@ public class RungFragmentBuilderTests
     }
 
     [Fact]
+    public void Typed_CommentWithNonBmpCharacter_RoundTrips()
+    {
+        const string comment = "pump \U0001F600 start <&> \u00e9";
+        var doc = Build(Envelope, 0, new[] { new RungInput("XIC(A)OTE(B);", comment) });
+
+        var rung = doc.Descendants("RLLContent").Single().Elements("Rung").Single();
+        Assert.Equal(comment, rung.Element("Comment")!.Value);
+    }
+
+    [Fact]
     public void Typed_NumbersRungsFromInsertPosition_CdataTextAndComment()
     {
         var doc = Build(Envelope, 3, new[]
@@ -102,7 +112,8 @@ public class RungFragmentBuilderTests
         Assert.Equal("XIC(A)OTE(B);", rungs[0].Element("Text")!.Value);
         Assert.All(rungs[0].Element("Text")!.Nodes(), n => Assert.IsType<XCData>(n));
         Assert.Equal("first <&> comment", rungs[0].Element("Comment")!.Value);
-        Assert.All(rungs[0].Element("Comment")!.Nodes(), n => Assert.IsType<XCData>(n));
+        // The comment is handed to the XElement as a raw string (not CDATA) so every character round-trips.
+        Assert.All(rungs[0].Element("Comment")!.Nodes(), n => Assert.IsNotType<XCData>(n));
         Assert.Equal("Comment", rungs[0].Elements().First().Name.LocalName);
 
         // No comment given: no Comment element at all.

@@ -233,11 +233,12 @@ public class ReadToolTests
         // Cmd_Motor exists in MemberTagL5Xml; NonExistentMember does not.
         var result = await ReadTagHandler.ExecuteAsync("Cmd_Motor.NonExistentMember", session);
 
-        var notFound = Assert.IsType<ReadTagNotFound>(result);
-        Assert.Equal("not_found",                    notFound.Status);
-        Assert.Equal("member",                       notFound.What);
-        Assert.Equal("Cmd_Motor.NonExistentMember",  notFound.Path);
-        Assert.Null(notFound.SdkError);
+        // an earlier change: a missing member is the typed MemberNotFound refusal, naming the full path and listing the members.
+        var err = Assert.IsType<ReadTagError>(result);
+        Assert.Equal(ErrorKinds.MemberNotFound, err.Kind);
+        Assert.Equal("Cmd_Motor.NonExistentMember", err.Tag);
+        Assert.Contains("NonExistentMember", err.Error);
+        Assert.Contains("Members:", err.Error);
     }
 
     /// <summary>
@@ -260,11 +261,10 @@ public class ReadToolTests
         // Recipe_Working exists in MemberTagL5Xml (MotorCmd type); NoSuchMember does not.
         var result = await ReadTagHandler.ExecuteAsync("Recipe_Working.NoSuchMember", session);
 
-        var notFound = Assert.IsType<ReadTagNotFound>(result);
-        Assert.Equal("not_found",                       notFound.Status);
-        Assert.Equal("member",                          notFound.What);
-        Assert.Equal("Recipe_Working.NoSuchMember",     notFound.Path);
-        Assert.Null(notFound.SdkError);
+        var err = Assert.IsType<ReadTagError>(result);
+        Assert.Equal(ErrorKinds.MemberNotFound, err.Kind);
+        Assert.Equal("Recipe_Working.NoSuchMember", err.Tag);
+        Assert.Contains("Recipe_Working.NoSuchMember", err.Error);
     }
 }
 #endif

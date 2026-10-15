@@ -625,7 +625,6 @@ public class TraceOriginTests : IDisposable
     [Theory]
     [InlineData("", null, null, "tag is required")]
     [InlineData("Program:Main.Out", 0, null, "maxDepth")]
-    [InlineData("Program:Main.Out", null, "NoSuchProgram", "focus")]
     [InlineData("Program:Main.Nope", null, null, "not declared")]
     public void TraceOrigin_BadInput_ReturnsInvalidValueError(string tag, int? maxDepth, string? focus, string expected)
     {
@@ -635,6 +634,19 @@ public class TraceOriginTests : IDisposable
 
         Assert.Contains(expected, r.GetProperty("error").GetString());
         Assert.Equal(ErrorKinds.InvalidValue, r.GetProperty("kind").GetString());
+    }
+
+    /// <summary>A focus that names no program is a typed ProgramNotFound that lists the programs.</summary>
+    [Fact]
+    public void TraceOrigin_FocusNamingNoProgram_ReturnsProgramNotFound()
+    {
+        var project = Project(Program("Main", Tag("Out"), Rll("Main", "OTE(Out);")));
+
+        var r = Json(TraceOriginHandler.Execute(project, "Program:Main.Out", null, "NoSuchProgram"));
+
+        Assert.Equal(ErrorKinds.ProgramNotFound, r.GetProperty("kind").GetString());
+        Assert.Contains("focus", r.GetProperty("error").GetString());
+        Assert.Contains("Main", r.GetProperty("hint").GetString());
     }
 
     /// <summary>An unknown format is refused.</summary>
@@ -741,5 +753,61 @@ public class TraceOriginTests : IDisposable
                 _ = TraceRenderer.Mermaid(graph);
             }
         }
+    }
+
+    // ── Pending rungs ───────────────────────────
+
+    /// <summary>One pending writer is "also writes"; several are "also write".</summary>
+    [Theory]
+    [InlineData(1, "also writes")]
+    [InlineData(2, "also write ")]
+    public void ExcludedPendingWriters_NoteAgreesWithTheNumberOfRungs(int pendingRungs, string expected)
+    {
+        var rungs = new List<(string, string)> { ("XIC(A)OTE(B);", "N") };
+        for (var i = 0; i < pendingRungs; i++) rungs.Add(("XIC(A)OTE(B);", "I"));
+        var (svc, session) = PendingImageFixture.Online(["A", "B"], rungs.ToArray());
+
+        var response = Assert.IsType<TraceOriginResponse>(
+            TraceOriginHandler.Execute(svc, "B", session: session, includePending: false));
+
+        Assert.Contains(expected, response.Note);
+        Assert.Equal(pendingRungs, response.PendingWriters!.Count);
+    }
+
+    /// <summary>With includePending the write nodes of staged, pending and tested rungs say so, and the note names them.</summary>
+    [Fact]
+    public void IncludePending_LabelsPendingWriteNodes_AndNoteNamesThem()
+    {
+        var (svc, session) = PendingImageFixture.Online(["A", "B"],
+            ("XIC(A)OTE(B);", "N"), ("XIC(A)OTE(B);", "e"), ("XIC(A)OTE(B);", "I"));
+
+        var response = Assert.IsType<TraceOriginResponse>(
+            TraceOriginHandler.Execute(svc, "B", format: "json", session: session, includePending: true));
+
+        Assert.NotNull(response.PendingIncluded);
+        Assert.Contains(response.PendingIncluded!, w => w.RungIndex == 1 && w.State == "staged");
+        Assert.Contains(response.PendingIncluded!, w => w.RungIndex == 2 && w.State == "pending");
+        Assert.DoesNotContain(response.PendingIncluded!, w => w.RungIndex == 0);
+        Assert.Contains("1 staged rung", response.Note);
+        Assert.Contains("1 pending rung", response.Note);
+        Assert.Contains(response.Nodes!, n => n.Note is not null && n.Note.Contains("staged", StringComparison.Ordinal));
+        Assert.Contains(response.Nodes!, n => n.Note is not null && n.Note.Contains("pending", StringComparison.Ordinal));
+
+        session.SetZoneTested("MainProgram", true);
+        var tested = Assert.IsType<TraceOriginResponse>(
+            TraceOriginHandler.Execute(svc, "B", format: "json", session: session, includePending: true));
+        Assert.Contains(tested.PendingIncluded!, w => w.RungIndex == 2 && w.State == "tested");
+        Assert.Contains("1 tested rung", tested.Note);
+    }
+
+    [Fact]
+    public void IncludePending_WithNoPendingRungs_HasNoIncludedLabels()
+    {
+        var (svc, session) = PendingImageFixture.Online(["A", "B"], ("XIC(A)OTE(B);", "N"));
+
+        var response = Assert.IsType<TraceOriginResponse>(
+            TraceOriginHandler.Execute(svc, "B", session: session, includePending: true));
+
+        Assert.Null(response.PendingIncluded);
     }
 }

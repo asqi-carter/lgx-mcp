@@ -69,6 +69,7 @@ public class ConnectBudgetTests
     {
         var node = System.Text.Json.Nodes.JsonNode.Parse(json)!.AsObject();
         node.Remove("phaseTimings");
+        node.Remove("phaseTimingsSummary");
         return node.ToJsonString();
     }
 
@@ -182,18 +183,19 @@ public class ConnectBudgetTests
 
         using var first = JsonDocument.Parse(await Connect(tools, TimeSpan.FromMilliseconds(30)));
         Assert.Equal("connecting", first.RootElement.GetProperty("status").GetString());
-        using var running = JsonDocument.Parse(tools.ConnectStatus());
+        using var running = JsonDocument.Parse(await tools.ConnectStatus());
         Assert.Equal("connecting", running.RootElement.GetProperty("status").GetString());
 
         await state.Completion.WaitAsync(TimeSpan.FromSeconds(10));
 
         var today = System.Text.Json.Nodes.JsonNode.Parse(await plain.GetConnectResponseAsync(
             backend: "sdk", sdkMode: "online", sdkCommPath: CommPath))!.AsObject();
-        var done = System.Text.Json.Nodes.JsonNode.Parse(tools.ConnectStatus())!.AsObject();
+        var done = System.Text.Json.Nodes.JsonNode.Parse(await tools.ConnectStatus())!.AsObject();
         Assert.Equal("connected", done["status"]!.GetValue<string>());
         Assert.Equal(first.RootElement.GetProperty("connectId").GetString(), done["connectId"]!.GetValue<string>());
-        foreach (var f in new[] { "connectId", "phase", "elapsedMs", "phaseTimings", "connected", "serverInstance" }) done.Remove(f);
+        foreach (var f in new[] { "connectId", "phase", "elapsedMs", "phaseTimings", "phaseTimingsSummary", "connected", "connectedBackend", "serverInstance" }) done.Remove(f);
         today.Remove("phaseTimings");
+        today.Remove("phaseTimingsSummary");
         Assert.True(System.Text.Json.Nodes.JsonNode.DeepEquals(today, done));
     }
 
@@ -206,7 +208,7 @@ public class ConnectBudgetTests
         await Connect(tools, TimeSpan.FromMilliseconds(10));
         await state.Completion.WaitAsync(TimeSpan.FromSeconds(10));
 
-        using var json = JsonDocument.Parse(tools.ConnectStatus());
+        using var json = JsonDocument.Parse(await tools.ConnectStatus());
         Assert.Equal("failed", json.RootElement.GetProperty("status").GetString());
         Assert.False(string.IsNullOrEmpty(json.RootElement.GetProperty("error").GetString()));
         Assert.False(string.IsNullOrEmpty(json.RootElement.GetProperty("kind").GetString()));

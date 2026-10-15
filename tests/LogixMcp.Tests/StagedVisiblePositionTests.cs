@@ -7,7 +7,7 @@ using Task = System.Threading.Tasks.Task;
 namespace LogixMcp.Tests;
 
 /// <summary>
-/// logix-mcp-qpqy.3 (F3): positions in hints, conflicts and inserts count the rungs the user will see after the
+/// Positions in hints, conflicts and inserts count the rungs the user will see after the
 /// publish (original rungs not replaced, plus staged rungs). The staged image still holds a replaced original;
 /// it is never counted. an earlier change: the real session image codes are er (staged replacement), e (staged insert),
 /// rN (replaced original), dN (deleted original); I/R/D appear only in a pending-zone image

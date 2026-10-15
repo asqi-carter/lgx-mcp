@@ -107,7 +107,7 @@ public class MnemonicSetCheckerTests
         Assert.False(Check(36, "MOVE(SQR(a),b);").Refused);
     }
 
-    // 2026-10-08 SDK probe (as reported in task logix-mcp-vazn.6; no probe log checked in): CMP(dA=>dB) and CMP(dA=<dB) are accepted on v38.
+    // 2026-10-08 SDK probe (as reported; no probe log checked in): CMP(dA=>dB) and CMP(dA=<dB) are accepted on v38.
     [Fact]
     public void ArrowOperators_AreAcceptedOnRev38_InExpressions()
     {

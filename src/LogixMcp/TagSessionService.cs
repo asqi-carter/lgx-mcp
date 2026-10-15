@@ -56,7 +56,7 @@ public class TagSessionService : IDisposable
     /// Closes the active SDK session when the server shuts down (the host disposes this
     /// singleton), through the same seam <c>logix_close_project</c> uses. Without it an exiting
     /// server leaves its project open in LdSdkServer until the keep-alive reaper disposes it,
-    /// and that reaper crashes the service (#37). Best effort; never throws.
+    /// and that reaper crashes the service. Best effort; never throws.
     /// </summary>
     public void Dispose()
     {
@@ -65,6 +65,13 @@ public class TagSessionService : IDisposable
         catch { /* best effort at shutdown */ }
         GC.SuppressFinalize(this);
     }
+
+    /// <summary>
+    /// The connect state this session service reports to: <c>logix_close_project</c> marks it closed so the
+    /// id-less <c>logix_connect_status</c> stops answering <c>connected</c>. Set by the tool class that owns both;
+    /// <c>null</c> when none is wired (tests, core-only use).
+    /// </summary>
+    public ConnectState? ConnectState { get; set; }
 
     private ITagService? _service;
     private bool _isVirtual;
@@ -80,6 +87,11 @@ public class TagSessionService : IDisposable
     private readonly HashSet<string> _staleImagePrograms = new(StringComparer.OrdinalIgnoreCase);
     private readonly SemaphoreSlim _imageRefreshGate = new(1, 1);
     private (L5X Session, L5X Accepted)? _acceptedCache;
+    private readonly Dictionary<string, string> _staleBecause = new(StringComparer.OrdinalIgnoreCase);
+    private readonly SemaphoreSlim _fingerprintGate = new(1, 1);
+    private DateTimeOffset? _fingerprintAt;
+    private ControllerChangeInfo? _controllerChange;
+    private string? _refreshedBecause;
 
     // Routines ("Program/Routine") and tag names changed live by this session.
     private readonly HashSet<string> _liveEditedRoutines = new(StringComparer.OrdinalIgnoreCase);
@@ -360,6 +372,31 @@ public class TagSessionService : IDisposable
         }
     }
 
+    private readonly Dictionary<string, bool> _zoneTested = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Records whether a program's pending-edits zone is tested (<c>true</c>), untested (<c>false</c>) or
+    /// unknown (<c>null</c>, which forgets the program). Stamped from the pending-edits read and the test /
+    /// untest verbs; cleared on accept, cancel, assemble, <see cref="Attach"/> and <see cref="Detach"/>.
+    /// </summary>
+    public void SetZoneTested(string program, bool? tested)
+    {
+        if (string.IsNullOrWhiteSpace(program)) return;
+        lock (_zoneTested)
+        {
+            if (tested is { } t) _zoneTested[program.Trim()] = t;
+            else _zoneTested.Remove(program.Trim());
+        }
+    }
+
+    /// <summary>The recorded zone-tested state of <paramref name="program"/>, or <c>null</c> when it is not known.</summary>
+    public bool? ZoneTested(string? program)
+    {
+        if (string.IsNullOrWhiteSpace(program)) return null;
+        lock (_zoneTested)
+            return _zoneTested.TryGetValue(program.Trim(), out var t) ? t : null;
+    }
+
     /// <summary>
     /// Marks the controller image stale because this session changed the controller or the session image.
     /// The next analysis call refreshes it (see <see cref="RefreshControllerImageAsync"/>).
@@ -373,6 +410,23 @@ public class TagSessionService : IDisposable
         else _staleImagePrograms.Add(program.Trim());
         if (controllerTags) _imageStaleControllerTags = true;
     }
+
+    /// <summary>
+    /// Marks <paramref name="program"/> of the controller image stale because the controller changed outside this
+    /// session (<see cref="OutOfBandReason"/>). The next successful refresh of the program records the reason, so the
+    /// first read after it carries <c>imageRefreshedBecause</c> (see <see cref="TakeImageRefreshedBecause"/>).
+    /// </summary>
+    /// <param name="program">The program whose content differs from the image.</param>
+    /// <param name="because">Why the program is stale.</param>
+    public void MarkImageStale(string program, string because)
+    {
+        if (_controllerImage is null || string.IsNullOrWhiteSpace(program)) return;
+        MarkImageStale(program);
+        _staleBecause[program.Trim()] = because;
+    }
+
+    /// <summary>The reason an image refresh is forced when the fingerprint shows the controller changed under the session.</summary>
+    public const string OutOfBandReason = "controller changed outside this session";
 
     /// <summary>
     /// Note to attach to an analysis result that ran on an image which could not be brought up to date, or
@@ -404,9 +458,12 @@ public class TagSessionService : IDisposable
             if (source is null)
             {
                 _imageRefreshError = "this session cannot export from the controller";
+                SessionImageState.MarkStale(this, $"refresh of the controller image failed: {_imageRefreshError}");
                 return false;
             }
 
+            string? failedProgram = null;
+            string? because       = null;
             try
             {
                 // Work on a copy so a failed export leaves the image as it was.
@@ -414,12 +471,18 @@ public class TagSessionService : IDisposable
                 var programs = _imageStaleAll
                     ? next.Programs.Select(p => p.Name.ToString()).ToList()
                     : _staleImagePrograms.ToList();
+                because = programs.Select(p => _staleBecause.TryGetValue(p, out var b) ? b : null).FirstOrDefault(b => b is not null);
                 foreach (var program in programs)
                 {
+                    failedProgram = program;
                     var text = await source.ExportProgramL5xAsync(program, ct).ConfigureAwait(false);
                     if (!ControllerImageRefresh.MergeProgram(next, text, program))
                         throw new InvalidOperationException($"the export held no program '{program}'");
+                    // The export can show this session's workstation-staged rungs as plain N: stamp them IR/I (and the
+                    // originals they displace R/D) so the accepted view never holds a plain copy. Nothing else is replayed.
+                    next = SessionImageState.ReapplyStaged(this, next, program, (source as IStagedRungSource)?.StagedBlocks(program));
                 }
+                failedProgram = null;
                 if (_imageStaleAll || _imageStaleControllerTags)
                 {
                     var text = await source.ExportControllerTagsL5xAsync(ct).ConfigureAwait(false);
@@ -428,12 +491,18 @@ public class TagSessionService : IDisposable
 
                 _controllerImage            = next;
                 _controllerImageRefreshedAt = DateTimeOffset.UtcNow;
+                if (because is not null) _refreshedBecause = because;
                 ClearImageStaleness();
+                // The stale mark is keyed by the image's take time; clear it after the new image is installed.
+                SessionImageState.ClearStale(this);
                 return true;
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
                 _imageRefreshError = ex.Message;
+                SessionImageState.MarkStale(this, failedProgram is null
+                    ? $"refresh of the controller tags failed: {ex.Message}"
+                    : $"refresh of program '{failedProgram}' failed: {ex.Message}");
                 return false;
             }
         }
@@ -449,6 +518,89 @@ public class TagSessionService : IDisposable
         _imageStaleControllerTags = false;
         _imageRefreshError        = null;
         _staleImagePrograms.Clear();
+        _staleBecause.Clear();
+    }
+
+    // ── Out-of-band controller change detection ─────────────────────
+
+    /// <summary>
+    /// Reads the controller's fingerprint (per program: routine names, rung count per routine and <c>TestEdits</c>, plus the
+    /// controller's name and serial). Set by the SDK adapter; <c>null</c> when the session cannot probe, in which case no
+    /// out-of-band check runs. Not cleared by <see cref="Attach"/> or <see cref="Detach"/>: it reads whatever session is active.
+    /// The source returns <c>null</c> (or throws) when it cannot read; the check is then skipped, never an error.
+    /// </summary>
+    public Func<CancellationToken, Task<ControllerFingerprint?>>? ControllerFingerprintSource { get; set; }
+
+    /// <summary>
+    /// How long a fingerprint probe stays valid: reads within it cost no probe. From <c>LGX_IMAGE_FINGERPRINT_TTL_S</c>
+    /// (seconds, default 5; 0 probes on every read).
+    /// </summary>
+    public TimeSpan ImageFingerprintTtl { get; set; } = DefaultFingerprintTtl();
+
+    private static TimeSpan DefaultFingerprintTtl()
+    {
+        var raw = Environment.GetEnvironmentVariable("LGX_IMAGE_FINGERPRINT_TTL_S");
+        return double.TryParse(raw, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var s) && s >= 0
+            ? TimeSpan.FromSeconds(s)
+            : TimeSpan.FromSeconds(5);
+    }
+
+    /// <summary>Age in milliseconds of the last successful fingerprint probe, or <c>null</c> when none has run on this session.</summary>
+    public long? FingerprintAgeMs =>
+        _fingerprintAt is { } at ? Math.Max(0, (long)(DateTimeOffset.UtcNow - at).TotalMilliseconds) : null;
+
+    /// <summary>
+    /// Set when the fingerprint showed a different controller (name or serial) or a re-download; image readers then return
+    /// <see cref="ErrorKinds.ControllerChanged"/> until <see cref="Attach"/> (a new <c>logix_connect</c>). <c>null</c> otherwise.
+    /// </summary>
+    public ControllerChangeInfo? ControllerChange => _controllerChange;
+
+    /// <summary>
+    /// Returns the reason the last image refresh was forced by an out-of-band change and forgets it, so only the first
+    /// read after the refresh reports it; <c>null</c> when there is none.
+    /// </summary>
+    public string? TakeImageRefreshedBecause() => Interlocked.Exchange(ref _refreshedBecause, null);
+
+    /// <summary>
+    /// Compares the controller's fingerprint with the session image and marks what differs: a program whose routine set,
+    /// rung counts or <c>TestEdits</c> differ is marked stale (<see cref="OutOfBandReason"/>) so the refresh that follows
+    /// re-exports it; a different controller or a re-download sets <see cref="ControllerChange"/> and marks every program stale.
+    /// Probes only when the last probe is older than <see cref="ImageFingerprintTtl"/> (or there was none), unless forced.
+    /// A source that fails or returns nothing leaves everything as it was.
+    /// </summary>
+    /// <param name="force"><c>true</c> to probe regardless of the TTL.</param>
+    /// <param name="ct">Cancellation token.</param>
+    public async System.Threading.Tasks.Task CheckControllerFingerprintAsync(bool force = false, CancellationToken ct = default)
+    {
+        if (ControllerFingerprintSource is not { } source || _controllerImage is null || _controllerChange is not null) return;
+        await _fingerprintGate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            if (_controllerChange is not null || _controllerImage is not { } image) return;
+            if (!force && _fingerprintAt is { } at && DateTimeOffset.UtcNow - at < ImageFingerprintTtl) return;
+
+            ControllerFingerprint? now;
+            try { now = await source(ct).ConfigureAwait(false); }
+            catch (Exception ex) when (ex is not OperationCanceledException) { return; }
+            if (now is null) return;
+            _fingerprintAt = DateTimeOffset.UtcNow;
+
+            // Programs already waiting for a refresh (this session changed them) are not compared: the refresh covers them.
+            var comparison = AnalysisImage.Compare(
+                ControllerFingerprint.FromL5x(image.ToString()), now, p => _imageStaleAll || _staleImagePrograms.Contains(p));
+            if (comparison.Change is { } change)
+            {
+                _controllerChange = change;
+                MarkImageStale();
+                return;
+            }
+            foreach (var program in comparison.ChangedPrograms)
+                MarkImageStale(program, OutOfBandReason);
+        }
+        finally
+        {
+            _fingerprintGate.Release();
+        }
     }
 
     /// <summary>
@@ -532,6 +684,10 @@ public class TagSessionService : IDisposable
         _acceptedCache          = null;
         ImageSourceOverride     = null;
         ClearImageStaleness();
+        _fingerprintAt          = null;
+        _controllerChange       = null;
+        _refreshedBecause       = null;
+        _zoneTested.Clear();
         _liveEditedRoutines.Clear();
         _liveEditedTags.Clear();
         WriteAllowlist = null;
@@ -699,6 +855,10 @@ public class TagSessionService : IDisposable
         _acceptedCache          = null;
         ImageSourceOverride     = null;
         ClearImageStaleness();
+        _fingerprintAt          = null;
+        _controllerChange       = null;
+        _refreshedBecause       = null;
+        _zoneTested.Clear();
         _liveEditedRoutines.Clear();
         _liveEditedTags.Clear();
     }

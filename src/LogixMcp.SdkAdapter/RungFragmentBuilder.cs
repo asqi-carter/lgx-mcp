@@ -288,7 +288,9 @@ public static class RungFragmentBuilder
                 new XAttribute("Number", (long)insertPosition + i),
                 new XAttribute("Type", "N"));
             if (!string.IsNullOrEmpty(rungs[i].Comment))
-                rung.Add(new XElement("Comment", CdataNodes(rungs[i].Comment!)));
+                // The raw string goes to the XElement (not a CDATA section): the writer then escapes every character
+                // the target encoding cannot hold as a numeric reference, so a non-BMP character (an emoji) round-trips.
+                rung.Add(new XElement("Comment", rungs[i].Comment!));
             rung.Add(new XElement("Text", CdataNodes(rungs[i].Text)));
             rllContent.Add(rung);
         }

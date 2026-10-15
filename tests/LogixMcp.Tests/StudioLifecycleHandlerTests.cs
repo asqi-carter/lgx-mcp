@@ -1,6 +1,9 @@
 #if LOGIX_SDK
 using System;
 using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -14,10 +17,21 @@ namespace LogixMcp.Tests;
 /// scheduled task is <c>logix-mcp-s1-edits</c> with the legacy <c>logix-mcp-s1-cancel</c>
 /// task unregistered.
 /// </summary>
+[Collection("StaticHandlerHooks")]
 public class StudioLifecycleHandlerTests
 {
     private const string Program = "MainProgram";
     private const string Routine = "MainRoutine";
+
+    /// <summary>Each test starts with a ledger that knows the zone this server "published", isolated from other tests' connects.</summary>
+    public StudioLifecycleHandlerTests() => ZoneLedger.TestOverride = KnownZoneLedger(Program, Routine);
+
+    private static ZoneLedger KnownZoneLedger(string program, string routine)
+    {
+        var ledger = new ZoneLedger();
+        ledger.Record(program, new[] { routine });
+        return ledger;
+    }
 
     private static RoutinePendingEditState State(string state) =>
         new(Program, Routine, 2,
@@ -333,6 +347,41 @@ public class StudioLifecycleHandlerTests
     private const string NoRoutineOpenFormat =
         "or Studio has no routine of program '{0}' open; open one of its routines in Studio and retry";
 
+    private const string AlreadyFinalizedCause =
+        "or the edits were already finalized or cancelled from Logix Designer " +
+        "(run logix_pending_edits, which reconciles the image)";
+
+    private const string SecondAcceptCause =
+        "or after a successful accept Logix Designer shows its Errors pane as an auto-hide flyout, which blocks the " +
+        "next accept's confirmation (the server toggles that pane via View > Errors and retries once; the pane is " +
+        "then left docked under the ladder view, and its pin (Auto Hide) returns it to auto-hide)";
+
+    private static void AssertThreeCausesInOrder(string text, string program)
+    {
+        var first  = text.IndexOf(string.Format(NoRoutineOpenFormat, program), StringComparison.Ordinal);
+        var second = text.IndexOf(AlreadyFinalizedCause, StringComparison.Ordinal);
+        var third  = text.IndexOf(SecondAcceptCause, StringComparison.Ordinal);
+        Assert.True(first >= 0, "cause (i) missing: " + text);
+        Assert.True(second > first, "cause (ii) missing or out of order: " + text);
+        Assert.True(third > second, "cause (iii) missing or out of order: " + text);
+    }
+
+    [Theory]
+    [InlineData("accept", "untested")]
+    [InlineData("cancel", "untested")]
+    public async Task NotApplicableHint_NamesAllThreeCausesInOrder_ForAcceptAndCancel(string verbName, string zoneState)
+    {
+        var verb = verbName == "cancel" ? StudioLifecycleVerb.Cancel : StudioLifecycleVerb.Accept;
+        var result = await StudioLifecycleHandler.ExecuteAsync(
+            verb, Program, Routine, true, Reader(ZoneOf(zoneState)),
+            Runner(new List<string>(), ok: false, reason: "command_not_applicable"), () => true,
+            planLaunch: () => ("direct", null));
+
+        var err = Assert.IsType<CancelPendingEditsError>(result);
+        AssertThreeCausesInOrder(err.Hint!, Program);
+        AssertThreeCausesInOrder(err.Error, Program);
+    }
+
     [Fact]
     public async Task CancelNotApplicable_Hint_ContainsNoRoutineOpenWording_WithProgramName()
     {
@@ -375,6 +424,187 @@ public class StudioLifecycleHandlerTests
         var wording = string.Format(NoRoutineOpenFormat, Program);
         Assert.Contains(wording, err.Hint, StringComparison.Ordinal);
         Assert.Contains(wording, err.Error, StringComparison.Ordinal);
+        AssertThreeCausesInOrder(err.Hint!, Program);
+        Assert.DoesNotContain("restart the MCP server", err.Hint, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("restart the server", err.Hint, StringComparison.OrdinalIgnoreCase);
+    }
+
+    // ── The driver's Errors-pane toggle is copied to the audit line and the response ──
+
+    private static async Task<(object Result, List<JsonElement> Audit)> RunWithAuditAsync(
+        StudioLifecycleVerb verb, Session1ScriptResult driver, params RoutinePendingEditState[] reads)
+    {
+        var auditDir = Path.Combine(Path.GetTempPath(), "lgx-pane-audit-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(auditDir);
+        AuditLogger.OverrideLogDir(auditDir);
+        var interval = StudioLifecycleHandler.AfterSettleInterval;
+        StudioLifecycleHandler.AfterSettleInterval = TimeSpan.Zero;
+        try
+        {
+            var result = await StudioLifecycleHandler.ExecuteAsync(
+                verb, Program, Routine, true, Reader(reads),
+                (_, _) => Task.FromResult(driver), () => true,
+                planLaunch: () => ("direct", null));
+            var file = Path.Combine(auditDir, "audit.jsonl");
+            var lines = File.Exists(file)
+                ? File.ReadAllLines(file).Where(l => !string.IsNullOrWhiteSpace(l))
+                    .Select(l => JsonDocument.Parse(l).RootElement.Clone()).ToList()
+                : new List<JsonElement>();
+            return (result, lines);
+        }
+        finally
+        {
+            StudioLifecycleHandler.AfterSettleInterval = interval;
+            AuditLogger.OverrideLogDir(null);
+            try { Directory.Delete(auditDir, recursive: true); } catch { /* best-effort */ }
+        }
+    }
+
+    [Fact]
+    public async Task AcceptSuccess_WithErrorsPaneToggled_AuditLineAndResponseCarryIt()
+    {
+        var driver = new Session1ScriptResult(
+            true, "accept_sent", new[] { "s.png" },
+            ErrorsPaneToggled: true, RetriedAfterPaneToggle: true);
+
+        var (result, audit) = await RunWithAuditAsync(
+            StudioLifecycleVerb.Accept, driver, State("pending"), State("none"));
+
+        var ok = Assert.IsType<CancelPendingEditsResult>(result);
+        Assert.True(ok.ErrorsPaneToggled);
+        using var doc = JsonDocument.Parse(JsonSerializer.Serialize(ok));
+        Assert.True(doc.RootElement.GetProperty("errorsPaneToggled").GetBoolean());
+
+        var line = Assert.Single(audit);
+        Assert.Equal("edits_accepted", line.GetProperty("event").GetString());
+        Assert.Equal("accepted", line.GetProperty("outcome").GetString());
+        Assert.True(line.GetProperty("errors_pane_toggled").GetBoolean());
+    }
+
+    [Fact]
+    public async Task AcceptSuccess_WithoutErrorsPaneToggle_OmitsTheAuditFieldAndTheResponseField()
+    {
+        var driver = new Session1ScriptResult(true, "accept_sent", new[] { "s.png" });
+
+        var (result, audit) = await RunWithAuditAsync(
+            StudioLifecycleVerb.Accept, driver, State("pending"), State("none"));
+
+        var ok = Assert.IsType<CancelPendingEditsResult>(result);
+        using var doc = JsonDocument.Parse(JsonSerializer.Serialize(ok));
+        Assert.False(doc.RootElement.TryGetProperty("errorsPaneToggled", out _));
+        var line = Assert.Single(audit);
+        Assert.False(line.TryGetProperty("errors_pane_toggled", out _));
+    }
+
+    [Theory]
+    [InlineData("accept")]
+    [InlineData("test")]
+    [InlineData("untest")]
+    [InlineData("assemble")]
+    [InlineData("cancel")]
+    public async Task RetriedAfterPaneToggleFalse_WithFailure_IsCommandNotApplicable_WithTheNewHint(string verbName)
+    {
+        var verb = verbName switch
+        {
+            "accept"   => StudioLifecycleVerb.Accept,
+            "test"     => StudioLifecycleVerb.Test,
+            "untest"   => StudioLifecycleVerb.Untest,
+            "assemble" => StudioLifecycleVerb.Assemble,
+            _          => StudioLifecycleVerb.Cancel,
+        };
+        var driver = new Session1ScriptResult(
+            false, "command_not_applicable", new[] { "s.png" },
+            ErrorsPaneToggled: true, RetriedAfterPaneToggle: false, PaneToggleRestored: true);
+        var zone = verbName is "untest" or "assemble" ? "tested" : "untested";
+        var pending = State("pending") with { ZoneState = zone, ProgramTestedEdits = zone == "tested" };
+
+        var (result, audit) = await RunWithAuditAsync(verb, driver, pending);
+
+        var err = Assert.IsType<CancelPendingEditsError>(result);
+        Assert.Equal(verb.NotApplicableKind, err.Kind);
+        Assert.True(err.ErrorsPaneToggled);
+        AssertThreeCausesInOrder(err.Hint!, Program);
+        Assert.Contains("auto-hide flyout", err.Hint, StringComparison.Ordinal);
+        Assert.DoesNotContain("restart the", err.Hint, StringComparison.OrdinalIgnoreCase);
+        var line = Assert.Single(audit);
+        Assert.Equal("error", line.GetProperty("outcome").GetString());
+        Assert.Equal("command_not_applicable", line.GetProperty("reason").GetString());
+        Assert.True(line.GetProperty("errors_pane_toggled").GetBoolean());
+    }
+
+    [Fact]
+    public async Task AcceptSuccess_WithToggledAndDockedLayout_ResponseCarriesLayoutAndNote_AuditCarriesLayout()
+    {
+        var driver = new Session1ScriptResult(
+            true, "accept_sent", new[] { "s.png" },
+            ErrorsPaneToggled: true, RetriedAfterPaneToggle: true, ErrorsPaneLayout: "docked");
+
+        var (result, audit) = await RunWithAuditAsync(
+            StudioLifecycleVerb.Accept, driver, State("pending"), State("none"));
+
+        var ok = Assert.IsType<CancelPendingEditsResult>(result);
+        Assert.Equal("docked", ok.ErrorsPaneLayout);
+        using var doc = JsonDocument.Parse(JsonSerializer.Serialize(ok));
+        Assert.Equal("docked", doc.RootElement.GetProperty("errorsPaneLayout").GetString());
+        Assert.Equal(
+            "Logix Designer's Errors pane was left docked under the ladder view; click its pin (Auto Hide) to return it to auto-hide.",
+            doc.RootElement.GetProperty("note").GetString());
+        Assert.True(doc.RootElement.GetProperty("errorsPaneToggled").GetBoolean());
+
+        var line = Assert.Single(audit);
+        Assert.True(line.GetProperty("errors_pane_toggled").GetBoolean());
+        Assert.Equal("docked", line.GetProperty("errors_pane_layout").GetString());
+    }
+
+    [Fact]
+    public async Task AcceptSuccess_WithToggledAndHiddenLayout_ResponseCarriesLayoutButNoNote()
+    {
+        var driver = new Session1ScriptResult(
+            true, "accept_sent", new[] { "s.png" }, ErrorsPaneToggled: true, ErrorsPaneLayout: "hidden");
+
+        var (result, _) = await RunWithAuditAsync(
+            StudioLifecycleVerb.Accept, driver, State("pending"), State("none"));
+
+        var ok = Assert.IsType<CancelPendingEditsResult>(result);
+        using var doc = JsonDocument.Parse(JsonSerializer.Serialize(ok));
+        Assert.Equal("hidden", doc.RootElement.GetProperty("errorsPaneLayout").GetString());
+        Assert.False(doc.RootElement.TryGetProperty("note", out _));
+    }
+
+    [Fact]
+    public async Task AcceptSuccess_WithToggledFalse_HasNoLayoutInResponseOrAudit()
+    {
+        var driver = new Session1ScriptResult(
+            true, "accept_sent", new[] { "s.png" }, ErrorsPaneToggled: false, ErrorsPaneLayout: "docked");
+
+        var (result, audit) = await RunWithAuditAsync(
+            StudioLifecycleVerb.Accept, driver, State("pending"), State("none"));
+
+        var ok = Assert.IsType<CancelPendingEditsResult>(result);
+        Assert.Null(ok.ErrorsPaneLayout);
+        using var doc = JsonDocument.Parse(JsonSerializer.Serialize(ok));
+        Assert.False(doc.RootElement.TryGetProperty("errorsPaneLayout", out _));
+        Assert.False(doc.RootElement.TryGetProperty("note", out _));
+        var line = Assert.Single(audit);
+        Assert.False(line.TryGetProperty("errors_pane_layout", out _));
+    }
+
+    [Fact]
+    public async Task FailureAfterToggle_WithHiddenLayout_IsCommandNotApplicable_CarryingTheLayout()
+    {
+        var driver = new Session1ScriptResult(
+            false, "command_not_applicable", new[] { "s.png" },
+            ErrorsPaneToggled: true, RetriedAfterPaneToggle: false, PaneToggleRestored: true,
+            ErrorsPaneLayout: "hidden");
+        var (result, audit) = await RunWithAuditAsync(StudioLifecycleVerb.Accept, driver, State("pending"));
+
+        var err = Assert.IsType<CancelPendingEditsError>(result);
+        Assert.Equal(StudioLifecycleVerb.Accept.NotApplicableKind, err.Kind);
+        Assert.Equal("hidden", err.ErrorsPaneLayout);
+        using var doc = JsonDocument.Parse(JsonSerializer.Serialize(err));
+        Assert.Equal("hidden", doc.RootElement.GetProperty("errorsPaneLayout").GetString());
+        var line = Assert.Single(audit);
+        Assert.Equal("hidden", line.GetProperty("errors_pane_layout").GetString());
     }
 }
 #endif

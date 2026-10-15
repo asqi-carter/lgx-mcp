@@ -6,13 +6,23 @@ using Task = System.Threading.Tasks.Task;
 namespace LogixMcp.Tests;
 
 /// <summary>
-/// This change requirement 8 (task logix-mcp-64f5.8): the rung-edit audit line is written once per call and
+/// The rung-edit audit line is written once per call and
 /// tells the truth: after the census, with outcome <c>proposed</c>, <c>publish-mismatch</c>,
 /// <c>nothing-staged</c> or <c>error</c>; a refusal before the import writes <c>refused</c> and its kind.
 /// </summary>
 [Collection("StaticHandlerHooks")]
 public class RungEditAuditTests
 {
+    /// <summary>Each test starts with a ledger that knows the zone this server "published", isolated from other tests' connects.</summary>
+    public RungEditAuditTests() => ZoneLedger.TestOverride = KnownZoneLedger();
+
+    private static ZoneLedger KnownZoneLedger()
+    {
+        var ledger = new ZoneLedger();
+        ledger.Record("MainProgram", new[] { "MainRoutine" });
+        return ledger;
+    }
+
     private const string ValidXPath =
         "Controller/Programs/Program[@Name='MainProgram']/Routines/Routine[@Name='MainRoutine']";
 
@@ -58,7 +68,7 @@ public class RungEditAuditTests
                 .Where(l => !string.IsNullOrWhiteSpace(l))
                 .Select(l => JsonDocument.Parse(l).RootElement.Clone())
                 .Where(e => e.GetProperty("event").GetString() == "rung_edit")
-                // "sending" intent lines (logix-mcp-qpqy.4) are not a call's outcome line; they are asserted separately.
+                // "sending" intent lines are not a call's outcome line; they are asserted separately.
                 .Where(e => e.GetProperty("outcome").GetString() != AuditLogger.RungEditSendingOutcome)
                 .ToList();
         }
@@ -472,6 +482,234 @@ public class RungEditAuditTests
             AuditLogger.OverrideLogDir(null);
             try { Directory.Delete(dir, recursive: true); } catch { /* best-effort */ }
         }
+    }
+
+    /// <summary>The <c>image_reconciled</c> event carries exactly program, routine and outcome.</summary>
+    [Fact]
+    public void ImageReconciled_WritesOneLineWithProgramRoutineAndOutcome()
+    {
+        var auditDir = Path.Combine(Path.GetTempPath(), "lgx-reconcile-line-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(auditDir);
+        AuditLogger.OverrideLogDir(auditDir);
+        try
+        {
+            AuditLogger.LogImageReconciled("MainProgram", "MainRoutine", "accepted");
+
+            var line = Assert.Single(File.ReadAllLines(Path.Combine(auditDir, "audit.jsonl")).Where(l => l.Length > 0));
+            var root = JsonDocument.Parse(line).RootElement;
+            Assert.Equal("image_reconciled", root.GetProperty("event").GetString());
+            Assert.Equal("MainProgram", root.GetProperty("program").GetString());
+            Assert.Equal("MainRoutine", root.GetProperty("routine").GetString());
+            Assert.Equal("accepted", root.GetProperty("outcome").GetString());
+            Assert.True(root.TryGetProperty("ts", out _));
+        }
+        finally
+        {
+            AuditLogger.OverrideLogDir(null);
+            try { Directory.Delete(auditDir, recursive: true); } catch { /* best-effort */ }
+        }
+    }
+
+    // ── Every Studio lifecycle outcome writes exactly one audit line ──────────────────
+
+    private const string LcProgram = "MainProgram";
+    private const string LcRoutine = "MainRoutine";
+
+    private static RoutinePendingEditState LcState(string state, string zone = "none", string routine = LcRoutine) =>
+        new(LcProgram, routine, 2,
+            state == "none"
+                ? Array.Empty<PendingEditRungEntry>()
+                : [new PendingEditRungEntry(0, "I", "OTE(Motor_Run);")],
+            state, ZoneState: zone);
+
+    private static Func<string, string, CancellationToken, System.Threading.Tasks.Task<object>> LcReader(
+        params RoutinePendingEditState[] sequence)
+    {
+        var i = 0;
+        return (_, _, _) =>
+        {
+            var s = sequence[Math.Min(i++, sequence.Length - 1)];
+            return System.Threading.Tasks.Task.FromResult<object>(new PendingEditsResult(
+                true, "Run", null, [s], new StagedEditsState(0, []), DateTimeOffset.UtcNow));
+        };
+    }
+
+    private static Func<string, CancellationToken, System.Threading.Tasks.Task<Session1ScriptResult>> LcRunner(
+        Func<Session1ScriptResult> make) =>
+        (_, _) => System.Threading.Tasks.Task.FromResult(make());
+
+    private static Session1ScriptResult Driver(
+        bool ok = true, string reason = "gesture_sent", bool malformed = false, bool launched = true) =>
+        new(ok, reason, ["s.png"], Malformed: malformed, Launched: launched);
+
+    /// <summary>One return site of <c>StudioLifecycleHandler.ExecuteAsync</c> and the audit line it must write.</summary>
+    public sealed record LifecycleSite(
+        string Name, string Verb, string Program, string Routine, bool Confirm, bool Installed,
+        RoutinePendingEditState[] Reads, Func<Session1ScriptResult>? Driver,
+        string ExpectedEvent, string ExpectedOutcome, string ExpectedKind)
+    {
+        public override string ToString() => Name;
+    }
+
+    private static RoutinePendingEditState[] Pending => [LcState("pending")];
+
+    public static IEnumerable<object[]> LifecycleSites()
+    {
+        static object[] Site(LifecycleSite s) => [s];
+        yield return Site(new("empty-program", "accept", "", LcRoutine, true, true, Pending, null,
+            "tool_refused", "refused", ErrorKinds.InvalidArguments));
+        yield return Site(new("empty-routine", "accept", LcProgram, "", true, true, Pending, null,
+            "tool_refused", "refused", ErrorKinds.InvalidArguments));
+        yield return Site(new("invalid-name", "accept", "1bad", LcRoutine, true, true, Pending, null,
+            "tool_refused", "refused", ErrorKinds.InvalidArguments));
+        yield return Site(new("not-installed", "accept", LcProgram, LcRoutine, true, false, Pending, null,
+            "tool_refused", "refused", "StudioNotInstalled"));
+        yield return Site(new("no-confirm", "accept", LcProgram, LcRoutine, false, true, Pending, null,
+            "tool_refused", "refused", "ConfirmRequired"));
+        yield return Site(new("routine-not-found", "accept", LcProgram, LcRoutine, true, true,
+            [LcState("pending", routine: "Other")], null,
+            "tool_refused", "refused", "RoutineNotFound"));
+        yield return Site(new("nothing-pending", "accept", LcProgram, LcRoutine, true, true,
+            [LcState("none")], null,
+            "tool_refused", "refused", ErrorKinds.NothingPending));
+        yield return Site(new("zone-tested", "cancel", LcProgram, LcRoutine, true, true,
+            [LcState("pending", "tested")], null,
+            "tool_refused", "refused", "ZoneTested"));
+        yield return Site(new("runner-threw", "accept", LcProgram, LcRoutine, true, true, Pending,
+            () => throw new InvalidOperationException("boom"),
+            "edits_accepted", "error", "ScriptInvocationFailed"));
+        yield return Site(new("malformed", "accept", LcProgram, LcRoutine, true, true, Pending,
+            () => Driver(ok: true, reason: "bad json", malformed: true),
+            "edits_accepted", "error", "DriverResultMalformed"));
+        yield return Site(new("not-launched", "accept", LcProgram, LcRoutine, true, true, Pending,
+            () => Driver(ok: false, reason: "something_else", launched: false),
+            "tool_refused", "refused", "NotLaunched"));
+        yield return Site(new("modal-dialog", "accept", LcProgram, LcRoutine, true, true, Pending,
+            () => Driver(ok: false, reason: "studio_modal_open"),
+            "edits_accepted", "error", StudioKinds.StudioModalOpenKind));
+        yield return Site(new("studio-not-running", "accept", LcProgram, LcRoutine, true, true, Pending,
+            () => Driver(ok: false, reason: "studio_not_running"),
+            "edits_accepted", "error", StudioKinds.StudioNotRunningKind));
+        yield return Site(new("cancel-nothing-on-controller", "cancel", LcProgram, LcRoutine, true, true,
+            [LcState("pending"), LcState("pending"), LcState("none")],
+            () => Driver(ok: false, reason: "command_not_applicable"),
+            "edits_cancelled", "error", ErrorKinds.NothingPending));
+        yield return Site(new("command-not-applicable", "accept", LcProgram, LcRoutine, true, true, Pending,
+            () => Driver(ok: false, reason: "command_not_applicable"),
+            "edits_accepted", "error", "AcceptNotApplicable"));
+        yield return Site(new("driver-failure", "accept", LcProgram, LcRoutine, true, true, Pending,
+            () => Driver(ok: false, reason: "boom"),
+            "edits_accepted", "error", "DriverFailed"));
+        yield return Site(new("still-pending", "accept", LcProgram, LcRoutine, true, true, Pending,
+            () => Driver(),
+            "edits_accepted", "error", "StillPending"));
+        yield return Site(new("success-accept", "accept", LcProgram, LcRoutine, true, true,
+            [LcState("pending"), LcState("none")], () => Driver(),
+            "edits_accepted", "accepted", ""));
+        yield return Site(new("success-assemble", "assemble", LcProgram, LcRoutine, true, true,
+            [LcState("pending", "tested"), LcState("none")], () => Driver(),
+            "edits_assembled", "assembled", ""));
+        yield return Site(new("success-cancel", "cancel", LcProgram, LcRoutine, true, true,
+            [LcState("pending"), LcState("pending"), LcState("none")], () => Driver(),
+            "edits_cancelled", "cancelled", ""));
+    }
+
+    private static StudioLifecycleVerb VerbOf(string name) => name switch
+    {
+        "cancel"   => StudioLifecycleVerb.Cancel,
+        "accept"   => StudioLifecycleVerb.Accept,
+        "assemble" => StudioLifecycleVerb.Assemble,
+        "test"     => StudioLifecycleVerb.Test,
+        _          => StudioLifecycleVerb.Untest,
+    };
+
+    private static async Task<List<JsonElement>> CaptureAllAuditLinesAsync(Func<Task> body)
+    {
+        var auditDir = Path.Combine(Path.GetTempPath(), "lgx-lifecycle-audit-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(auditDir);
+        AuditLogger.OverrideLogDir(auditDir);
+        var interval = StudioLifecycleHandler.AfterSettleInterval;
+        StudioLifecycleHandler.AfterSettleInterval = TimeSpan.Zero;
+        try
+        {
+            await body();
+            var file = Path.Combine(auditDir, "audit.jsonl");
+            return File.Exists(file)
+                ? File.ReadAllLines(file).Where(l => !string.IsNullOrWhiteSpace(l))
+                    .Select(l => JsonDocument.Parse(l).RootElement.Clone()).ToList()
+                : [];
+        }
+        finally
+        {
+            StudioLifecycleHandler.AfterSettleInterval = interval;
+            AuditLogger.OverrideLogDir(null);
+            try { Directory.Delete(auditDir, recursive: true); } catch { /* best-effort */ }
+        }
+    }
+
+    /// <summary>Every return site writes exactly one audit line; a failure never carries a success outcome.</summary>
+    [Theory]
+    [MemberData(nameof(LifecycleSites))]
+    public async Task LifecycleReturnSite_WritesExactlyOneAuditLine_WithTruthfulOutcome(LifecycleSite site)
+    {
+        var verb = VerbOf(site.Verb);
+        object? result = null;
+        var lines = await CaptureAllAuditLinesAsync(async () =>
+            result = await StudioLifecycleHandler.ExecuteAsync(
+                verb, site.Program, site.Routine, site.Confirm, LcReader(site.Reads),
+                LcRunner(site.Driver ?? (() => throw new InvalidOperationException("runner must not run"))),
+                () => site.Installed, planLaunch: () => ("direct", null)));
+
+        var line = Assert.Single(lines);
+        Assert.Equal(site.ExpectedEvent, line.GetProperty("event").GetString());
+        Assert.Equal(site.ExpectedOutcome, line.GetProperty("outcome").GetString());
+
+        if (site.ExpectedOutcome is "refused" or "error")
+        {
+            Assert.IsType<CancelPendingEditsError>(result);
+            Assert.Equal(site.ExpectedKind, line.GetProperty("kind").GetString());
+            Assert.NotEqual("accepted", line.GetProperty("outcome").GetString());
+            Assert.NotEqual("cancelled", line.GetProperty("outcome").GetString());
+            if (site.ExpectedOutcome == "refused")
+                Assert.Equal(verb.ToolName, line.GetProperty("operation").GetString());
+        }
+        else
+        {
+            Assert.IsType<CancelPendingEditsResult>(result);
+            Assert.False(line.TryGetProperty("kind", out _));
+        }
+    }
+
+    [Fact]
+    public async Task LifecycleFailure_CarriesDriverReason_AndStates()
+    {
+        var lines = await CaptureAllAuditLinesAsync(async () =>
+            await StudioLifecycleHandler.ExecuteAsync(
+                StudioLifecycleVerb.Accept, LcProgram, LcRoutine, true, LcReader(LcState("pending")),
+                LcRunner(() => Driver(ok: false, reason: "command_not_applicable")), () => true));
+
+        var line = Assert.Single(lines);
+        Assert.Equal("command_not_applicable", line.GetProperty("reason").GetString());
+        Assert.Equal("pending", line.GetProperty("before_state").GetString());
+        Assert.Equal(LcProgram, line.GetProperty("program").GetString());
+        Assert.Equal(LcRoutine, line.GetProperty("routine").GetString());
+    }
+
+    [Fact]
+    public async Task LifecycleSuccess_AuditLine_IsByteForByteTheExistingShape()
+    {
+        var lines = await CaptureAllAuditLinesAsync(async () =>
+            await StudioLifecycleHandler.ExecuteAsync(
+                StudioLifecycleVerb.Accept, LcProgram, LcRoutine, true,
+                LcReader(LcState("pending"), LcState("none")), LcRunner(() => Driver()), () => true));
+
+        var line = Assert.Single(lines);
+        Assert.Equal(
+            ["ts", "event", "program", "routine", "outcome", "before_state", "after_state"],
+            line.EnumerateObject().Select(p => p.Name).ToArray());
+        Assert.Equal("accepted", line.GetProperty("outcome").GetString());
+        Assert.Equal("pending", line.GetProperty("before_state").GetString());
+        Assert.Equal("none", line.GetProperty("after_state").GetString());
     }
 }
 #endif

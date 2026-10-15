@@ -21,6 +21,16 @@ public class AcceptPendingEditsToolTests
     private const string Program = "MainProgram";
     private const string Routine = "MainRoutine";
 
+    /// <summary>Each test starts with a ledger that knows the zone this server "published", isolated from other tests' connects.</summary>
+    public AcceptPendingEditsToolTests() => ZoneLedger.TestOverride = KnownZoneLedger(Program, Routine);
+
+    private static ZoneLedger KnownZoneLedger(string program, string routine)
+    {
+        var ledger = new ZoneLedger();
+        ledger.Record(program, new[] { routine });
+        return ledger;
+    }
+
     private static RoutinePendingEditState RoutineState(string state) =>
         new(Program, Routine, 2,
             state == "none"
@@ -221,6 +231,7 @@ public class AcceptPendingEditsToolTests
         using (var doc = JsonDocument.Parse(JsonSerializer.Serialize(result)))
             Assert.Equal("posted", doc.RootElement.GetProperty("gestureTier").GetString());
 
+        ZoneLedger.TestOverride = KnownZoneLedger(Program, Routine);   // the first accept cleared the program's entry
         var without = Assert.IsType<CancelPendingEditsResult>(await AcceptPendingEditsHandler.ExecuteAsync(
             Program, Routine, confirm: true,
             Reader(RoutineState("accepted"), RoutineState("none")),

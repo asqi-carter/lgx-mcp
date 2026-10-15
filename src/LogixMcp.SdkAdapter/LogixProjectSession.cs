@@ -496,7 +496,15 @@ public sealed class LogixProjectSession : IDisposable
     public Dictionary<(string RoutineXPath, uint InsertPosition), uint> StagedReplaceCounts { get; } = new();
 
     /// <summary>
-    /// Staged replacements whose text equals the original rung they replace (logix-mcp-am0x.4), keyed by routine
+    /// Per <see cref="StagedRungBuffer"/> bucket (same key), the indices <c>j &lt; replaceCount</c> of staged replacements
+    /// whose text equals the original rung they displace. Logix keeps such a rung normal, so the session image
+    /// must keep it normal too: it is neither stamped <c>IR</c> nor does it claim a displaced original. Cleared wherever
+    /// <see cref="StagedReplaceCounts"/> is cleared or a key is removed.
+    /// </summary>
+    public Dictionary<(string RoutineXPath, uint InsertPosition), HashSet<int>> StagedKeptNormal { get; } = new();
+
+    /// <summary>
+    /// Staged replacements whose text equals the original rung they replace, keyed by routine
     /// XPath and zero-based rung index, valued with the normalised rung text. Logix keeps such a rung as normal
     /// (<c>N</c>), not pending (<c>I</c>), so the publish census must not expect it among the pending rungs.
     /// Cleared whenever the buffer is cleared.
@@ -890,8 +898,8 @@ public sealed class LogixProjectSession : IDisposable
     internal TimeSpan ImportRejectReplayTimeout { get; set; } = TimeSpan.FromSeconds(60);
 
     /// <summary>
-    /// Wait between the (at most 3) tries of an import that hit <c>RxCsE_ASA_BLOCKING_HIGHER_EXCL_LOCK</c>
-    /// (logix-mcp-qpqy.8). 5 s by default, so the 3 tries span about 10 s; settable so tests need not wait.
+    /// Wait between the (at most 3) tries of an import that hit <c>RxCsE_ASA_BLOCKING_HIGHER_EXCL_LOCK</c>.
+    /// 5 s by default, so the 3 tries span about 10 s; settable so tests need not wait.
     /// </summary>
     internal TimeSpan ControllerLockRetryDelay { get; set; } = ControllerLockRetry.DefaultRetryDelay;
 
@@ -1310,6 +1318,7 @@ public sealed class LogixProjectSession : IDisposable
             StagedRungCount   = 0;
             StagedRungBuffer.Clear();
             StagedReplaceCounts.Clear();
+            StagedKeptNormal.Clear();
             StagedUnchangedReplacements.Clear();
             ForgetStagedImports();
             ForgetCommentUndos();

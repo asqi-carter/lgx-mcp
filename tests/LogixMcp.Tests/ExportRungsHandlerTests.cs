@@ -52,6 +52,9 @@ internal sealed class FakeExportProject : ILogixProject
     /// <summary>When true, <see cref="PartialExportToXmlFileAsync"/> throws <see cref="OperationFailedException"/>.</summary>
     public bool ExportShouldThrowOperationFailed { get; set; }
 
+    /// <summary>When set, an export whose xPath contains this text throws <see cref="OperationFailedException"/>.</summary>
+    public string? FailWhenXPathContains { get; set; }
+
     /// <summary>When true, <see cref="PartialExportToXmlFileAsync"/> throws <see cref="OperationNotPerformedException"/>.</summary>
     public bool ExportShouldThrowOperationNotPerformed { get; set; }
 
@@ -75,7 +78,8 @@ internal sealed class FakeExportProject : ILogixProject
         LastExportXPath    = xPath;
         LastExportFilePath = filePath;
 
-        if (ExportShouldThrowOperationFailed)
+        if (ExportShouldThrowOperationFailed ||
+            (FailWhenXPathContains is not null && xPath.Contains(FailWhenXPathContains, StringComparison.Ordinal)))
             throw new OperationFailedException("Simulated export failure.", xPath);
 
         if (ExportShouldThrowOperationNotPerformed)
@@ -269,6 +273,107 @@ public class ExportRungsHandlerTests
         var result = await ExportRungsHandler.ExecuteAsync(string.Empty, session);
 
         Assert.IsType<ExportRungsError>(result);
+    }
+
+    // ── Typed refusals ─────────────────────────────────────────────
+
+    [Theory]
+    [InlineData("   ")]
+    [InlineData("Controller")]
+    [InlineData("Controller/Programs/Program[@Name='MainProgram'")]
+    public async Task ExecuteAsync_BadXPath_ReturnsInvalidArguments(string xPath)
+    {
+        var (session, _) = await ExportTestHelpers.OpenedSessionAsync();
+
+        var error = Assert.IsType<ExportRungsError>(await ExportRungsHandler.ExecuteAsync(xPath, session));
+
+        Assert.Equal(ErrorKinds.InvalidArguments, error.Kind);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_MissingRoutine_ReturnsRoutineNotFound_ListingNamesAndSdkError()
+    {
+        var fake = new FakeExportProject { FailWhenXPathContains = "NoSuchRoutine", ExportContent = SampleL5X };
+        var (session, _) = await ExportTestHelpers.OpenedSessionAsync(fake);
+
+        var result = await ExportRungsHandler.ExecuteAsync(
+            "Controller/Programs/Program[@Name='MainProgram']/Routines/Routine[@Name='NoSuchRoutine']", session);
+
+        var error = Assert.IsType<ExportRungsError>(result);
+        Assert.Equal(ErrorKinds.RoutineNotFound, error.Kind);
+        Assert.Contains("MainRoutine", error.Error);
+        Assert.False(string.IsNullOrWhiteSpace(error.SdkError));
+    }
+
+    // ── Rung range ────────────────────────────────────────────
+
+    private const string TwoRungRoutineL5X =
+        "<RSLogix5000Content><Controller><Programs><Program Name=\"MainProgram\"><Routines>" +
+        "<Routine Name=\"MainRoutine\"><RLLContent>" +
+        "<Rung Number=\"0\" Type=\"N\"><Text>XIC(A)OTE(B);</Text></Rung>" +
+        "<Rung Number=\"1\" Type=\"N\"><Text>XIC(B)OTE(C);</Text></Rung>" +
+        "</RLLContent></Routine></Routines></Program></Programs></Controller></RSLogix5000Content>";
+
+    [Theory]
+    [InlineData("/RLLContent/Rung[1-0]", "1", "0")]
+    [InlineData("/RLLContent/Rung[0-5]", "rung 5", "past the end")]
+    [InlineData("/RLLContent/Rung[2]", "rung 2", "past the end")]
+    public async Task ExecuteAsync_ReversedOrPastEndRange_ReturnsInvalidArguments_NamingFromToAndRungCount(
+        string suffix, string first, string second)
+    {
+        var fake = new FakeExportProject { ExportContent = TwoRungRoutineL5X };
+        var (session, _) = await ExportTestHelpers.OpenedSessionAsync(fake);
+        var xPath = SampleXPath + suffix;
+
+        var error = Assert.IsType<ExportRungsError>(await ExportRungsHandler.ExecuteAsync(xPath, session));
+
+        Assert.Equal(ErrorKinds.InvalidArguments, error.Kind);
+        Assert.Contains(first, error.Error);
+        Assert.Contains(second, error.Error);
+        Assert.Contains("2 rungs", error.Error);
+        Assert.Null(error.SdkError);
+        // The ranged export was never sent: the only SDK call read the whole routine to count its rungs.
+        Assert.Equal(SampleXPath, fake.LastExportXPath);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_ReversedRange_NamesFromAndTo()
+    {
+        var fake = new FakeExportProject { ExportContent = TwoRungRoutineL5X };
+        var (session, _) = await ExportTestHelpers.OpenedSessionAsync(fake);
+
+        var error = Assert.IsType<ExportRungsError>(
+            await ExportRungsHandler.ExecuteAsync(SampleXPath + "/RLLContent/Rung[1-0]", session));
+
+        Assert.Contains("reversed", error.Error);
+        Assert.Contains("1 is after 0", error.Error);
+        Assert.Contains("2 rungs", error.Error);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_InRangeRungRange_IsExported()
+    {
+        var fake = new FakeExportProject { ExportContent = TwoRungRoutineL5X };
+        var (session, _) = await ExportTestHelpers.OpenedSessionAsync(fake);
+        var xPath = SampleXPath + "/RLLContent/Rung[0-1]";
+
+        Assert.IsType<ExportRungsResult>(await ExportRungsHandler.ExecuteAsync(xPath, session));
+        Assert.Equal(xPath, fake.LastExportXPath);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_MalformedXPath_HintDescribesTheRoutineXPathForm_NotTheBareControllerScope()
+    {
+        var (session, fake) = await ExportTestHelpers.OpenedSessionAsync(new FakeExportProject { ExportContent = SampleL5X });
+
+        var error = Assert.IsType<ExportRungsError>(
+            await ExportRungsHandler.ExecuteAsync("Controller/Programs/Program[@Name='MainProgram'", session));
+
+        Assert.Equal(ErrorKinds.InvalidArguments, error.Kind);
+        Assert.Contains("Routines/Routine[@Name=", error.Hint);
+        Assert.DoesNotContain("bare 'Controller'", error.Hint);
+        Assert.DoesNotContain("Controller/Programs'", error.Hint);
+        Assert.Null(fake.LastExportXPath);
     }
 
     // ── Success ───────────────────────────────────────────────────────────────

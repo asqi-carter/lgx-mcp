@@ -1,6 +1,7 @@
 #if LOGIX_SDK
 // ── ExportRungsHandler — wraps PartialExportToXmlFileAsync ───────────────────
 using System.Text.Json.Serialization;
+using System.Text.RegularExpressions;
 using RockwellAutomation.LogixDesigner;
 
 // Alias System.Threading.Tasks.Task to avoid ambiguity with L5Sharp.Core.Task
@@ -39,6 +40,9 @@ public record ExportRungsResult(
 /// </summary>
 /// <param name="Error">Human-readable description of the failure.</param>
 /// <param name="Hint">Optional remediation hint; omitted from JSON when null.</param>
+/// <param name="Kind">Machine-readable kind (<c>InvalidArguments</c>, <c>ProgramNotFound</c>, <c>RoutineNotFound</c>, ...); omitted when null.</param>
+/// <param name="Session">Session state word for a faulted session; omitted when null.</param>
+/// <param name="SdkError">The SDK's own text for a failed export, kept raw; never the whole <paramref name="Error"/>. Omitted when null.</param>
 public record ExportRungsError(
     [property: JsonPropertyName("error")] string Error,
     [property: JsonPropertyName("hint"),
@@ -49,7 +53,10 @@ public record ExportRungsError(
                string? Kind = null,
     [property: JsonPropertyName("session"),
                JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-               string? Session = null);
+               string? Session = null,
+    [property: JsonPropertyName("sdkError"),
+               JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+               string? SdkError = null);
 
 // ── ExportRungsHandler ────────────────────────────────────────────────────────
 
@@ -86,6 +93,15 @@ public static class ExportRungsHandler
         "\"Controller/Programs/Program[@Name='<program>']/Routines/Routine[@Name='<routine>']\".";
 
     /// <summary>
+    /// Hint returned when <c>xPath</c> is malformed (unbalanced bracket or quote, empty predicate). Describes the
+    /// routine XPath form only, with the optional rung range.
+    /// </summary>
+    public const string MalformedXPathHint =
+        "Give the routine XPath in the form " +
+        "\"Controller/Programs/Program[@Name='<program>']/Routines/Routine[@Name='<routine>']\", " +
+        "with every '[' closed by a ']' and every quote closed.";
+
+    /// <summary>
     /// Scans <paramref name="l5x"/> for non-empty project-authored text and returns
     /// the kinds found, in a stable order. The L5X itself is never modified.
     /// </summary>
@@ -119,6 +135,104 @@ public static class ExportRungsHandler
         return order.Where(kinds.Contains).ToList();
     }
 
+    private static readonly Regex RungRangeRegex = new(
+        @"/RLLContent/Rungs?\[\s*(?<from>\d+)\s*(?:-\s*(?<to>\d+)\s*)?\]\s*$",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+    private static readonly Regex RllContentSuffix = new(@"/RLLContent$", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+    private static readonly Regex ProgramNameRegex = new(
+        @"Program\[@Name\s*=\s*['""](?<n>[^'""]*)['""]\]", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+    private static readonly Regex RoutineNameRegex = new(
+        @"Routine\[@Name\s*=\s*['""](?<n>[^'""]*)['""]\]", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+    /// <summary>Why <paramref name="xPath"/> cannot be an XPath (unbalanced brackets or quotes, empty predicate), or <c>null</c>.</summary>
+    private static string? MalformedReason(string xPath)
+    {
+        var depth = 0;
+        char quote = '\0';
+        foreach (var ch in xPath)
+        {
+            if (quote != '\0') { if (ch == quote) quote = '\0'; continue; }
+            if (ch is '\'' or '"') quote = ch;
+            else if (ch == '[') depth++;
+            else if (ch == ']' && --depth < 0) return "a ']' has no matching '['";
+        }
+        if (quote != '\0') return "a quote is not closed";
+        if (depth != 0) return "a '[' is not closed";
+        if (xPath.Contains("[]", StringComparison.Ordinal)) return "a predicate '[]' is empty";
+        return null;
+    }
+
+    /// <summary>The number of rungs in the routine at <paramref name="routineXPath"/>, or <c>null</c> when it cannot be read.</summary>
+    private static async Task<int?> TryCountRungsAsync(LogixProjectSession session, string routineXPath, CancellationToken ct)
+    {
+        var l5x = await TryExportAsync(session, routineXPath, ct).ConfigureAwait(false);
+        if (l5x is null) return null;
+        try { return SafeXml.ParseDocument(l5x).Descendants("Rung").Count(); }
+        catch (System.Xml.XmlException) { return null; }
+    }
+
+    private static async Task<string?> TryExportAsync(LogixProjectSession session, string xPath, CancellationToken ct)
+    {
+        var temp = Path.GetTempFileName();
+        try
+        {
+            await session.ExecuteAsync(project => project.PartialExportToXmlFileAsync(xPath, temp, ct), ct).ConfigureAwait(false);
+            return await File.ReadAllTextAsync(temp, ct).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException) { return null; }
+        finally { try { File.Delete(temp); } catch { /* best effort */ } }
+    }
+
+    private static string List(IEnumerable<string> names)
+    {
+        var list = names.ToList();
+        return list.Count == 0 ? "(none)" : string.Join(", ", list);
+    }
+
+    /// <summary>
+    /// After a failed export, decides whether the program or routine named in <paramref name="xPath"/> is missing by
+    /// listing what the controller does have. Returns a <c>ProgramNotFound</c> / <c>RoutineNotFound</c> error naming the
+    /// available programs or routines, or <paramref name="fallback"/> when the names exist (or cannot be listed).
+    /// The SDK's own text stays in <c>sdkError</c>.
+    /// </summary>
+    private static async Task<ExportRungsError> NotFoundOrAsync(
+        LogixProjectSession session, string xPath, string sdkText, CancellationToken ct, ExportRungsError fallback)
+    {
+        var program = ProgramNameRegex.Match(xPath) is { Success: true } pm ? pm.Groups["n"].Value : null;
+        var routine = RoutineNameRegex.Match(xPath) is { Success: true } rm ? rm.Groups["n"].Value : null;
+        if (program is null) return fallback;
+        try
+        {
+            var programsL5x = await TryExportAsync(session, "Controller/Programs", ct).ConfigureAwait(false);
+            if (programsL5x is null) return fallback;
+            var programs = SafeXml.ParseDocument(programsL5x).Descendants("Program")
+                .Select(p => (string?)p.Attribute("Name")).OfType<string>().ToList();
+            if (programs.Count == 0) return fallback;
+            var found = programs.FirstOrDefault(n => string.Equals(n, program, StringComparison.OrdinalIgnoreCase));
+            if (found is null)
+                return new ExportRungsError(
+                    $"Program '{program}' not found. Available programs: {List(programs)}.",
+                    "Use one of the listed program names in the xPath.",
+                    ErrorKinds.ProgramNotFound, SdkError: sdkText);
+            if (routine is null) return fallback;
+            var programL5x = await TryExportAsync(session, $"Controller/Programs/Program[@Name='{found}']", ct).ConfigureAwait(false);
+            if (programL5x is null) return fallback;
+            var routines = SafeXml.ParseDocument(programL5x).Descendants("Routine")
+                .Select(r => (string?)r.Attribute("Name")).OfType<string>().ToList();
+            if (routines.Count == 0) return fallback;
+            if (!routines.Any(n => string.Equals(n, routine, StringComparison.OrdinalIgnoreCase)))
+                return new ExportRungsError(
+                    $"Routine '{routine}' not found in program '{found}'. Available routines: {List(routines)}.",
+                    "Use one of the listed routine names in the xPath.",
+                    ErrorKinds.RoutineNotFound, SdkError: sdkText);
+        }
+        catch (System.Xml.XmlException) { /* fall through to the generic refusal */ }
+        return fallback;
+    }
+
     /// <summary>
     /// Exports the L5X content at <paramref name="xPath"/> from the open
     /// <paramref name="session"/> and returns it as a string.
@@ -145,6 +259,7 @@ public static class ExportRungsHandler
     /// An <see cref="ExportRungsResult"/> with the L5X content on success, or
     /// an <see cref="ExportRungsError"/> on failure.  Never throws.
     /// </returns>
+
     private static ExportRungsError Faulted(TagServiceError e) =>
         new(e.Message, e.Hint, ErrorKinds.SdkServerFaulted, ErrorKinds.SessionFaulted);
 
@@ -158,12 +273,42 @@ public static class ExportRungsHandler
             return Faulted(session.FaultedError());
 
         if (string.IsNullOrWhiteSpace(xPath))
-            return new ExportRungsError("xPath must not be blank.");
+            return new ExportRungsError(
+                "xPath must not be blank.",
+                BareControllerHint,
+                ErrorKinds.InvalidArguments);
 
         if (string.Equals(xPath, "Controller", StringComparison.Ordinal))
             return new ExportRungsError(
                 "xPath 'Controller' is not a valid export scope.",
-                BareControllerHint);
+                BareControllerHint,
+                ErrorKinds.InvalidArguments);
+
+        if (MalformedReason(xPath) is { } malformed)
+            return new ExportRungsError(
+                $"xPath '{xPath}' is malformed: {malformed}.",
+                MalformedXPathHint,
+                ErrorKinds.InvalidArguments);
+
+        if (RungRangeRegex.Match(xPath) is { Success: true } range)
+        {
+            var from = long.Parse(range.Groups["from"].Value);
+            var to   = range.Groups["to"].Success ? long.Parse(range.Groups["to"].Value) : from;
+            var routineXPath = xPath[..range.Index].TrimEnd('/');
+            routineXPath = RllContentSuffix.Replace(routineXPath, "");
+            var count = await TryCountRungsAsync(session, routineXPath, ct).ConfigureAwait(false);
+            var countText = count is { } c ? $" The routine has {c} rung{(c == 1 ? "" : "s")} (numbered 0 to {Math.Max(c - 1, 0)})." : "";
+            if (from > to)
+                return new ExportRungsError(
+                    $"xPath '{xPath}' has a reversed rung range: {from} is after {to}.{countText}",
+                    "Give the range as first-last with first <= last.",
+                    ErrorKinds.InvalidArguments);
+            if (count is { } n && (to >= n))
+                return new ExportRungsError(
+                    $"xPath '{xPath}' has a rung range past the end of the routine: rung {to} requested.{countText}",
+                    "Give rung numbers inside the routine, or export the whole routine.",
+                    ErrorKinds.InvalidArguments);
+        }
 
         using var operation = session.BeginOperation(RockwellErrorHints.OperationExport);
         var tempFile = Path.GetTempFileName();
@@ -181,23 +326,23 @@ public static class ExportRungsHandler
             }
             catch (TagServiceException ex)
             {
-                return new ExportRungsError(
-                    $"Export failed: {ex.Error.Message}");
+                return await NotFoundOrAsync(session, xPath, ex.Error.Message, ct,
+                    new ExportRungsError($"Export failed: {ex.Error.Message}", SdkError: ex.Error.Message));
             }
             catch (OperationNotPerformedException ex)
             {
-                return new ExportRungsError(
-                    $"Export could not be performed for '{xPath}': {ex.Message}");
+                return await NotFoundOrAsync(session, xPath, ex.Message, ct,
+                    new ExportRungsError($"Export could not be performed for '{xPath}'.", SdkError: ex.Message));
             }
             catch (OperationFailedException ex)
             {
-                return new ExportRungsError(
-                    $"Export operation failed for '{xPath}': {ex.Message}");
+                return await NotFoundOrAsync(session, xPath, ex.Message, ct,
+                    new ExportRungsError($"Export operation failed for '{xPath}'.", SdkError: ex.Message));
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                return new ExportRungsError(
-                    $"Unexpected error during export for '{xPath}': {ex.Message}");
+                return await NotFoundOrAsync(session, xPath, ex.Message, ct,
+                    new ExportRungsError($"Unexpected error during export for '{xPath}'.", SdkError: ex.Message));
             }
 
             string content;

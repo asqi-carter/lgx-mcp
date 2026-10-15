@@ -12,12 +12,12 @@
     StudioOffline (reason studio_offline). Both carry the message: ask the
     engineer to open the project in Studio and go online by Upload; lgx-mcp
     never launches Studio or goes online through it. Read-only observation
-    (window title, UIA edits indicator, screenshots) is unaffected.
+    (window title, screenshots) is unaffected.
 
     Drives the already-open Studio 5000 project through the
     online-edits gestures that have no SDK equivalent: reading the visual
     online-edits status, cancelling all pending edits, and accepting all
-    pending edits. Studio 5000 is an MFC application with no UIA menu bar, so
+    pending edits. Studio 5000 is an MFC application with no accessibility menu bar, so
     every verb is ONE posted gesture: WM_COMMAND with the menu
     command ID posted to the Studio main window (found by PID), the
     confirmation dialog's text verified, and the dialog's own Yes (or No)
@@ -185,6 +185,18 @@ param(
     [ValidateRange(1, 65535)]
     [int] $AcceptCommandId = 32077,
 
+    # View -> Errors (Alt+1): toggles Logix Designer's Errors pane. After a
+    # successful accept the pane slides out as an auto-hide flyout, and while it
+    # is showing a posted accept / test / untest / assemble / cancel raises no
+    # confirmation dialog. Posted exactly like -AcceptCommandId, and only
+    # as the single retry of a verb whose first post produced no dialog: once
+    # to toggle, and once more to restore the pane if the retry also produced
+    # no dialog. Never posted before the first attempt, and never while a
+    # modal dialog is up. Posted only.
+    [Parameter(Mandatory = $false)]
+    [ValidateRange(1, 65535)]
+    [int] $ErrorsPaneToggleCommandId = 32027,
+
     # Logic -> Online Edits -> Test Accepted Program Edits. Menu ID 32061 in
     # LogixACENU.dll / AFLibENU.dll (Studio v38.11 resource dump). Expected: a
     # dialog, then Yes -> the new logic runs, Studio stays "Edits Present".
@@ -280,6 +292,23 @@ $script:StudioWindowHandle = [IntPtr]::Zero
 # it has run. Merged into RESULT_JSON as detail.studioIdleWaitMs.
 $script:StudioIdleWaitMs = $null
 
+# Errors-pane toggle bookkeeping, reported at the top level of RESULT_JSON:
+#   errorsPaneToggled      -- $true when -ErrorsPaneToggleCommandId was posted at least once.
+#   retriedAfterPaneToggle -- $true when the second post of the verb produced the dialog.
+#   paneToggleRestored     -- $true when the toggle was posted a second time to restore the pane.
+$script:ErrorsPaneToggled      = $false
+$script:RetriedAfterPaneToggle = $false
+$script:PaneToggleRestored     = $false
+#   errorsPaneLayout -- where the pane was left after a toggle: 'auto-hide', 'docked', 'hidden' or
+#                             'unknown' (the window enumeration failed); $null (omitted) when the pane was never toggled.
+#   errorsPaneTabsBefore / errorsPaneTabsAfter -- integer count of auto-hide tabs (BCGPControlBar id 1 under a
+#                             BCGPDockBar) sampled before the driver's toggle and at the end; $null when unknown.
+#                             For the bench only; the server ignores them.
+$script:ErrorsPaneLayout       = $null
+$script:ErrorsPaneTabsBefore   = $null
+$script:ErrorsPaneTabsAfter    = $null
+$script:PaneSampleBefore       = $null
+
 <#
 .SYNOPSIS
     Print the single RESULT_JSON: line this script's callers parse. A safety
@@ -310,6 +339,12 @@ function Write-ResultJson {
         gestureTier       = $script:GestureTierUsed
         dialogText        = $script:ConfirmationDialogText
         dialogWarnings    = @($script:DialogWarnings)
+        errorsPaneToggled      = [bool] $script:ErrorsPaneToggled
+        retriedAfterPaneToggle = [bool] $script:RetriedAfterPaneToggle
+        paneToggleRestored     = [bool] $script:PaneToggleRestored
+        errorsPaneLayout       = $script:ErrorsPaneLayout
+        errorsPaneTabsBefore   = $script:ErrorsPaneTabsBefore
+        errorsPaneTabsAfter    = $script:ErrorsPaneTabsAfter
         cursorMovedByDriver   = [bool] $script:CursorMovedByDriver
         cursorMovedExternally = [bool] $script:CursorMovedExternally
         cursorMoved       = [bool] $script:CursorMoved
@@ -432,6 +467,56 @@ public static class Win32Gui
     public static bool PostCommand(IntPtr hWnd, int commandId)
     {
         return PostMessage(hWnd, WM_COMMAND, (IntPtr)commandId, IntPtr.Zero);
+    }
+
+    // Read-only child-window enumeration (the Errors pane layout read): no message is sent to any window.
+    [DllImport("user32.dll")]
+    public static extern bool EnumChildWindows(IntPtr hWndParent, EnumWindowsProc lpEnumFunc, IntPtr lParam);
+
+    [DllImport("user32.dll")] public static extern IntPtr GetParent(IntPtr hWnd);
+
+    /// <summary>One descendant window of the Studio main window, as read by EnumDescendants.</summary>
+    public sealed class ChildInfo
+    {
+        public IntPtr Handle;
+        public string ClassName = "";
+        public string Text = "";
+        public bool Visible;
+        public int ControlId;
+        public string ParentClassName = "";
+    }
+
+    private static string ClassNameOf(IntPtr hWnd)
+    {
+        if (hWnd == IntPtr.Zero) { return ""; }
+        var sb = new StringBuilder(256);
+        return GetClassName(hWnd, sb, sb.Capacity) > 0 ? sb.ToString() : "";
+    }
+
+    /// <summary>
+    /// Every descendant window of hWndParent (class, text, visibility, control id, parent's class).
+    /// Read-only: EnumChildWindows, GetClassName, GetWindowText, IsWindowVisible, GetDlgCtrlID, GetParent.
+    /// </summary>
+    public static List<ChildInfo> EnumDescendants(IntPtr hWndParent)
+    {
+        var handles = new List<IntPtr>();
+        EnumChildWindows(hWndParent, delegate (IntPtr h, IntPtr l) { handles.Add(h); return true; }, IntPtr.Zero);
+        var result = new List<ChildInfo>(handles.Count);
+        foreach (IntPtr h in handles)
+        {
+            var text = new StringBuilder(256);
+            GetWindowText(h, text, text.Capacity);
+            result.Add(new ChildInfo
+            {
+                Handle = h,
+                ClassName = ClassNameOf(h),
+                Text = text.ToString(),
+                Visible = IsWindowVisible(h),
+                ControlId = GetDlgCtrlID(h),
+                ParentClassName = ClassNameOf(GetParent(h))
+            });
+        }
+        return result;
     }
 
     [DllImport("user32.dll", SetLastError = true)]
@@ -906,78 +991,18 @@ function Get-StudioOnlineStateFromTitle {
 
 <#
 .SYNOPSIS
-    Best-effort secondary read of the online-edits indicator via UI
-    Automation's TextPattern (requirement 2: "toolbar/status text
-    read via UIA TextPattern where available"). Walks the descendants of the
-    Studio main window that expose TextPattern looking for control text
-    matching "No Edits" or "Edits Present". Never throws -- returns $null
-    when the UIAutomationClient/UIAutomationTypes assemblies cannot be
-    loaded, the window exposes no matching UIA text (Studio 5000 is
-    documented elsewhere in this script as an MFC app with essentially no
-    UIA tree), or an error occurs while walking it. Callers must treat this
-    as a secondary confirmation only; the title-prefix parse
-    (Get-StudioOnlineStateFromTitle) is always the primary, always-available
-    signal, and the title text itself is the tertiary fallback for the edits
-    indicator.
-#>
-function Get-StudioEditsIndicatorViaUia {
-    param([Parameter(Mandatory = $true)] [IntPtr] $WindowHandle)
-
-    try {
-        Add-Type -AssemblyName UIAutomationClient -ErrorAction Stop
-        Add-Type -AssemblyName UIAutomationTypes -ErrorAction Stop
-    } catch {
-        Write-Host "    UIA assemblies unavailable ($_) -- skipping TextPattern read, falling back to title"
-        return $null
-    }
-
-    try {
-        $root = [System.Windows.Automation.AutomationElement]::FromHandle($WindowHandle)
-        if ($null -eq $root) {
-            return $null
-        }
-
-        $textCondition = New-Object System.Windows.Automation.PropertyCondition(
-            [System.Windows.Automation.AutomationElement]::IsTextPatternAvailableProperty, $true)
-        $textElements = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $textCondition)
-
-        foreach ($el in $textElements) {
-            $pattern = $el.GetCurrentPattern([System.Windows.Automation.TextPattern]::Pattern)
-            $text = $pattern.DocumentRange.GetText(-1)
-            if ($text -match '(?i)no\s+edits') {
-                return 'No Edits'
-            }
-            if ($text -match '(?i)edits\s+present') {
-                return 'Edits Present'
-            }
-        }
-    } catch {
-        Write-Host "    UIA TextPattern read failed ($_) -- falling back to title-derived indicator"
-        return $null
-    }
-
-    return $null
-}
-
-<#
-.SYNOPSIS
     Determine the edits indicator ("No Edits" / "Edits Present") for the
-    status verb: try the UIA TextPattern read first (Get-StudioEditsIndicatorViaUia)
-    since it reflects Studio's own control text, and fall back to matching
-    the same phrases in the window title when UIA is unavailable or found no
-    match. Defaults to 'No Edits' when neither source reports 'Edits
-    Present' -- a window with no evidence of pending edits is presumed clean.
+    status verb from the window title: 'Edits Present' when the title carries
+    that phrase. Defaults to 'No Edits' otherwise -- a window with no
+    evidence of pending edits is presumed clean. (Studio 5000 is an MFC
+    application with no accessibility tree for this control, so the title is
+    the only source.)
 #>
 function Get-StudioEditsIndicator {
     param(
         [Parameter(Mandatory = $true)] [IntPtr] $WindowHandle,
         [Parameter(Mandatory = $true)] [AllowEmptyString()] [string] $Title
     )
-
-    $viaUia = Get-StudioEditsIndicatorViaUia -WindowHandle $WindowHandle
-    if ($null -ne $viaUia) {
-        return $viaUia
-    }
 
     if ($Title -and $Title -match '(?i)edits\s+present') {
         return 'Edits Present'
@@ -1280,6 +1305,119 @@ function Confirm-DialogTextThenPressYes {
 
 <#
 .SYNOPSIS
+    Read the Errors pane layout from its window (#61): a read-only Win32 enumeration of the Studio main window's
+    child windows (EnumChildWindows + GetClassName + GetWindowText + IsWindowVisible + GetDlgCtrlID + GetParent).
+    No focus, no message and no click: the only writes anywhere near the pane are the at most one PostMessage of
+    the toggle command made by Invoke-PostedCommandGesture / Complete-ErrorsPaneLayout.
+
+    Why Win32 and not an accessibility-tree query: the docked pane's automation name carries trailing spaces ('Errors  ', window
+    text '  Errors  '), and in the auto-hide and hidden layouts no element named like Errors is exposed at all, so a
+    name query reads 'absent' in every layout and cannot tell them apart. The window tree can.
+
+    What it finds:
+      - the Errors bar: a child of class BCGPControlBar* whose trimmed text is like Errors* (control id 349 in
+        Logix Designer v38). It exists as a window only while the pane is docked or its auto-hide flyout is out;
+        errorsBarVisible is IsWindowVisible of it.
+      - the auto-hide tabs: the strip of nameless BCGPControlBar* windows with control id 1 whose parent is a
+        BCGPDockBar*; autoHideTabs is their count. The count changes when the pane enters or leaves auto-hide
+        (or is hidden), which is how Resolve-ErrorsPaneLayout tells auto-hide from hidden.
+
+    Returns an object with errorsBar (the window handle, $null when there is none), errorsBarVisible, autoHideTabs,
+    childCount and failed ($true when the enumeration threw). Never throws.
+#>
+function Get-ErrorsPaneLayout {
+    param([Parameter(Mandatory = $true)] [IntPtr] $WindowHandle)
+
+    $sample = [pscustomobject] @{
+        errorsBar        = $null
+        errorsBarVisible = $false
+        autoHideTabs     = 0
+        childCount       = 0
+        failed           = $false
+    }
+    try {
+        $children = @([Win32Gui]::EnumDescendants($WindowHandle))
+        $sample.childCount = @($children).Count
+        foreach ($c in $children) {
+            if ($c.ClassName -notlike 'BCGPControlBar*') { continue }
+            if ($null -eq $sample.errorsBar -and $c.Text.Trim() -like 'Errors*') {
+                $sample.errorsBar        = $c.Handle
+                $sample.errorsBarVisible = [bool] $c.Visible
+            }
+            if ($c.ControlId -eq 1 -and $c.ParentClassName -like 'BCGPDockBar*') {
+                $sample.autoHideTabs++
+            }
+        }
+    } catch {
+        Write-Host "    Errors-pane window enumeration failed ($_)" -ForegroundColor Yellow
+        $sample.failed = $true
+    }
+    return $sample
+}
+
+<#
+.SYNOPSIS
+    Pure classification of the Errors pane layout (#61); no Win32 call, no side effect. -Before is the
+    Get-ErrorsPaneLayout sample taken immediately before the driver's own toggle post ($null when none was taken),
+    -Now the sample taken at the end. Returns one of four strings:
+      'unknown'   -- Now is missing, the enumeration threw, or it found no Studio child windows at all;
+      'docked'    -- the Errors bar is visible;
+      'auto-hide' -- the bar is not visible, Before exists and had no visible bar, and the number of auto-hide tabs
+                     now equals the sampled number;
+      'hidden'    -- anything else.
+    A wrong 'hidden' makes the caller post the toggle again and flip a visible pane, so every doubt that is not
+    'unknown' still has to be backed by the window evidence above.
+#>
+function Resolve-ErrorsPaneLayout {
+    param(
+        [Parameter(Mandatory = $false)] $Before = $null,
+        [Parameter(Mandatory = $false)] $Now = $null
+    )
+
+    if ($null -eq $Now -or $Now.failed -or $Now.childCount -le 0) { return 'unknown' }
+    if ($Now.errorsBarVisible) { return 'docked' }
+    if ($null -ne $Before -and -not $Before.failed -and -not $Before.errorsBarVisible `
+            -and $Now.autoHideTabs -eq $Before.autoHideTabs) {
+        return 'auto-hide'
+    }
+    return 'hidden'
+}
+
+<#
+.SYNOPSIS
+    Never finish in HIDDEN, and never flip the pane on a wrong read (#60, #61): after an Errors-pane toggle, once
+    the verb has completed and no dialog is open, read the layout (Get-ErrorsPaneLayout) and classify it with
+    Resolve-ErrorsPaneLayout against $script:PaneSampleBefore. Only when the result is 'hidden' is
+    -ErrorsPaneToggleCommandId posted once more (the only write here: one PostMessage, no WM_SYSCOMMAND, no command
+    32173, no click, no foreground change), then 600 ms later the layout is read and classified again. Records the
+    result in $script:ErrorsPaneLayout and the auto-hide tab counts in $script:ErrorsPaneTabsBefore/After. The extra
+    600 ms wait and the window reads stay inside the server's Session1ScriptRunner.GestureBudgetSeconds.
+#>
+function Complete-ErrorsPaneLayout {
+    if (-not $script:ErrorsPaneToggled) { return }
+    if ([Win32Gui]::FindOpenDialogOwnedBy($ConfirmDialogClassName, $WindowHandle) -ne [IntPtr]::Zero) {
+        $script:ErrorsPaneLayout = 'unknown'
+        return
+    }
+
+    $before = $script:PaneSampleBefore
+    $now    = Get-ErrorsPaneLayout -WindowHandle $WindowHandle
+    $layout = Resolve-ErrorsPaneLayout -Before $before -Now $now
+    if ($layout -eq 'hidden') {
+        Write-Host "    Errors pane is hidden: posting WM_COMMAND $ErrorsPaneToggleCommandId once more to bring it back docked" -ForegroundColor Yellow
+        if ([Win32Gui]::PostCommand($WindowHandle, $ErrorsPaneToggleCommandId)) {
+            Start-Sleep -Milliseconds 600
+            $now    = Get-ErrorsPaneLayout -WindowHandle $WindowHandle
+            $layout = Resolve-ErrorsPaneLayout -Before $before -Now $now
+        }
+    }
+    $script:ErrorsPaneLayout = $layout
+    if ($null -ne $before -and -not $before.failed) { $script:ErrorsPaneTabsBefore = [int] $before.autoHideTabs }
+    if ($layout -ne 'unknown') { $script:ErrorsPaneTabsAfter = [int] $now.autoHideTabs }
+}
+
+<#
+.SYNOPSIS
     The only gesture this script makes: post WM_COMMAND
     $CommandId to the Studio main window (resolved by Studio PID in
     Get-StudioWindow) and, if the confirmation dialog appears within
@@ -1310,20 +1448,64 @@ function Invoke-PostedCommandGesture {
 
     Wait-StudioIdle -WindowHandle $WindowHandle | Out-Null
 
-    Write-Host "    posted: WM_COMMAND $CommandId to the Studio main window (no cursor, no focus, no keys)"
-    if (-not [Win32Gui]::PostCommand($WindowHandle, $CommandId)) {
-        Write-Host "    PostMessage of command $CommandId failed" -ForegroundColor Yellow
-        return $false
+    # No dialog after a successful accept can be Logix Designer's Errors pane showing as an
+    # auto-hide flyout. So the verb command is posted at most twice: when the first post raises no
+    # dialog, post -ErrorsPaneToggleCommandId once, wait 600 ms, take the screenshot pair, and post
+    # the verb command again. If that also raises no dialog, toggle the pane back and give up.
+    # Never before the first attempt; never while any dialog is open (the modal check above stays first).
+    $result          = $false
+    $confirmDlg      = [IntPtr]::Zero
+    $confirmDeadline = Get-Date
+    $paneGestures    = @()
+    $attemptNumber   = 0
+    while ($true) {
+        $attemptNumber++
+        Write-Host "    posted: WM_COMMAND $CommandId to the Studio main window (no cursor, no focus, no keys)"
+        if (-not [Win32Gui]::PostCommand($WindowHandle, $CommandId)) {
+            Write-Host "    PostMessage of command $CommandId failed" -ForegroundColor Yellow
+            if ($attemptNumber -eq 1) { return $false }
+            break
+        }
+
+        $confirmDeadline = (Get-Date).AddSeconds($ConfirmTimeoutSeconds)
+        $confirmDlg = Wait-ForConfirmationDialog -TimeoutSeconds $ConfirmTimeoutSeconds
+        if ($confirmDlg -eq [IntPtr]::Zero) {
+            # A slow Studio may show the dialog just after the deadline: still complete it
+            # when it appears within the late window, while the driver is still running.
+            $confirmDlg = Wait-ForLateConfirmationDialog -Deadline $confirmDeadline
+        }
+        if ($confirmDlg -ne [IntPtr]::Zero) {
+            if ($attemptNumber -gt 1) { $script:RetriedAfterPaneToggle = $true }
+            break
+        }
+        if ($attemptNumber -gt 1) {
+            # The retry also raised nothing: put the pane back where it was (it is a toggle).
+            if ([Win32Gui]::FindOpenDialogOwnedBy($ConfirmDialogClassName, $WindowHandle) -eq [IntPtr]::Zero) {
+                Write-Host "    retry produced no dialog: posting WM_COMMAND $ErrorsPaneToggleCommandId again to restore the Errors pane" -ForegroundColor Yellow
+                if ([Win32Gui]::PostCommand($WindowHandle, $ErrorsPaneToggleCommandId)) {
+                    $script:PaneToggleRestored = $true
+                    Start-Sleep -Milliseconds 600
+                }
+            }
+            break
+        }
+        if ([Win32Gui]::FindOpenDialogOwnedBy($ConfirmDialogClassName, $WindowHandle) -ne [IntPtr]::Zero) { break }
+
+        $toggleBefore = Save-Screenshot -Step "$Step-pane-toggle-before"
+        # The pane is now in its starting layout (auto-hide with the flyout out, docked or hidden): sample it
+        # before the first toggle post so Complete-ErrorsPaneLayout can tell auto-hide from hidden afterwards.
+        $script:PaneSampleBefore = Get-ErrorsPaneLayout -WindowHandle $WindowHandle
+        Write-Host "    no dialog: posting WM_COMMAND $ErrorsPaneToggleCommandId (Errors pane toggle) once, then retrying" -ForegroundColor Yellow
+        if (-not [Win32Gui]::PostCommand($WindowHandle, $ErrorsPaneToggleCommandId)) {
+            Write-Host "    PostMessage of command $ErrorsPaneToggleCommandId failed -- not retrying" -ForegroundColor Yellow
+            break
+        }
+        $script:ErrorsPaneToggled = $true
+        Start-Sleep -Milliseconds 600
+        $toggleAfter = Save-Screenshot -Step "$Step-pane-toggle-after"
+        $paneGestures += @{ step = "$Step-pane-toggle"; beforeScreenshot = $toggleBefore; afterScreenshot = $toggleAfter }
     }
 
-    $result = $false
-    $confirmDeadline = (Get-Date).AddSeconds($ConfirmTimeoutSeconds)
-    $confirmDlg = Wait-ForConfirmationDialog -TimeoutSeconds $ConfirmTimeoutSeconds
-    if ($confirmDlg -eq [IntPtr]::Zero) {
-        # A slow Studio may show the dialog just after the deadline: still complete it
-        # when it appears within the late window, while the driver is still running.
-        $confirmDlg = Wait-ForLateConfirmationDialog -Deadline $confirmDeadline
-    }
     if ($confirmDlg -eq [IntPtr]::Zero) {
         Write-Host "    posted command $CommandId produced no confirmation dialog within ${ConfirmTimeoutSeconds}s (disabled or not applicable)" -ForegroundColor Yellow
     } else {
@@ -1337,11 +1519,15 @@ function Invoke-PostedCommandGesture {
     if ($confirmDlg -eq [IntPtr]::Zero) {
         Close-LateConfirmationDialog -Deadline $confirmDeadline | Out-Null
     }
+
+    # Never finish with the Errors pane hidden after a toggle (read-only window reads, at most one more post).
+    Complete-ErrorsPaneLayout
     $script:Gestures.Add(@{
         step             = $Step
         beforeScreenshot = $beforeScreenshot
         afterScreenshot  = $afterScreenshot
     }) | Out-Null
+    foreach ($g in $paneGestures) { $script:Gestures.Add($g) | Out-Null }
     return $result
 }
 
@@ -1441,7 +1627,7 @@ function Write-PostedVerbResult {
         }
     } else {
         Write-ResultJson -Ok $false -Reason 'command_not_applicable' -Detail @{
-            message = "The posted $Verb command produced no confirmation dialog within ${ConfirmTimeoutSeconds}s: the command is disabled or not applicable in the current Studio state (for example Assemble needs a tested zone). The command is only ever posted; nothing else is tried."
+            message = "The posted $Verb command produced no confirmation dialog within ${ConfirmTimeoutSeconds}s: the command is disabled or not applicable in the current Studio state (for example Assemble needs a tested zone). The command is only ever posted; the only other posts are the single Errors-pane toggle retry and, after a toggle, one more toggle when the pane is found hidden (errorsPaneToggled=$($script:ErrorsPaneToggled), paneToggleRestored=$($script:PaneToggleRestored))."
         }
     }
     $script:VerbExitCode = 1
@@ -1509,7 +1695,7 @@ try {
                 mode           = $onlineState.Mode
                 editsIndicator = $editsIndicator
                 faults         = @()
-                message        = 'Online state read from the bracketed window-title prefix; editsIndicator read via UIA TextPattern where available, falling back to the title text.'
+                message        = 'Online state read from the bracketed window-title prefix; editsIndicator read from the window title text.'
             }
         }
         'cancel' {

@@ -32,6 +32,11 @@ public static class TestPendingEditsHandler
     /// <param name="isStudioInstalled">Optional Studio-installed probe override.</param>
     /// <param name="ct">Cancellation token.</param>
     /// <param name="planLaunch">Optional launch-plan override stamped on pre-launch refusals.</param>
+    /// <param name="acceptForeign">
+    /// <c>true</c> tests a pending zone this server did not publish (see <see cref="ZoneLedger"/>); the result then
+    /// carries <c>foreign: true</c>. <c>false</c> refuses such a zone with <c>ForeignPendingZone</c>.
+    /// </param>
+    /// <param name="ledgerSession">The controller session the <see cref="ZoneLedger"/> is keyed by; <c>null</c> for the default key.</param>
     /// <returns>A <see cref="CancelPendingEditsResult"/> or a <see cref="CancelPendingEditsError"/>.</returns>
     public static Task<object> ExecuteAsync(
         string                                                      program,
@@ -41,9 +46,12 @@ public static class TestPendingEditsHandler
         Func<string, CancellationToken, Task<Session1ScriptResult>> session1Runner,
         Func<bool>?                                                 isStudioInstalled = null,
         CancellationToken                                           ct = default,
-        Func<(string? LaunchMode, string? RunLevel)>?               planLaunch = null) =>
+        Func<(string? LaunchMode, string? RunLevel)>?               planLaunch = null,
+        bool                                                        acceptForeign = false,
+        object?                                                     ledgerSession = null) =>
         StudioLifecycleHandler.ExecuteAsync(
             StudioLifecycleVerb.Test, program, routine, confirm, pendingEditsReader,
-            session1Runner, isStudioInstalled, ct, planLaunch);
+            session1Runner, isStudioInstalled, ct, planLaunch,
+            acceptForeign: acceptForeign, ledgerSession: ledgerSession);
 }
 #endif

@@ -7,7 +7,7 @@ using Task = System.Threading.Tasks.Task;
 namespace LogixMcp.Tests;
 
 /// <summary>
-/// logix-mcp-r7k0.4 (N4): stage and publish share one conflict rule, so a buffer the stage accepted can always be
+/// Stage and publish share one conflict rule, so a buffer the stage accepted can always be
 /// published; <c>logix_clear_staged</c> empties the session's staged rungs and tags without touching the controller.
 /// </summary>
 [Collection("AuditLoggerDir")]
@@ -147,6 +147,27 @@ public class ClearStagedTests : IDisposable
     }
 
     // ── logix_clear_staged ───────────────────────────────────────────────────
+
+    /// <summary>The kept-normal sets follow their bucket: a clear removes them with the replace counts, in scope only.</summary>
+    [Fact]
+    public async Task ClearStaged_RemovesKeptNormalSetsWithTheReplaceCounts()
+    {
+        var (session, _) = await OpenSessionAsync();
+        SeedBucket(session, RoutineA, 0, 2, rc: 1);
+        SeedBucket(session, RoutineB, 0, 1, rc: 1);
+        session.StagedKeptNormal[(RoutineA, 0u)] = [0];
+        session.StagedKeptNormal[(RoutineB, 0u)] = [0];
+
+        await ClearAsync(session, routine: "MainRoutine");
+
+        Assert.DoesNotContain(session.StagedReplaceCounts.Keys, k => k.RoutineXPath == RoutineA);
+        Assert.DoesNotContain(session.StagedKeptNormal.Keys, k => k.RoutineXPath == RoutineA);
+        Assert.Contains(session.StagedKeptNormal.Keys, k => k.RoutineXPath == RoutineB);
+
+        await ClearAsync(session);
+        Assert.Empty(session.StagedReplaceCounts);
+        Assert.Empty(session.StagedKeptNormal);
+    }
 
     /// <summary>Clearing one routine removes its rungs and tags, leaves the other routine, reports and audits.</summary>
     [Fact]
@@ -890,7 +911,7 @@ public class ClearStagedTests : IDisposable
     }
 
     /// <summary>
-    /// This change requirement 5 (G15): a workstation replace with an explicit comment, then a publish, then a cancel of the
+    /// A workstation replace with an explicit comment, then a publish, then a cancel of the
     /// zone restores the original comment. The undo survives the publish, attached to the zone.
     /// </summary>
     [Fact]
@@ -938,7 +959,7 @@ public class ClearStagedTests : IDisposable
         Assert.Equal("Brand new comment", controllerComment());
     }
 
-    // ── This change requirement 3 (G24): publish and clear_staged are mutually exclusive ──
+    // ── Publish and clear_staged are mutually exclusive ──
 
     /// <summary>
     /// A clear issued from inside the publish's own import call (the publish is in flight) returns the typed
@@ -1064,7 +1085,7 @@ public class ClearStagedTests : IDisposable
             await ProposeRungEditHandler.ExecuteAsync(RoutineA, 0, 0, Fragment, session2, target: "controller"));
     }
 
-    // ── This change requirement 3 (G45): SDK fault during a clear ───────────────
+    // ── SDK fault during a clear ───────────────
 
     private const string UnhandledFaultText =
         "LgxSrv_E_UNHANDLED_EXCEPTION while rebuilding the image; LgxSrv_E_SERVER_FAULTED";

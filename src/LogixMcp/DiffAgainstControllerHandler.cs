@@ -16,6 +16,17 @@ using L5Sharp.Core;
 /// so the image no longer matches the running controller.
 /// </param>
 /// <param name="Hint">Present only when <paramref name="Stale"/> is <c>true</c>.</param>
+/// <param name="PendingZones">
+/// <c>Program/Routine</c> of each routine whose image rungs carry pending-edit codes; those rungs are not part of the
+/// diff, which compares the accepted view. Omitted when nothing is pending.
+/// </param>
+/// <param name="PendingZonesNote">
+/// <see cref="DiffAgainstControllerHandler.PendingZonesSentence"/>; present only with <paramref name="PendingZones"/>.
+/// </param>
+/// <param name="ImageRefreshedBecause">
+/// <see cref="TagSessionService.OutOfBandReason"/> on the first read after the image was refreshed because the controller
+/// changed outside this session; omitted otherwise.
+/// </param>
 public record DiffAgainstControllerResult(
     [property: JsonPropertyName("tags")]      IReadOnlyList<DiffEntry> Tags,
     [property: JsonPropertyName("dataTypes")] IReadOnlyList<DiffEntry> DataTypes,
@@ -24,7 +35,13 @@ public record DiffAgainstControllerResult(
     [property: JsonPropertyName("controllerImageTakenAt")] DateTimeOffset ControllerImageTakenAt,
     [property: JsonPropertyName("stale")] bool Stale,
     [property: JsonPropertyName("hint"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    string? Hint = null);
+    string? Hint = null,
+    [property: JsonPropertyName("pendingZones"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    IReadOnlyList<string>? PendingZones = null,
+    [property: JsonPropertyName("pendingZonesNote"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? PendingZonesNote = null,
+    [property: JsonPropertyName("imageRefreshedBecause"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? ImageRefreshedBecause = null);
 
 /// <summary>Structured error response of <see cref="DiffAgainstControllerHandler.Execute"/>.</summary>
 /// <param name="Error">Human-readable error message.</param>
@@ -51,6 +68,10 @@ public static class DiffAgainstControllerHandler
     /// <summary>Error kind: a session exists but is not an online controller session.</summary>
     public const string KindNotOnline = "NotOnline";
 
+    /// <summary>Sentence that accompanies <see cref="DiffAgainstControllerResult.PendingZones"/>.</summary>
+    public const string PendingZonesSentence =
+        "pending edits are not part of this diff; accept or cancel them, or use logix_pending_edits";
+
     /// <summary>Hint attached to <see cref="DiffAgainstControllerResult.Hint"/> when the image is stale.</summary>
     public const string StaleHint = "logix_connect again for a fresh image";
 
@@ -63,6 +84,22 @@ public static class DiffAgainstControllerHandler
         "This build has no controller image to compare against; compare two L5X files with " +
         "logix_diff_projects instead.";
 #endif
+
+    /// <summary>
+    /// Probes the controller fingerprint (always, ignoring the TTL), refreshes the session image if it differs, then diffs
+    /// <paramref name="l5xPath"/> against it (<see cref="Execute"/>). Never throws except for cancellation.
+    /// </summary>
+    /// <param name="l5xPath">Path to the engineer's L5X file (the "before").</param>
+    /// <param name="session">Tag-session singleton holding the connection and controller image.</param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <returns>A <see cref="DiffAgainstControllerResult"/> or a <see cref="DiffAgainstControllerError"/>.</returns>
+    public static async Task<object> ExecuteAsync(string l5xPath, TagSessionService session, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(session);
+        var because = await AnalysisImage.PrepareAsync(session, ct, forceProbe: true).ConfigureAwait(false);
+        var result  = Execute(l5xPath, session);
+        return because is not null && result is DiffAgainstControllerResult ok ? ok with { ImageRefreshedBecause = because } : result;
+    }
 
     /// <summary>
     /// Diffs <paramref name="l5xPath"/> against the session's controller image. Never throws.
@@ -89,22 +126,35 @@ public static class DiffAgainstControllerHandler
                 "uploading the controller project holds one.",
                 ErrorKinds.NoActiveSession, ConnectHint);
 
+        if (AnalysisImage.ChangedErrorOf(session) is { } changed)
+            return new DiffAgainstControllerError(changed.Error, ErrorKinds.ControllerChanged, changed.Hint);
+
         if (string.IsNullOrWhiteSpace(l5xPath))
             return new DiffAgainstControllerError("l5xPath must not be empty.");
 
         try
         {
             var before = SafeXml.LoadL5x(l5xPath);
-            var diff   = DiffProjectsHandler.Compare(before, image);
-            bool stale = session.LastLiveEditAt is { } editedAt && editedAt > takenAt;
+            // The file is compared with the controller's accepted logic: staged and pending-zone rungs are not
+            // part of it (they are listed in pendingZones), and the originals they displace count as ordinary rungs.
+            var accepted = ControllerImageRefresh.Accepted(image);
+            var diff     = DiffProjectsHandler.Compare(before, accepted);
+            // Stale when this session changed the controller after the image was taken (live edit), or the image is
+            // marked as not following the session's changes (refresh pending, or failed).
+            bool stale = (session.LastLiveEditAt is { } editedAt && editedAt > takenAt)
+                         || session.IsImageStale
+                         || SessionImageState.StalenessOf(session) is not null;
+            var zones = PendingZones(image);
 
             return new DiffAgainstControllerResult(
                 Label(diff.Tags, session.WasTagLiveEdited),
                 diff.DataTypes,
-                AddRungDetail(Label(diff.Routines, session.WasRoutineLiveEdited), before, image),
+                AddRungDetail(Label(diff.Routines, session.WasRoutineLiveEdited), before, accepted),
                 diff.Normalized,
                 takenAt, stale,
-                stale ? StaleHint : null);
+                stale ? StaleHint : null,
+                zones.Count > 0 ? zones : null,
+                zones.Count > 0 ? PendingZonesSentence : null);
         }
         catch (SafeXmlException ex)
         {
@@ -114,6 +164,28 @@ public static class DiffAgainstControllerHandler
         {
             return new DiffAgainstControllerError(ex.Message);
         }
+    }
+
+    /// <summary>
+    /// The <c>Program/Routine</c> keys of the routines whose rungs in <paramref name="image"/> carry pending-edit
+    /// codes (staged or pending-zone inserts, replacements, and the originals they displace), in name order.
+    /// </summary>
+    private static IReadOnlyList<string> PendingZones(L5X image)
+    {
+        var doc   = SafeXml.ParseDocument(image.ToString());
+        var zones = new SortedSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var rung in doc.Descendants("Rung"))
+        {
+            var code = (string?)rung.Attribute("Type");
+            if (code is null ||
+                !(ControllerImageRefresh.PendingOnlyCodes.Contains(code) || ControllerImageRefresh.DisplacedOriginalCodes.Contains(code)))
+                continue;
+            var routine = rung.Ancestors("Routine").FirstOrDefault();
+            var program = routine?.Ancestors("Program").FirstOrDefault();
+            if ((string?)routine?.Attribute("Name") is { } r && (string?)program?.Attribute("Name") is { } p)
+                zones.Add($"{p}/{r}");
+        }
+        return zones.ToList();
     }
 
     /// <summary>

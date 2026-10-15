@@ -148,13 +148,17 @@ public enum ImportCollisionOption
 /// </param>
 /// <param name="WillCreate">
 /// <c>true</c> on a dry-run preview when the datatype does not exist in the source ACD,
-/// meaning the real run will be refused with <c>NewDatatypeUnsupported</c>.
+/// meaning the real run will create it.
 /// <c>null</c> when the type exists.
 /// </param>
 /// <param name="Warnings">
 /// Human-readable warnings about the preview; carries the
-/// <c>NewDatatypeUnsupported</c> note when <see cref="WillCreate"/> is <c>true</c>.
+/// "will create" note when <see cref="WillCreate"/> is <c>true</c>.
 /// <c>null</c> when there are none.
+/// </param>
+/// <param name="SdkMessages">
+/// Status and error messages the SDK reported during the import. Omitted when there are none (dry runs,
+/// the no-SDK fallback, or a silent import).
 /// </param>
 public record ImportDatatypeResult(
     [property: JsonPropertyName("datatypeName")]   string                    DatatypeName,
@@ -193,7 +197,60 @@ public record ImportDatatypeResult(
                                                    string?                   BuildVerify   = null,
     [property: JsonPropertyName("designerVersion")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-                                                   string?                   DesignerVersion = null);
+                                                   string?                   DesignerVersion = null,
+    [property: JsonPropertyName("sdkMessages")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+                                                   IReadOnlyList<string>?    SdkMessages   = null);
+
+/// <summary>
+/// Typed error returned when the SDK import ran but the re-exported type does not have the requested members.
+/// The temp file was removed; nothing was written (no <c>savedTo</c>, no download advice, no build result).
+/// </summary>
+/// <param name="Error">Human-readable description.</param>
+/// <param name="DatatypeName">Name of the datatype.</param>
+/// <param name="ExpectedMembers">The requested (target) visible member list.</param>
+/// <param name="ActualMembers">The visible member list re-exported from the imported result.</param>
+/// <param name="Collision">The collision option that was used.</param>
+/// <param name="Reason">Why the import did not apply.</param>
+/// <param name="SdkMessages">The SDK's own import messages (omitted when empty).</param>
+/// <param name="Hint">What to do next.</param>
+/// <param name="Kind">Always <see cref="ErrorKinds.ImportNotApplied"/>.</param>
+/// <param name="HiddenHosts">Hidden host members (for BOOL bits) seen in the re-export, reported apart from the visible members; omitted when there are none.</param>
+public record ImportNotAppliedError(
+    [property: JsonPropertyName("error")]           string                              Error,
+    [property: JsonPropertyName("datatypeName")]    string                              DatatypeName,
+    [property: JsonPropertyName("expectedMembers")] IReadOnlyList<DataTypeMemberEntry>  ExpectedMembers,
+    [property: JsonPropertyName("actualMembers")]   IReadOnlyList<DataTypeMemberEntry>  ActualMembers,
+    [property: JsonPropertyName("collision")]       string                              Collision,
+    [property: JsonPropertyName("reason")]          string                              Reason,
+    [property: JsonPropertyName("sdkMessages")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+                                                    IReadOnlyList<string>?              SdkMessages,
+    [property: JsonPropertyName("hint")]            string                              Hint,
+    [property: JsonPropertyName("kind")]            string                              Kind = ErrorKinds.ImportNotApplied,
+    [property: JsonPropertyName("hiddenHosts")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+                                                    IReadOnlyList<DataTypeMemberEntry>? HiddenHosts = null);
+
+/// <summary>
+/// Typed error returned when <c>collision: Cancel</c> met an existing type and the SDK aborted the import.
+/// The temp file was removed; nothing was written.
+/// </summary>
+/// <param name="Error">Human-readable description including the SDK message.</param>
+/// <param name="DatatypeName">Name of the datatype.</param>
+/// <param name="Collision">The collision option that was used (<c>Cancel</c>).</param>
+/// <param name="SdkMessages">The SDK's own import messages (omitted when empty).</param>
+/// <param name="Hint">What to do next.</param>
+/// <param name="Kind">Always <see cref="ErrorKinds.ImportCancelledOnCollision"/>.</param>
+public record ImportCancelledOnCollisionError(
+    [property: JsonPropertyName("error")]        string                Error,
+    [property: JsonPropertyName("datatypeName")] string                DatatypeName,
+    [property: JsonPropertyName("collision")]    string                Collision,
+    [property: JsonPropertyName("sdkMessages")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+                                                 IReadOnlyList<string>? SdkMessages,
+    [property: JsonPropertyName("hint")]         string                Hint,
+    [property: JsonPropertyName("kind")]         string                Kind = ErrorKinds.ImportCancelledOnCollision);
 
 /// <summary>
 /// Generic validation error returned by <see cref="ImportDatatypeHandler.Execute"/>.
@@ -256,23 +313,28 @@ public static class ImportDatatypeHandler
         "After a successful import, a controller download is required to apply the change; " +
         "downloading clears controller memory and restarts the running process.";
 
-    /// <summary>Error kind returned when the datatype does not exist in the source ACD.</summary>
-    internal const string NewDatatypeUnsupportedKind = ErrorKinds.NewDatatypeUnsupported;
+    /// <summary>Dry-run warning (and <c>note</c>) when the datatype does not exist in the source ACD.</summary>
+    internal const string WillCreateNote = "this real run will create the type";
 
-    /// <summary>
-    /// Message returned (and used as the dry-run warning) when the datatype does not
-    /// exist in the source ACD: SDK partial import cannot create new types.
-    /// </summary>
-    internal const string NewDatatypeUnsupportedMessage =
-        "Creating a new data type through the Logix Designer SDK partial import is not " +
-        "supported; this tool can change an existing UDT. Create the type in Studio 5000 " +
-        "(or import it there from the L5X preview), then use this tool for later changes.";
+    /// <summary>Hint carried by <see cref="ImportNotAppliedError"/>.</summary>
+    internal const string NotAppliedHint =
+        "the saved file was not written; nothing changed. If the type is in use, check the SDK messages; " +
+        "a type that must be replaced wholesale needs collision: Overwrite";
+
+    /// <summary>Reason used when <c>collision: Discard</c> left the existing type as it was.</summary>
+    internal const string DiscardKeptReason = "collision=Discard kept the existing type";
+
+    /// <summary>Note used when the type already had the requested members.</summary>
+    internal const string AlreadyHadMembersNote = "the type already had these members";
+
+    /// <summary>Note used when the import could not be verified for want of a re-export reader.</summary>
+    internal const string UnverifiedNote = "the import could not be verified (no re-export reader is available)";
 
     // Primitive / built-in Logix types that never require a Context entry.
     private static readonly HashSet<string> BuiltInTypes =
         new(StringComparer.OrdinalIgnoreCase)
         {
-            "BOOL", "SINT",  "INT",   "DINT",  "LINT",
+            "BOOL", "BIT", "SINT",  "INT",   "DINT",  "LINT",
             "USINT","UINT",  "UDINT", "ULINT",
             "REAL", "LREAL", "STRING",
             "BYTE", "WORD",  "DWORD", "LWORD",
@@ -416,7 +478,7 @@ public static class ImportDatatypeHandler
         Func<string, bool>?                 studioLockChecker  = null,
         Func<string, IReadOnlyList<DataTypeMemberEntry>>? reexportReader = null,
         Func<string, int>?                  buildRunner        = null,
-        Action<string, string, string, ImportCollisionOption>? sdkImportRunner = null,
+        Func<string, string, string, ImportCollisionOption, IReadOnlyList<string>>? sdkImportRunner = null,
         bool                                overwrite          = false)
     {
         var result = ExecuteCore(
@@ -432,7 +494,7 @@ public static class ImportDatatypeHandler
                 saveAs       ?? string.Empty,
                 datatypeName ?? string.Empty,
                 collision.ToString(),
-                DescribeOutcome(result));
+                DescribeOutcome(result) + DescribeSdkMessages(result));
         }
 
         return result;
@@ -442,13 +504,26 @@ public static class ImportDatatypeHandler
     private static string DescribeOutcome(object result) => result switch
     {
         ImportDatatypeResult { Refused: not null }  => "refused_no_confirm",
-        ImportDatatypeError { Kind: NewDatatypeUnsupportedKind } => "refused",
-        ImportDatatypeResult { Verified: false }    => "verification_mismatch",
         ImportDatatypeResult                        => "success",
+        ImportNotAppliedError                       => "error:" + ErrorKinds.ImportNotApplied,
+        ImportCancelledOnCollisionError             => "error:" + ErrorKinds.ImportCancelledOnCollision,
         ImportDatatypeError err                     => "error:" + err.Kind,
         ImportDatatypeStudioLockError               => "error:StudioLocked",
         _                                           => "error:Unknown",
     };
+
+    /// <summary>Appends the SDK's import messages (when any) to the audit outcome.</summary>
+    private static string DescribeSdkMessages(object result)
+    {
+        var messages = result switch
+        {
+            ImportDatatypeResult r              => r.SdkMessages,
+            ImportNotAppliedError e             => e.SdkMessages,
+            ImportCancelledOnCollisionError c   => c.SdkMessages,
+            _                                   => null,
+        };
+        return messages is { Count: > 0 } ? "; sdk: " + string.Join(" | ", messages) : string.Empty;
+    }
 
     // Valid Logix-style identifier; also guarantees the name is safe to embed in an XPath literal.
     private static readonly System.Text.RegularExpressions.Regex DatatypeNameRegex =
@@ -568,7 +643,7 @@ public static class ImportDatatypeHandler
         Func<string, bool>?                 studioLockChecker  = null,
         Func<string, IReadOnlyList<DataTypeMemberEntry>>? reexportReader = null,
         Func<string, int>?                  buildRunner        = null,
-        Action<string, string, string, ImportCollisionOption>? sdkImportRunner = null,
+        Func<string, string, string, ImportCollisionOption, IReadOnlyList<string>>? sdkImportRunner = null,
         bool                                overwrite          = false)
     {
         // ── 1. Validate saveAs ≠ acdPath ──────────────────────────────────────
@@ -692,14 +767,11 @@ public static class ImportDatatypeHandler
         }
 
         // ── 4b. New-type check — before any copy, write or SDK call ────────────
-        // Partial import cannot create a type, so a type absent from the source ACD
-        // is refused on a real run and flagged on a dry-run preview.  Uses the same
-        // baseline resolution as the dry-run delta.
+        // A type absent from the source ACD is created by the real run (the SDK creates it when the file
+        // is imported at Controller/DataTypes) and flagged with willCreate on a dry-run preview.  Uses the
+        // same baseline resolution as the dry-run delta.
         var currentMembersBaseline = ResolveCurrentMembers(datatypeName, service, acdPath, reexportReader);
         var isNewType = currentMembersBaseline.Count == 0;
-
-        if (isNewType && !dryRun)
-            return new ImportDatatypeError(NewDatatypeUnsupportedMessage, NewDatatypeUnsupportedKind);
 
         // ── 5. Confirm gate — refuse a real import without explicit confirmation ──
         // When the caller requests a real import (dryRun=false) but has not passed
@@ -739,11 +811,16 @@ public static class ImportDatatypeHandler
         string? buildVerify = null;
         string? designerVersion = null;
         string? note     = null;
+        IReadOnlyList<string>? sdkMessages = null;
 
         if (!dryRun)
         {
-            // Compute the XPath that targets this DataType in the SDK index.
-            var xpath = $"Controller/DataTypes/DataType[@Name='{datatypeName}']";
+            // Compute the XPath that targets this DataType in the SDK index.  A new type has no per-type
+            // path yet (the SDK raises "XPath not valid"), so it is imported at Controller/DataTypes; the
+            // verification re-export afterwards reads the new type at its own path.
+            var xpath = isNewType
+                ? "Controller/DataTypes"
+                : $"Controller/DataTypes/DataType[@Name='{datatypeName}']";
 
             // Temp file in the destination directory so the final File.Move is an atomic
             // same-volume rename. Only this temp file is ever deleted on failure; a
@@ -758,6 +835,7 @@ public static class ImportDatatypeHandler
             {
                 try { if (File.Exists(tempDest)) File.Delete(tempDest); }
                 catch { /* best effort */ }
+                RemoveBackups(tempDest);
             }
 
             // Moves tempDest into place; returns an error (and removes the temp) on failure.
@@ -825,13 +903,34 @@ public static class ImportDatatypeHandler
                     // Steps 2, 3, 5, 6: open the temp copy via SDK, export, import, save.
                     try
                     {
-                        sdkImportRunner(tempDest, tempL5x, xpath, collision);
+                        var captured = sdkImportRunner(tempDest, tempL5x, xpath, collision);
+                        sdkMessages = captured is { Count: > 0 } ? captured : null;
                     }
                     catch (Exception ex)
                     {
                         RemoveTemp();
+                        var failureMessages = ex is SdkImportException { SdkMessages.Count: > 0 } sie
+                            ? sie.SdkMessages
+                            : null;
+
+                        // collision=Cancel on an existing type: the SDK aborts with its own mnemonic.
+                        if (ex.Message.Contains(SdkImportException.AbortedNoChangesMnemonic, StringComparison.Ordinal) ||
+                            (failureMessages?.Any(m => m.Contains(
+                                SdkImportException.AbortedNoChangesMnemonic, StringComparison.Ordinal)) ?? false))
+                        {
+                            return new ImportCancelledOnCollisionError(
+                                Error: $"collision=Cancel: '{datatypeName}' already exists, so the SDK cancelled the import: " +
+                                       ex.Message,
+                                DatatypeName: datatypeName,
+                                Collision:    collision.ToString(),
+                                SdkMessages:  failureMessages,
+                                Hint:         "Nothing was written. Use collision: Overwrite to replace the existing type, " +
+                                              "or Discard to keep it.");
+                        }
+
                         return new ImportDatatypeError(
-                            $"SDK import failed for '{datatypeName}': {ex.Message}",
+                            $"SDK import failed for '{datatypeName}': {ex.Message}" +
+                            (failureMessages is null ? string.Empty : " SDK messages: " + string.Join(" | ", failureMessages)),
                             "SdkError");
                     }
 
@@ -850,8 +949,68 @@ public static class ImportDatatypeHandler
                             "SavedFileNotAProject");
                     }
 
+                    // ── Verify before the file exists ──────────────────────────
+                    // Re-export the type from the temp result BEFORE the atomic move. Anything but an exact
+                    // match means the import did not apply: remove the temp and report it typed, so no file
+                    // is left at saveAs and the caller is never told to download.
+                    var targetMemberList = members is not null
+                        ? members
+                        : ExtractTargetMembersFromFragment(fragment);
+
+                    if (reexportReader is null)
+                    {
+                        // Cannot verify: keep verified=null and say so.
+                        note = UnverifiedNote;
+                    }
+                    else
+                    {
+                        IReadOnlyList<DataTypeMemberEntry> actualMembers;
+                        string? reexportFailure = null;
+                        try
+                        {
+                            actualMembers = reexportReader(tempDest) ?? Array.Empty<DataTypeMemberEntry>();
+                        }
+                        catch (Exception ex)
+                        {
+                            // Fail closed: a type that cannot be read back is not a verified import.
+                            actualMembers = Array.Empty<DataTypeMemberEntry>();
+                            reexportFailure = ex.Message;
+                        }
+
+                        if (!MembersMatchExactly(actualMembers, targetMemberList))
+                        {
+                            RemoveTemp();
+                            var keptExisting = reexportFailure is null && collision == ImportCollisionOption.Discard
+                                && !isNewType && MembersMatchExactly(actualMembers, currentMembersBaseline);
+                            var reason = keptExisting
+                                ? DiscardKeptReason
+                                : reexportFailure is not null
+                                    ? "the type could not be re-exported to verify the import: " + reexportFailure
+                                    : "the re-exported members do not match the requested members";
+                            var hiddenHosts = actualMembers.Where(m => m.Hidden).ToList();
+                            return new ImportNotAppliedError(
+                                Error: $"The SDK import of '{datatypeName}' did not apply: {reason}.",
+                                DatatypeName:    datatypeName,
+                                ExpectedMembers: VisibleMembers(targetMemberList),
+                                ActualMembers:   VisibleMembers(actualMembers),
+                                Collision:       collision.ToString(),
+                                Reason:          reason,
+                                SdkMessages:     sdkMessages,
+                                Hint:            NotAppliedHint,
+                                HiddenHosts:     hiddenHosts.Count > 0 ? hiddenHosts : null);
+                        }
+
+                        verified = true;
+                        if (collision == ImportCollisionOption.Discard && !isNewType &&
+                            MembersMatchExactly(currentMembersBaseline, targetMemberList))
+                            note = AlreadyHadMembersNote;
+                    }
+
                     var commitErr = CommitTemp();
                     if (commitErr is not null) return commitErr;
+
+                    // The SDK leaves a .bak beside the file it saved; only saveAs should remain.
+                    RemoveBackups(tempDest);
 
                     savedTo = resolvedSaveAs;
                 }
@@ -888,47 +1047,10 @@ public static class ImportDatatypeHandler
                 note    = FallbackNote;
             }
 
-            // ── Re-export verification ─────────────────────────────────────────
-            // Compare the saved file's member list against the target list.
-            // In the SDK path reexportReader is required; in the fallback path it
-            // defaults to reading the saved L5X fragment from disk.
+            // Verification already ran against the temp file, before the move (SDK path); the
+            // no-SDK fallback wrote only an L5X fragment, so verified stays null there.
             if (savedTo is not null)
             {
-                try
-                {
-                    IReadOnlyList<DataTypeMemberEntry>? reexportedMembers;
-
-                    if (sdkImportRunner is null)
-                    {
-                        // Fallback wrote only an L5X fragment; no import happened, so
-                        // there is nothing to verify. verified stays null.
-                        reexportedMembers = null;
-                    }
-                    else if (reexportReader is not null)
-                    {
-                        reexportedMembers = reexportReader(savedTo);
-                    }
-                    else
-                    {
-                        // No reexportReader: cannot verify. Leave verified=null.
-                        reexportedMembers = null;
-                    }
-
-                    if (reexportedMembers is not null)
-                    {
-                        var targetMemberList = members is not null
-                            ? members
-                            : ExtractTargetMembersFromFragment(fragment);
-
-                        verified = MembersMatchExactly(reexportedMembers, targetMemberList);
-                    }
-                }
-                catch
-                {
-                    // If re-reading fails, leave verified=null (not verified).
-                    verified = null;
-                }
-
                 // ── Build verification (when a runner is wired in) ─────────────
                 // Attempt build() and report its error count, or set the field to
                 // "unsupported on <version>" when build() raises a not-supported
@@ -997,39 +1119,78 @@ public static class ImportDatatypeHandler
             Verified:      verified,
             Build:         build,
             WillCreate:    dryRun && isNewType ? true : null,
-            Warnings:      dryRun && isNewType ? new[] { NewDatatypeUnsupportedMessage } : null,
+            Warnings:      dryRun && isNewType ? new[] { WillCreateNote } : null,
             Note:          note,
             BuildVerify:   buildVerify,
-            DesignerVersion: designerVersion);
+            DesignerVersion: designerVersion,
+            SdkMessages:   sdkMessages);
     }
 
     // ── Re-export member comparison ───────────────────────────────────────────
 
     /// <summary>
-    /// Returns <c>true</c> when <paramref name="reexported"/> matches
-    /// <paramref name="target"/> member-for-member: the two lists must have the
-    /// same length, and each corresponding pair must have the same
-    /// <see cref="DataTypeMemberEntry.Name"/> (ordinal) and the same
-    /// <see cref="DataTypeMemberEntry.DataType"/> (case-insensitive).
+    /// Returns <c>true</c> when the visible members of <paramref name="reexported"/> match
+    /// those of <paramref name="target"/> member-for-member: same count, and each pair has the
+    /// same <see cref="DataTypeMemberEntry.Name"/> (ordinal) and the same
+    /// <see cref="DataTypeMemberEntry.DataType"/> (case-insensitive, <c>BIT</c> equal to
+    /// <c>BOOL</c>). Hidden host members, <c>Target</c>, <c>BitNumber</c> and radix are ignored.
     /// </summary>
     internal static bool MembersMatchExactly(
         IReadOnlyList<DataTypeMemberEntry> reexported,
         IReadOnlyList<DataTypeMemberEntry> target)
     {
-        if (reexported.Count != target.Count)
+        var left  = VisibleMembers(reexported);
+        var right = VisibleMembers(target);
+        if (left.Count != right.Count)
             return false;
 
-        for (int i = 0; i < reexported.Count; i++)
+        for (int i = 0; i < left.Count; i++)
         {
-            if (!string.Equals(reexported[i].Name,     target[i].Name,
-                    StringComparison.Ordinal))
+            if (!string.Equals(left[i].Name, right[i].Name, StringComparison.Ordinal))
                 return false;
-            if (!string.Equals(reexported[i].DataType, target[i].DataType,
-                    StringComparison.OrdinalIgnoreCase))
+            if (!SameType(left[i].DataType, right[i].DataType))
                 return false;
         }
 
         return true;
+    }
+
+    /// <summary>The members that are not hidden (hidden members are the SINT hosts that carry BOOL bits).</summary>
+    internal static IReadOnlyList<DataTypeMemberEntry> VisibleMembers(
+        IReadOnlyList<DataTypeMemberEntry> members) =>
+        members.Where(m => !m.Hidden).ToList();
+
+    /// <summary>Maps the L5X spelling <c>BIT</c> to <c>BOOL</c>; other types are returned unchanged.</summary>
+    internal static string NormalizeDataType(string dataType) =>
+        string.Equals(dataType, "BIT", StringComparison.OrdinalIgnoreCase) ? "BOOL" : dataType;
+
+    private static bool SameType(string a, string b) =>
+        string.Equals(NormalizeDataType(a), NormalizeDataType(b), StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Deletes every backup the SDK wrote beside <paramref name="tempDest"/>: <c>tempDest.bak</c>
+    /// and any <c>&lt;tempDest stem&gt;*.bak</c> in the same directory. Best effort.
+    /// </summary>
+    private static void RemoveBackups(string tempDest)
+    {
+        try
+        {
+            var dir  = Path.GetDirectoryName(tempDest);
+            if (string.IsNullOrEmpty(dir)) dir = ".";
+            var stem = Path.GetFileNameWithoutExtension(tempDest);
+
+            var candidates = new HashSet<string>(StringComparer.Ordinal) { tempDest + ".bak" };
+            if (Directory.Exists(dir))
+                foreach (var f in Directory.EnumerateFiles(dir, stem + "*.bak"))
+                    candidates.Add(f);
+
+            foreach (var f in candidates)
+            {
+                try { if (File.Exists(f)) File.Delete(f); }
+                catch { /* best effort */ }
+            }
+        }
+        catch { /* best effort */ }
     }
 
     // ── Software-revision extraction ──────────────────────────────────────────
@@ -1242,7 +1403,9 @@ public static class ImportDatatypeHandler
                 new XAttribute("SoftwareRevision", "36.1"),
                 new XAttribute("TargetName",       datatypeName),
                 new XAttribute("TargetType",       "DataType"),
-                new XAttribute("ContainsContext",   contextTypes.Count > 0 ? "true" : "false"),
+                // Always "true": the SDK's PartialImportFromXmlFileAsync silently imports nothing from a
+                // root with ContainsContext="false" (no exception, no import-log error). Found by bisecting the import.
+                new XAttribute("ContainsContext",   "true"),
                 new XElement("Controller",
                     dataTypesElem)));
 
@@ -1323,7 +1486,7 @@ public static class ImportDatatypeHandler
     // ── BOOL expansion ─────────────────────────────────────────────────────────
 
     private static bool IsBool(DataTypeMemberEntry m) =>
-        string.Equals(m.DataType, "BOOL", StringComparison.OrdinalIgnoreCase);
+        string.Equals(NormalizeDataType(m.DataType), "BOOL", StringComparison.OrdinalIgnoreCase);
 
     private static bool IsHostType(string dataType) =>
         HostBits(dataType) > 0;
@@ -1352,6 +1515,7 @@ public static class ImportDatatypeHandler
         string                             typeName,
         IReadOnlyList<DataTypeMemberEntry> members)
     {
+        members = members.Select(m => IsBool(m) ? m with { DataType = "BOOL" } : m).ToList();
         var referenced = new HashSet<string>(
             members.Where(m => IsBool(m) && !string.IsNullOrEmpty(m.Target)).Select(m => m.Target!),
             StringComparer.OrdinalIgnoreCase);
@@ -1416,7 +1580,7 @@ public static class ImportDatatypeHandler
             {
                 var elem = new XElement("Member",
                     new XAttribute("Name",      m.Name),
-                    new XAttribute("DataType",  m.DataType),
+                    new XAttribute("DataType",  IsBool(m) && !string.IsNullOrEmpty(m.Target) ? "BIT" : m.DataType),
                     new XAttribute("Dimension", string.IsNullOrWhiteSpace(m.Dimension) ? "0" : m.Dimension));
 
                 var radix = ToL5xRadix(m.Radix);
@@ -1490,7 +1654,7 @@ public static class ImportDatatypeHandler
                 var target = m.Attribute("Target")?.Value;
                 var bitStr = m.Attribute("BitNumber")?.Value;
 
-                if (!string.Equals(dataType, "BOOL", StringComparison.OrdinalIgnoreCase))
+                if (!string.Equals(NormalizeDataType(dataType), "BOOL", StringComparison.OrdinalIgnoreCase))
                 {
                     if (target is not null || bitStr is not null)
                         return $"{where}: only BOOL members may carry Target or BitNumber.";
@@ -1607,7 +1771,7 @@ public static class ImportDatatypeHandler
                 .Elements("Member")
                 .Select(m => new DataTypeMemberEntry(
                     Name:           m.Attribute("Name")?.Value           ?? string.Empty,
-                    DataType:       m.Attribute("DataType")?.Value       ?? string.Empty,
+                    DataType:       NormalizeDataType(m.Attribute("DataType")?.Value ?? string.Empty),
                     Dimension:      m.Attribute("Dimension")?.Value      ?? "0",
                     Radix:          m.Attribute("Radix")?.Value          ?? string.Empty,
                     Hidden:         m.Attribute("Hidden")?.Value         == "true",
@@ -1649,6 +1813,9 @@ public static class ImportDatatypeHandler
         IReadOnlyList<DataTypeMemberEntry> currentMembers,
         IReadOnlyList<DataTypeMemberEntry> targetMembers)
     {
+        currentMembers = VisibleMembers(currentMembers);
+        targetMembers  = VisibleMembers(targetMembers);
+
         var added   = new List<string>();
         var removed = new List<string>();
         var retyped = new List<RetypedEntry>();
@@ -1671,9 +1838,7 @@ public static class ImportDatatypeHandler
             else
             {
                 // Same name (case-insensitive) → check for type and case changes
-                if (!string.Equals(
-                        currentMember.DataType, targetMember.DataType,
-                        StringComparison.OrdinalIgnoreCase))
+                if (!SameType(currentMember.DataType, targetMember.DataType))
                 {
                     retyped.Add(new RetypedEntry(
                         Name: targetMember.Name,

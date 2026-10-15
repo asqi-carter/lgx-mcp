@@ -1563,4 +1563,37 @@ public class AuditLoggerTests : IDisposable
         }
         finally { Environment.SetEnvironmentVariable(AuditLogger.FailClosedEnvVar, previous); }
     }
+
+    // ── Studio lifecycle failure lines ──────────────────────
+
+    [Theory]
+    [InlineData("cancel",   "edits_cancelled")]
+    [InlineData("accept",   "edits_accepted")]
+    [InlineData("test",     "edits_test_confirmed")]
+    [InlineData("untest",   "edits_untest_confirmed")]
+    [InlineData("assemble", "edits_assembled")]
+    public void LogLifecycleFailure_WritesOneErrorLine_NeverASuccessOutcome(string verb, string expectedEvent)
+    {
+        AuditLogger.LogLifecycleFailure(verb, "MainProgram", "MainRoutine", "StillPending", "gesture_sent", "pending", "pending");
+
+        var doc = Assert.Single(ReadAllLines()).RootElement;
+        Assert.Equal(expectedEvent, doc.GetProperty("event").GetString());
+        Assert.Equal("error", doc.GetProperty("outcome").GetString());
+        Assert.Equal("StillPending", doc.GetProperty("kind").GetString());
+        Assert.Equal("gesture_sent", doc.GetProperty("reason").GetString());
+        Assert.Equal("pending", doc.GetProperty("before_state").GetString());
+        Assert.Equal("pending", doc.GetProperty("after_state").GetString());
+    }
+
+    [Fact]
+    public void LogAcceptPendingEdits_SuccessLine_KeepsItsExactShape()
+    {
+        AuditLogger.LogAcceptPendingEdits("MainProgram", "MainRoutine", "accepted", "pending", "none");
+
+        var doc = Assert.Single(ReadAllLines()).RootElement;
+        Assert.Equal(
+            new[] { "ts", "event", "program", "routine", "outcome", "before_state", "after_state" },
+            doc.EnumerateObject().Select(p => p.Name).ToArray());
+        Assert.Equal("accepted", doc.GetProperty("outcome").GetString());
+    }
 }

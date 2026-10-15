@@ -812,6 +812,9 @@ public class CancelPendingEditsToolTests
         Assert.Contains("programTestedEdits=false", err.Error, StringComparison.Ordinal);
         Assert.Contains("logix_cancel_pending_edits", err.Error, StringComparison.Ordinal);
         Assert.Contains("command_not_applicable", err.Error, StringComparison.Ordinal);
+        Assert.Contains("already finalized or cancelled from Logix Designer", err.Hint, StringComparison.Ordinal);
+        Assert.Contains("shows its Errors pane as an auto-hide flyout", err.Hint, StringComparison.Ordinal);
+        Assert.DoesNotContain("restart the", err.Hint, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

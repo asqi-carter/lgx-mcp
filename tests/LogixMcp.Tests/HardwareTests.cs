@@ -385,7 +385,7 @@ public class HardwareTests : IDisposable
         // Uses the public single-parameter LogixProjectSession constructor which
         // applies identity workingCopier (static path => path), so the SDK
         // opens saveAs directly and SaveAsync writes back to it in place.
-        Action<string, string, string, ImportCollisionOption> realSdkRunner =
+        Func<string, string, string, ImportCollisionOption, IReadOnlyList<string>> realSdkRunner =
             (saveAs, tempL5x, xpath, collision) =>
             {
                 using var session = new LogixProjectSession(
@@ -410,6 +410,7 @@ public class HardwareTests : IDisposable
                 project.PartialImportFromXmlFileAsync(xpath, tempL5x, sdkCollision, false)
                        .GetAwaiter().GetResult();
                 project.SaveAsync().GetAwaiter().GetResult();
+                return Array.Empty<string>();
             };
 
         // ── Re-export reader: opens the saved ACD and exports the DataType ────

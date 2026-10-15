@@ -5,7 +5,12 @@ using System.Text.Json.Serialization;
 /// <param name="Type">Routine type: RLL, ST, FBD or SFC.</param>
 public record RoutineSummary(
     [property: JsonPropertyName("name")] string Name,
-    [property: JsonPropertyName("type")] string Type);
+    [property: JsonPropertyName("type")] string Type)
+{
+    /// <summary><c>true</c> when the routine was created this session and only the session image holds it (the project file lacks it); omitted otherwise.</summary>
+    [JsonPropertyName("createdThisSession"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public bool? CreatedThisSession { get; init; }
+}
 
 /// <summary>Per-program summary of tag and routine counts.</summary>
 /// <param name="Name">Program name.</param>
@@ -26,9 +31,11 @@ public record ProgramSummary(
 /// <param name="ControllerTags">Number of controller-scoped tags.</param>
 /// <param name="Programs">Per-program routine and tag counts.</param>
 /// <param name="Source">
-/// Always <c>"project-file"</c>. States that this summary was computed from the
+/// <c>"project-file"</c>: this summary was computed from the
 /// opened or uploaded project file on disk, not from the live controller and not
-/// from any pending (unsaved) edit. For the live routine content including
+/// from any pending (unsaved) edit. <c>"session-image"</c>: the session's accepted image holds a routine the project
+/// file lacks (created this session), so the counts and lists come from that image and the new routine is marked
+/// <c>createdThisSession</c>. For the live routine content including
 /// pending edits, call <c>logix_export_rungs</c> instead.
 /// </param>
 public record ProjectSummaryResult(
@@ -74,7 +81,16 @@ public record ProjectSummaryResult(
 /// </summary>
 /// <param name="Error">Human-readable error message.</param>
 public record ProjectSummaryError(
-    [property: JsonPropertyName("error")] string Error);
+    [property: JsonPropertyName("error")] string Error)
+{
+    /// <summary>Machine-readable error kind (for example <c>NoProjectLoaded</c>); omitted for untyped errors.</summary>
+    [JsonPropertyName("kind"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Kind { get; init; }
+
+    /// <summary>Next step (for example how to recover from <c>NoProjectLoaded</c>); omitted when none.</summary>
+    [JsonPropertyName("hint"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Hint { get; init; }
+}
 
 /// <summary>
 /// Pure handler for the <c>logix_project_summary</c> MCP tool.
@@ -97,9 +113,23 @@ public static class ProjectSummaryHandler
     public static object Execute(ProjectService service, TagSessionService? session = null)
     {
         if (!service.IsLoaded)
-            return new ProjectSummaryError("No project loaded. Call logix_open_project first.");
+        {
+            var np = service.NoProjectLoadedError("logix_project_summary");
+            return new ProjectSummaryError(np.Error) { Kind = np.Kind, Hint = np.Hint };
+        }
 
-        var project = service.Project!;
+        // A routine created this session is only in the session image, so a summary that lists one is built from the
+        // accepted image (which holds everything the file does); otherwise the project file is read as before.
+        var file  = service.Project!;
+        var image = session?.AcceptedControllerImage;
+        var created = image is null
+            ? []
+            : image.Programs.SelectMany(p => p.Routines.Select(r => (Program: p.Name, Routine: r.Name)))
+                .Where(x => ProjectFileStaleness.IsCreatedThisSession(session, service, x.Program, x.Routine))
+                .ToHashSet();
+        var fromImage = image is not null && created.Count > 0;
+        var project   = fromImage ? image! : file;
+        var source    = fromImage ? ProjectSourceLabel.SessionImage : ProjectSourceLabel.ProjectFile;
 
         var programs = project.Programs
             .Select(p => new ProgramSummary(
@@ -107,17 +137,21 @@ public static class ProjectSummaryHandler
                 Tags:     p.Tags.Count,
                 Routines: p.Routines.Count,
                 RoutineList: p.Routines
-                    .Select(r => new RoutineSummary(r.Name, r.Type.Name))
+                    .Select(r => new RoutineSummary(r.Name, r.Type.Name)
+                    {
+                        CreatedThisSession = fromImage && created.Contains((p.Name, r.Name)) ? true : null,
+                    })
                     .ToList()))
             .ToList();
 
-        var stale   = ProjectFileStaleness.For(session, ProjectSourceLabel.ProjectFile, service);
+        var stale   = ProjectFileStaleness.For(session, source, service);
         var applied = ProjectFileStaleness.AppliedEdits(session, service);
         return new ProjectSummaryResult(
             Controller:     project.Controller.Name,
             SchemaRevision: project.Content.SchemaRevision.ToString(),
             ControllerTags: project.Tags.Count,
-            Programs:       programs)
+            Programs:       programs,
+            Source:         source)
         {
             AppliedEdits = applied.Count == 0 ? null : applied,
             AppliedEditsSource = applied.Count == 0 ? null : "session-image",

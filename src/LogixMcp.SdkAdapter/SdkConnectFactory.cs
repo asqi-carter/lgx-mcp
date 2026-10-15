@@ -1011,6 +1011,9 @@ internal sealed class SdkConnectFactory : ISdkTagServiceFactory
         try
         {
             Directory.CreateDirectory(workDir);
+            // The slot file names the owner process, so a later connect can tell a slot left by a killed server.
+            File.WriteAllText(Path.Combine(workDir, SdkAdapterInitializer.SlotOwnerFileName),
+                Environment.ProcessId.ToString(System.Globalization.CultureInfo.InvariantCulture));
         }
         catch (Exception ex)
         {
@@ -1643,12 +1646,57 @@ internal static class SdkAdapterInitializer
     {
         ConnectHandler.DefaultSdkFactory         = new SdkConnectFactory();
         ConnectHandler.StaleOfflineCopyCleaner   = OfflineBuildCheck.CleanStaleCopies;
+        ConnectHandler.StaleUploadSlotCleaner    = () => CleanDeadOwnerUploadSlots(LogixProjectSession.WorkingDirectoryBase, IsProcessAlive);
         OpenProjectHandler.AcdConverter          = AcdProjectOpener.Default.OpenAsync;
         CloseProjectHandler.SdkSessionInspector  = CloseProjectSdkBridge.Inspect;
         CloseProjectHandler.SdkSessionDisposer   = CloseProjectSdkBridge.Dispose;
         SdkImportDatatypeRunner.Register();
         DoctorEnvironment.SdkObservations        = new DoctorSdkObservations();
         CleanStaleControllerWorkDirs(LogixProjectSession.WorkingDirectoryBase, StaleControllerWorkDirAge, DateTime.UtcNow);
+    }
+
+    /// <summary>Name of the file in a <c>ctl-*</c> upload slot that holds the owner process id.</summary>
+    internal const string SlotOwnerFileName = "slot.owner";
+
+    private static bool IsProcessAlive(int pid)
+    {
+        try { using var p = System.Diagnostics.Process.GetProcessById(pid); return !p.HasExited; }
+        catch (ArgumentException) { return false; }
+        catch (InvalidOperationException) { return false; }
+    }
+
+    /// <summary>
+    /// Removes <c>ctl-*</c> upload slot folders under <paramref name="workBase"/> whose owner process is not running:
+    /// the slot file (<see cref="SlotOwnerFileName"/>) holds the owner pid, and a folder whose pid has no live process
+    /// is deleted. A folder with no readable slot file is left to the age-based startup sweep. Other entries are left
+    /// alone. Best effort: a folder that cannot be removed is skipped; never throws.
+    /// </summary>
+    /// <param name="workBase">The working-directory base (<c>%TEMP%\logix-mcp-work</c>).</param>
+    /// <param name="isAlive">Tells whether a process id belongs to a running process.</param>
+    /// <returns>The number of folders removed.</returns>
+    internal static int CleanDeadOwnerUploadSlots(string workBase, Func<int, bool> isAlive)
+    {
+        var removed = 0;
+        try
+        {
+            if (!Directory.Exists(workBase)) return 0;
+            foreach (var dir in Directory.EnumerateDirectories(workBase, "ctl-*", SearchOption.TopDirectoryOnly))
+            {
+                try
+                {
+                    var file = Path.Combine(dir, SlotOwnerFileName);
+                    if (!File.Exists(file)) continue;
+                    if (!int.TryParse(File.ReadAllText(file).Trim(), System.Globalization.NumberStyles.None,
+                            System.Globalization.CultureInfo.InvariantCulture, out var pid)) continue;
+                    if (isAlive(pid)) continue;
+                    Directory.Delete(dir, recursive: true);
+                    removed++;
+                }
+                catch { /* in use or denied: leave it for the next connect */ }
+            }
+        }
+        catch { /* best effort */ }
+        return removed;
     }
 
     /// <summary>How old a <c>ctl-*</c> controller-upload work directory must be before startup removes it.</summary>

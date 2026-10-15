@@ -304,7 +304,19 @@ public static class SessionLostSupport
 
         // Connected only once the connect has completed and no reconnect is running.
         var connecting = o["status"] is JsonValue cv && cv.TryGetValue<string>(out var cs) && cs == "connecting";
-        o["connected"] = session.IsConnected && !connecting;
+        var connected = session.IsConnected && !connecting;
+        o["connected"] = connected;
+        var backend = connected ? ConnectedBackend(session) : null;
+        if (backend is not null) o["connectedBackend"] = backend;   // absent (null) for no session or an in-memory one
+        // `status` reports the last connect attempt; `connected` the attached session. Say so when they disagree.
+        var failed = o["status"] is JsonValue fv && fv.TryGetValue<string>(out var fs) && fs == "failed";
+        if (failed && connected)
+        {
+            var sentence = $"connected describes the attached {backend ?? "tag"} session to {ConnectedTarget(session)}, " +
+                           "while status describes the last connect attempt, which failed.";
+            var prior = o["hint"] is JsonValue hv && hv.TryGetValue<string>(out var hs) ? hs : null;
+            o["hint"] = string.IsNullOrEmpty(prior) ? sentence : $"{prior} {sentence}";
+        }
         // Another instance's outcome says nothing about this session: leave its status as reported.
         var foreign = o["kind"] is JsonValue kv && kv.TryGetValue<string>(out var kk) && kk == ErrorKinds.ConnectOwnedByOtherInstance;
         if (session.SessionLost is { } lost)
@@ -315,4 +327,25 @@ public static class SessionLostSupport
         }
         return o.ToJsonString(Json);
     }
+
+    /// <summary>
+    /// The backend of the attached session: <c>"cip"</c> (libplctag), <c>"sdk"</c> (Logix Designer SDK, including an
+    /// upload session) or <c>null</c> for no session or an in-memory/L5X one.
+    /// </summary>
+    /// <param name="session">The tag session.</param>
+    /// <returns><c>"cip"</c>, <c>"sdk"</c> or <c>null</c>.</returns>
+    internal static string? ConnectedBackend(TagSessionService session)
+    {
+        var svc = session.Service;
+        if (svc is GatedTagService gated) svc = gated.InnerService;
+        return svc switch
+        {
+            null or VirtualTagService or L5XOfflineTagService => null,
+            LibPlcTagService => "cip",
+            _ => "sdk",
+        };
+    }
+
+    private static string ConnectedTarget(TagSessionService session) =>
+        (session.AuditController ?? session.ControllerHost) is { } target ? $"'{target}'" : "the open project file";
 }

@@ -29,6 +29,10 @@ using L5Sharp.Core;
 /// For a <c>"chained"</c> rung, the intermediate bit(s) the rung is gated by, from the first (nearest the output)
 /// to the last (written under the condition); <c>null</c> otherwise.
 /// </param>
+/// <param name="State">
+/// With <c>includePending: true</c>, <c>staged</c>, <c>pending</c> or <c>tested</c> when the rung is not yet accepted
+/// controller logic; <c>null</c> (omitted) for an accepted rung.
+/// </param>
 public record VerifyInterlockRungDetail(
     [property: JsonPropertyName("program")]          string  Program,
     [property: JsonPropertyName("routine")]          string  Routine,
@@ -38,7 +42,8 @@ public record VerifyInterlockRungDetail(
     [property: JsonPropertyName("polarity")]         string? Polarity,
     [property: JsonPropertyName("status"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Status = null,
     [property: JsonPropertyName("bypassPaths"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] IReadOnlyList<string>? BypassPaths = null,
-    [property: JsonPropertyName("via"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] IReadOnlyList<string>? Via = null);
+    [property: JsonPropertyName("via"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] IReadOnlyList<string>? Via = null,
+    [property: JsonPropertyName("state"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? State = null);
 
 /// <summary>
 /// A rung that writes an intermediate bit without being interlocked by the condition, so it breaks a chain.
@@ -48,12 +53,17 @@ public record VerifyInterlockRungDetail(
 /// <param name="Routine">Routine containing the rung.</param>
 /// <param name="RungNumber">Zero-based rung index.</param>
 /// <param name="RungText">Neutral text of the rung (wrapped as untrusted project content).</param>
+/// <param name="State">
+/// With <c>includePending: true</c>, <c>staged</c>, <c>pending</c> or <c>tested</c> when the rung is not yet accepted
+/// controller logic; <c>null</c> (omitted) for an accepted rung.
+/// </param>
 public record VerifyInterlockWriter(
     [property: JsonPropertyName("tag")]        string Tag,
     [property: JsonPropertyName("program")]    string Program,
     [property: JsonPropertyName("routine")]    string Routine,
     [property: JsonPropertyName("rungNumber")] int    RungNumber,
-    [property: JsonPropertyName("rungText")]   string RungText);
+    [property: JsonPropertyName("rungText")]   string RungText,
+    [property: JsonPropertyName("state"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? State = null);
 
 /// <summary>
 /// Strongly-typed success response returned by <see cref="VerifyInterlockHandler.Execute"/>.
@@ -220,7 +230,10 @@ public static class VerifyInterlockHandler
     {
         var selection = AnalysisImage.Resolve(service, session, includePending);
         if (selection.Project is null)
-            return new VerifyInterlockError("No project loaded. Call logix_open_project first.");
+        {
+            var np = service.NoProjectLoadedError("logix_verify_interlock");
+            return new VerifyInterlockError(np.Error) { Kind = np.Kind, Hint = np.Hint };
+        }
 
         if (string.IsNullOrWhiteSpace(outputTag))
             return new VerifyInterlockError("outputTag must not be empty.");
@@ -344,7 +357,8 @@ public static class VerifyInterlockHandler
         }
 
         // includePending: false leaves pending rungs out; a pending writer must not make the tag look unwritten.
-        var pendingWriters = AnalysisImage.PendingWriters(selection, pending => FindPendingWriters(pending, outputTag));
+        var pendingWriters = AnalysisImage.PendingWriters(selection, pending => FindPendingWriters(pending, outputTag),
+            session is null ? null : session.ZoneTested);
         var pendingList    = pendingWriters.Count == 0 ? null : pendingWriters;
 
         // ── Step 3: outputTag not written anywhere ──────────────────────────────
@@ -358,7 +372,9 @@ public static class VerifyInterlockHandler
                     ? AnalysisImage.NotWrittenByAccepted($"Output tag '{outputTag}'", pendingWriters)
                     : $"Output tag '{outputTag}' is not written by any rung in the project.";
             if (pendingWriters.Count > 0 && writerCandidates.Count > 0)
-                message += $" {AnalysisImage.DescribePending(pendingWriters)} also write it. Pass includePending:true to include it.";
+                message += $" {AnalysisImage.DescribePending(pendingWriters)} also " +
+                           $"{(pendingWriters.Select(w => (w.Program, w.Routine, w.RungIndex)).Distinct().Count() == 1 ? "writes" : "write")} it. " +
+                           "Pass includePending:true to include it.";
             if (unparsed.Count > 0)
                 message += $" {unparsed.Count} rung(s) could not be parsed and were not checked" +
                            (unparsedMentions ? ", and at least one of them mentions the tag" : string.Empty) +
@@ -448,6 +464,21 @@ public static class VerifyInterlockHandler
         {
             var pendingNote = $"Not proven for pending logic: {AnalysisImage.AlsoWrittenByPending(outputTag, pendingWriters)}";
             note = note is null ? pendingNote : $"{note} {pendingNote}";
+        }
+
+        // includePending: true reads the image with pending rungs applied: label the rungs that are not accepted logic.
+        var included = CrossReferenceHandler.PendingRungStates(selection, session);
+        if (included.Count > 0)
+        {
+            finalRungs = finalRungs.Select(r => included.TryGetValue(CrossReferenceHandler.StateKey(r.Program, r.Routine, r.RungNumber), out var st)
+                ? r with { State = st } : r).ToList();
+            listedWriters = listedWriters.Select(w => included.TryGetValue(CrossReferenceHandler.StateKey(w.Program, w.Routine, w.RungNumber), out var st)
+                ? w with { State = st } : w).ToList();
+            var includedNote = CrossReferenceHandler.IncludedPendingNote(finalRungs
+                .Where(r => r.State is not null).Select(r => new PendingWriter(r.Program, r.Routine, r.RungNumber, outputTag, r.State!))
+                .Concat(listedWriters.Where(w => w.State is not null).Select(w => new PendingWriter(w.Program, w.Routine, w.RungNumber, w.Tag, w.State!)))
+                .GroupBy(w => (w.Program, w.Routine, w.RungIndex)).Select(g => g.First()).ToList());
+            if (includedNote is not null) note = note is null ? includedNote : $"{note} {includedNote}";
         }
 
         return new VerifyInterlockResult(

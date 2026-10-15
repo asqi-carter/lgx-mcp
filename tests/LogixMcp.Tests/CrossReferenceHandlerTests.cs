@@ -382,4 +382,85 @@ public class CrossReferenceHandlerTests
         Assert.Equal(1, refs.GetArrayLength());
         Assert.Equal("write", refs[0].GetProperty("kind").GetString());
     }
+
+    // ── includePending labels ───────────────────
+
+    [Fact]
+    public void IncludePending_LabelsStagedPendingAndTestedRungs_AndNoteNamesThem()
+    {
+        var (svc, session) = PendingImageFixture.Online(["A", "B"],
+            ("XIC(A)OTE(B);", "N"), ("XIC(A)OTE(B);", "e"), ("XIC(A)OTE(B);", "I"));
+
+        var result = Assert.IsType<CrossRefResult>(CrossReferenceHandler.Execute(svc, "A", session, includePending: true));
+
+        Assert.Equal(3, result.References.Count);
+        Assert.Null(result.References.Single(r => r.RungNumber == 0).State);
+        Assert.Equal("staged",  result.References.Single(r => r.RungNumber == 1).State);
+        Assert.Equal("pending", result.References.Single(r => r.RungNumber == 2).State);
+        Assert.Contains("1 staged rung", result.Note);
+        Assert.Contains("1 pending rung", result.Note);
+
+        session.SetZoneTested("MainProgram", true);
+        var tested = Assert.IsType<CrossRefResult>(CrossReferenceHandler.Execute(svc, "A", session, includePending: true));
+        Assert.Equal("tested", tested.References.Single(r => r.RungNumber == 2).State);
+        Assert.Contains("1 tested rung", tested.Note);
+    }
+
+    [Fact]
+    public void IncludePending_StateIsInTheJson_AndAbsentForAcceptedRungs()
+    {
+        var (svc, session) = PendingImageFixture.Online(["A", "B"], ("XIC(A)OTE(B);", "N"), ("XIC(A)OTE(B);", "e"));
+
+        var json = System.Text.Json.JsonSerializer.Serialize(
+            CrossReferenceHandler.Execute(svc, "A", session, includePending: true));
+
+        var refs = System.Text.Json.Nodes.JsonNode.Parse(json)!["references"]!.AsArray();
+        Assert.False(refs.Single(r => r!["rungNumber"]!.GetValue<int>() == 0)!.AsObject().ContainsKey("state"));
+        Assert.Equal("staged", refs.Single(r => r!["rungNumber"]!.GetValue<int>() == 1)!["state"]!.GetValue<string>());
+    }
+
+    [Fact]
+    public void IncludePendingFalse_HasNoStateLabels()
+    {
+        var (svc, session) = PendingImageFixture.Online(["A", "B"], ("XIC(A)OTE(B);", "N"), ("XIC(A)OTE(B);", "e"));
+
+        var result = Assert.IsType<CrossRefResult>(CrossReferenceHandler.Execute(svc, "A", session, includePending: false));
+
+        Assert.All(result.References, r => Assert.Null(r.State));
+    }
+}
+
+/// <summary>Builds an SDK-online session whose controller image holds rungs of the given type codes (N, e, I, ...).</summary>
+internal static class PendingImageFixture
+{
+    private const string BoolTag =
+        "<Tag Name=\"{0}\" TagType=\"Base\" DataType=\"BOOL\" Radix=\"Decimal\" Constant=\"false\" ExternalAccess=\"Read/Write\">" +
+        "<Data Format=\"Decorated\"><DataValue DataType=\"BOOL\" Radix=\"Decimal\" Value=\"0\" /></Data></Tag>";
+
+    internal static L5Sharp.Core.L5X Image(string[] tags, params (string Text, string Type)[] rungs)
+    {
+        var tagXml  = string.Concat(tags.Select(t => string.Format(BoolTag, t)));
+        var rungXml = string.Concat(rungs.Select((r, i) =>
+            $"<Rung Number=\"{i}\" Type=\"{r.Type}\"><Text><![CDATA[{r.Text}]]></Text></Rung>"));
+        return L5Sharp.Core.L5X.Parse(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>" +
+            "<RSLogix5000Content SchemaRevision=\"1.0\" SoftwareRevision=\"36.1\" TargetName=\"C\" TargetType=\"Controller\" ContainsContext=\"false\">" +
+            "<Controller Name=\"C\" MajorRev=\"36\" MinorRev=\"1\" ProcessorType=\"1756-L84E\">" +
+            "<DataTypes /><Modules /><AddOnInstructionDefinitions />" +
+            $"<Tags>{tagXml}</Tags>" +
+            "<Programs><Program Name=\"MainProgram\" Type=\"Normal\" TestEdits=\"false\" Disabled=\"false\" UseAsFolder=\"false\" MainRoutineName=\"Main\">" +
+            "<Tags /><Routines><Routine Name=\"Main\" Type=\"RLL\"><RLLContent>" + rungXml +
+            "</RLLContent></Routine></Routines></Program></Programs></Controller></RSLogix5000Content>");
+    }
+
+    /// <summary>A project service holding the accepted rungs only, and an online session holding all of them.</summary>
+    internal static (ProjectService Service, TagSessionService Session) Online(string[] tags, params (string Text, string Type)[] rungs)
+    {
+        var svc = new ProjectService();
+        svc.RegisterFromUpload(Image(tags, rungs.Where(r => r.Type == "N").ToArray()), "/tmp/pending-fixture.ACD", "comm");
+        var session = new TagSessionService();
+        session.Attach(new VirtualTagService(new Dictionary<string, (object, string?)>()), isVirtual: false, isLiveController: true);
+        session.SetControllerImage(Image(tags, rungs), DateTimeOffset.UtcNow);
+        return (svc, session);
+    }
 }

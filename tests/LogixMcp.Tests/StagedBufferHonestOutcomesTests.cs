@@ -6,7 +6,7 @@ using Task = System.Threading.Tasks.Task;
 namespace LogixMcp.Tests;
 
 /// <summary>
-/// This change requirement 4 (task logix-mcp-64f5.4): an empty controller publish is refused as
+/// An empty controller publish is refused as
 /// <c>NothingStaged</c> without any import call, a connect that replaces a session holding staged rungs
 /// warns that they were discarded, and the reconnect message names <c>logix_open_project</c> only when
 /// that tool opened the project.

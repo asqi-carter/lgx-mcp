@@ -727,4 +727,44 @@ public class LintHandlerTests
         while ((i = s.IndexOf(needle, i, StringComparison.Ordinal)) >= 0) { n++; i += needle.Length; }
         return n;
     }
+
+    [Fact]
+    public void ReplayedReplace_IrR_GivesNoDuplicateDestructiveOutput()
+    {
+        const string tag = "<Tag Name=\"{0}\" TagType=\"Base\" DataType=\"BOOL\" Radix=\"Decimal\" Constant=\"false\" ExternalAccess=\"Read/Write\">" +
+                           "<Data Format=\"Decorated\"><DataValue DataType=\"BOOL\" Radix=\"Decimal\" Value=\"0\" /></Data></Tag>";
+        var tags = string.Concat(new[] { "A", "B", "C" }.Select(t => string.Format(tag, t)));
+        var image = L5Sharp.Core.L5X.Parse(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>" +
+            "<RSLogix5000Content SchemaRevision=\"1.0\" SoftwareRevision=\"36.1\" TargetName=\"C\" TargetType=\"Controller\" ContainsContext=\"false\">" +
+            "<Controller Name=\"C\" MajorRev=\"36\" MinorRev=\"1\" ProcessorType=\"1756-L84E\">" +
+            "<DataTypes /><Modules /><AddOnInstructionDefinitions />" +
+            $"<Tags>{tags}</Tags>" +
+            "<Programs><Program Name=\"MainProgram\" Type=\"Normal\" TestEdits=\"false\" Disabled=\"false\" UseAsFolder=\"false\" MainRoutineName=\"Main\">" +
+            "<Tags /><Routines><Routine Name=\"Main\" Type=\"RLL\"><RLLContent>" +
+            "<Rung Number=\"0\" Type=\"N\"><Text><![CDATA[XIC(A)OTE(B);]]></Text></Rung>" +
+            "</RLLContent></Routine></Routines></Program></Programs></Controller></RSLogix5000Content>");
+        var session = new TagSessionService();
+        session.Attach(new VirtualTagService(new Dictionary<string, (object, string?)>()), isVirtual: false, isLiveController: true);
+        session.SetControllerImage(image, DateTimeOffset.UtcNow);
+
+        // Replace rung 0 with another writer of B: the controller exports [IR, R] and the publish's refresh installs it.
+        var exported = SessionImageAfterAcceptTests.ImageOfTyped(("XIC(C)OTE(B);", "IR"), ("XIC(A)OTE(B);", "R"));
+        session.ImageSourceOverride = new ExportOnly(exported);
+        session.MarkImageStale("MainProgram");
+        Assert.True(session.RefreshControllerImageAsync().GetAwaiter().GetResult());
+        Assert.Equal(["IR", "R"], session.ControllerImage!.Programs.Single().Routines.Single().Rungs.Select(r => r.Type!.ToString()).ToArray());
+
+        var result = Assert.IsType<LintResult>(LintHandler.Execute(new ProjectService(), session: session));
+
+        Assert.DoesNotContain(result.Findings, f => f.Rule == "DuplicateDestructiveOutput");
+    }
+
+    private sealed class ExportOnly(L5Sharp.Core.L5X export) : IControllerImageSource
+    {
+        public System.Threading.Tasks.Task<string> ExportProgramL5xAsync(string program, CancellationToken ct = default) =>
+            System.Threading.Tasks.Task.FromResult(export.ToString());
+        public System.Threading.Tasks.Task<string> ExportControllerTagsL5xAsync(CancellationToken ct = default) =>
+            System.Threading.Tasks.Task.FromResult(export.ToString());
+    }
 }

@@ -156,7 +156,16 @@ public record ListDatatypesResult(
 /// </summary>
 /// <param name="Error">Human-readable error message.</param>
 public record ListDatatypesError(
-    [property: JsonPropertyName("error")] string Error);
+    [property: JsonPropertyName("error")] string Error)
+{
+    /// <summary>Machine-readable error kind (for example <c>NoProjectLoaded</c>); omitted for untyped errors.</summary>
+    [JsonPropertyName("kind"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Kind { get; init; }
+
+    /// <summary>Next step (for example how to recover from <c>NoProjectLoaded</c>); omitted when none.</summary>
+    [JsonPropertyName("hint"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Hint { get; init; }
+}
 
 /// <summary>
 /// Pure handler for the <c>logix_list_datatypes</c> MCP tool.
@@ -191,7 +200,10 @@ public static class ListDatatypesHandler
         TagSessionService? session  = null)
     {
         if (!service.IsLoaded)
-            return new ListDatatypesError("No project loaded. Call logix_open_project first.");
+        {
+            var np = service.NoProjectLoadedError("logix_list_datatypes");
+            return new ListDatatypesError(np.Error) { Kind = np.Kind, Hint = np.Hint };
+        }
 
         var project    = service.Project!;
         var datatypes  = project.DataTypes.AsEnumerable();

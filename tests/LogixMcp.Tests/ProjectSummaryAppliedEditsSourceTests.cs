@@ -1,4 +1,6 @@
 using System.Text.Json;
+using L5Sharp.Core;
+using Task = System.Threading.Tasks.Task;
 
 namespace LogixMcp.Tests;
 
@@ -21,15 +23,22 @@ public class ProjectSummaryAppliedEditsSourceTests
         return (session, service);
     }
 
+    private sealed class ExportOf(L5X export) : IControllerImageSource
+    {
+        public Task<string> ExportProgramL5xAsync(string program, CancellationToken ct = default) => Task.FromResult(export.ToString());
+        public Task<string> ExportControllerTagsL5xAsync(CancellationToken ct = default) => Task.FromResult(export.ToString());
+    }
+
     private static JsonElement Json(object result) => JsonSerializer.SerializeToElement(result, result.GetType());
 
     [Fact]
-    public void NonEmptyAppliedEdits_AddsAppliedEditsSourceSessionImage_AndKeepsSourceProjectFile()
+    public async Task NonEmptyAppliedEdits_AddsAppliedEditsSourceSessionImage_AndKeepsSourceProjectFile()
     {
         var (session, service) = Connect();
-        Assert.True(SessionImageState.RecordPublish(session, "MainProgram", "Main", 0, 1, [NewRung]));
-        SessionImageState.OnAccepted(session, "MainProgram",
-            [new SessionImageState.ZoneRoutine("Main", [("IR", NewRung)])], "accepted");
+        // A publish then accept: the controller now exports the new rung as ordinary logic and the refresh installs it.
+        session.ImageSourceOverride = new ExportOf(SessionImageAfterAcceptTests.ImageOf(NewRung, "XIC(C)OTE(B);", "XIC(A)OTE(D);"));
+        session.MarkImageStale("MainProgram");
+        Assert.True(await session.RefreshControllerImageAsync());
 
         var summary = Json(ProjectSummaryHandler.Execute(service, session));
 
@@ -48,5 +57,21 @@ public class ProjectSummaryAppliedEditsSourceTests
         Assert.False(summary.TryGetProperty("appliedEdits", out _));
         Assert.False(summary.TryGetProperty("appliedEditsSource", out _));
         Assert.Equal("project-file", summary.GetProperty("source").GetString());
+    }
+
+    [Fact]
+    public void CreatedRoutine_IsCountedAndListedWithCreatedThisSession_AndSourceNamesTheImage()
+    {
+        var (session, service) = ProjectFileReadStalenessTests.ConnectThenCreateRoutine();
+
+        var summary = Json(ProjectSummaryHandler.Execute(service, session));
+
+        Assert.Equal("session-image", summary.GetProperty("source").GetString());
+        var program = summary.GetProperty("programs").EnumerateArray().Single();
+        Assert.Equal(2, program.GetProperty("routines").GetInt32());
+        var list = program.GetProperty("routineList").EnumerateArray().ToList();
+        var created = list.Single(r => r.GetProperty("name").GetString() == "R_New");
+        Assert.True(created.GetProperty("createdThisSession").GetBoolean());
+        Assert.False(list.Single(r => r.GetProperty("name").GetString() == "Main").TryGetProperty("createdThisSession", out _));
     }
 }

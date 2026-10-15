@@ -1,6 +1,6 @@
 # What's verified
 
-Version 1.0.0.
+Version 1.0.1.
 
 **Everything listed below concerns FactoryTalk Logix Echo — Rockwell's
 software controller emulator — and nothing else. The SDK-lane rows are
@@ -189,7 +189,8 @@ the Studio of the bench:
 
 ## Known limitations
 
-- Creating a new data type is not possible. Existing types only.
+- `logix_import_datatype` creates a type that does not exist yet (imported at
+  `Controller/DataTypes`); verified on the bench 2026-10-15.
 - `confirmedByUser` cannot be verified by the server, by design; see the
   [safety model](safety-model.md).
 - The Rockwell SDK service can crash during an online connect (a race inside

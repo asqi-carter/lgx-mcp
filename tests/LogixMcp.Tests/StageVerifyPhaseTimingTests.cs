@@ -7,7 +7,7 @@ using Task = System.Threading.Tasks.Task;
 namespace LogixMcp.Tests;
 
 /// <summary>
-/// logix-mcp-wu06.3 (G34) — a passing verifyOnStage replay is the only offline copy cycle
+/// A passing verifyOnStage replay is the only offline copy cycle
 /// (the post-import build-check copy is skipped and reported as <c>skipped-replay-passed</c>), a failing replay is
 /// unchanged, verifyOnStage results carry <c>phaseTimings</c>, and connect removes stale offline copies.
 /// </summary>

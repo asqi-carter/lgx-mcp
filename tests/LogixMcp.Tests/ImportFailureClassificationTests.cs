@@ -48,7 +48,7 @@ internal sealed class ImportFailureClassificationFake : ILogixProject
 
     /// <summary>
     /// When non-<c>null</c>, <see cref="ThrowOnImport"/> is thrown only on the first this-many import calls;
-    /// later calls succeed (logix-mcp-qpqy.8: a lock that clears). <c>null</c> = throw on every call.
+    /// later calls succeed (a lock that clears). <c>null</c> = throw on every call.
     /// </summary>
     public int? ThrowOnImportFirstCalls { get; set; }
 
@@ -83,7 +83,7 @@ internal sealed class ImportFailureClassificationFake : ILogixProject
     public void ClearEventHandlers() => _handlers.Clear();
 
     /// <summary>
-    /// logix-mcp-h50h.6: a controller publish reads the program's edit state (a program-scoped export) before it
+    /// A controller publish reads the program's edit state (a program-scoped export) before it
     /// imports. While <c>true</c> (default) and before any import call, that program-scoped export is served with
     /// every rung normalised to <c>N</c>, i.e. "nothing pending yet", so tests that describe the state AFTER the
     /// publish through <c>ExportContent</c> still reach the import. Set <c>false</c> to make the program-scoped export
@@ -332,8 +332,9 @@ public class ImportFailureClassificationTests
         // One export is the pre-publish pending baseline, read before the import; any more would be the classifier.
         // +1 for the Controller/Programs export that resolves the routine names before any import.
         // +3 for the tag/instruction pre-check exports (Controller/Tags, Controller/Programs, AOI definitions).
-        // logix-mcp-h50h.6: +1 for the program-scoped pending-edit pre-check read before the import.
-        Assert.Equal(6, fake.ExportCallCount);
+        // +1 for the program-scoped pending-edit pre-check read before the import.
+        // +1 for the rung-range check's rung-count export, read before the dedup and the import.
+        Assert.Equal(7, fake.ExportCallCount);
 
         // The SDK's real ImportLog is quoted verbatim: mnemonic and full text.
         Assert.Contains("mnemonic \"XMLSrv_E_IMPORT_ABORTED_NO_CHANGES\"", err.Error,
@@ -391,8 +392,9 @@ public class ImportFailureClassificationTests
         // TestEdits, which the routine export lacks), so the total is 3 rather than 2.
         // +1 for the Controller/Programs export that resolves the routine names before any import.
         // +3 for the tag/instruction pre-check exports (Controller/Tags, Controller/Programs, AOI definitions).
-        // logix-mcp-h50h.6: +1 for the program-scoped pending-edit pre-check read before the import.
-        Assert.Equal(8, fake.ExportCallCount);
+        // +1 for the program-scoped pending-edit pre-check read before the import.
+        // +1 for the rung-range check's rung-count export, read before the dedup and the import.
+        Assert.Equal(9, fake.ExportCallCount);
     }
 
     // ── EditsExistForProgram_IsPendingEditsPresent_WithCycleHint ───────────────
@@ -452,11 +454,12 @@ public class ImportFailureClassificationTests
         // TestEdits, which the routine export lacks), so the total is 3 rather than 2.
         // +1 for the Controller/Programs export that resolves the routine names before any import.
         // +3 for the tag/instruction pre-check exports (Controller/Tags, Controller/Programs, AOI definitions).
-        // logix-mcp-h50h.6: +1 for the program-scoped pending-edit pre-check read before the import.
-        Assert.Equal(8, fake.ExportCallCount);
+        // +1 for the program-scoped pending-edit pre-check read before the import.
+        // +1 for the rung-range check's rung-count export, read before the dedup and the import.
+        Assert.Equal(9, fake.ExportCallCount);
     }
 
-    // ── logix-mcp-h50h.6 — PendingEditsBlockImport pre-check ───────────────────
+    // ── PendingEditsBlockImport pre-check ───────────────────
 
     /// <summary>
     /// A controller publish into a program that already holds accepted edits is refused with
@@ -582,11 +585,12 @@ public class ImportFailureClassificationTests
         // One export is the pre-publish pending baseline (read before the import); any more would be the classifier.
         // +1 for the Controller/Programs export that resolves the routine names before any import.
         // +3 for the tag/instruction pre-check exports (Controller/Tags, Controller/Programs, AOI definitions).
-        // logix-mcp-h50h.6: +1 for the program-scoped pending-edit pre-check read before the import.
-        Assert.Equal(6, fake.ExportCallCount);
+        // +1 for the program-scoped pending-edit pre-check read before the import.
+        // +1 for the rung-range check's rung-count export, read before the dedup and the import.
+        Assert.Equal(7, fake.ExportCallCount);
     }
 
-    // ── logix-mcp-qpqy.8 — ControllerLocked and the bounded retry ──────────────
+    // ── ControllerLocked and the bounded retry ──────────────
 
     private const string LockMnemonic = "RxCsE_ASA_BLOCKING_HIGHER_EXCL_LOCK";
 

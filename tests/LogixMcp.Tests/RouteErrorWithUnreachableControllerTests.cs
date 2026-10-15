@@ -135,7 +135,7 @@ public class RouteErrorWithUnreachableControllerTests
         Assert.Equal(commPath, routeError.CommPathUsed);
         Assert.Contains("route error", routeError.Error, StringComparison.OrdinalIgnoreCase);
         Assert.Contains(
-            "Pass the Logix comm path via the sdkCommPath parameter",
+            "check the comm path (slot and port) and that the controller is reachable; the SDK could not route it",
             routeError.Hint, StringComparison.Ordinal);
         Assert.DoesNotContain("may also be down", routeError.Error, StringComparison.OrdinalIgnoreCase);
     }
@@ -182,7 +182,7 @@ public class RouteErrorWithUnreachableControllerTests
         // Existing route-error content and advice must still be present.
         Assert.Contains("route error", routeError.Error, StringComparison.OrdinalIgnoreCase);
         Assert.Contains(
-            "Pass the Logix comm path via the sdkCommPath parameter",
+            "check the comm path (slot and port) and that the controller is reachable; the SDK could not route it",
             routeError.Hint, StringComparison.Ordinal);
     }
 #endif

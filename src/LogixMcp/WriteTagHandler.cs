@@ -368,6 +368,22 @@ public static class WriteTagHandler
                 Hint:  $"Make the audit directory writable, or unset {AuditLogger.FailClosedEnvVar}.");
         }
 
+        // ── Whole structures, whole arrays, bad indices, missing members ─────────
+        // The declared types name these before any controller call, so a refused shape never reaches the gate or the wire.
+        if (TagPathProbe.ForWrite(session.Service, tagName) is { } pathRefused)
+        {
+            AuditLogger.LogWrite(
+                controller: session.AuditController,
+                route:    session.ActiveRoute,
+                tag:      tagName,
+                written:  parsedValue,
+                observed: null,
+                verified: null,
+                error:    pathRefused.Message,
+                kind:     pathRefused.Kind);
+            return new WriteTagError(pathRefused.Message, Kind: pathRefused.Kind, Tag: tagName, Hint: pathRefused.Hint);
+        }
+
         string? resolvedFrom = null;
         try
         {

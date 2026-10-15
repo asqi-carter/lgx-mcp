@@ -65,7 +65,7 @@ public class ProposeRungEditNormalizationTests
             "<Description><![CDATA[Lamp output]]></Description></Tag></Tags>");
 
         var json = await NewTools().GetProposeRungEditResponseAsync(
-            ValidXPath, 3, 0, fragment, session: session, target: "workstation");
+            ValidXPath, 1, 0, fragment, session: session, target: "workstation");
 
         var root = JsonDocument.Parse(json).RootElement;
         Assert.False(root.TryGetProperty("error", out var err), json + err);
@@ -79,7 +79,7 @@ public class ProposeRungEditNormalizationTests
 
         // Rung kept its Text and Comment, renumbered from insertPosition; export rung removed.
         var rung = Assert.Single(imported.Descendants("Rung"));
-        Assert.Equal("3", (string?)rung.Attribute("Number"));
+        Assert.Equal("1", (string?)rung.Attribute("Number"));
         Assert.Equal("XIC(Start)OTE(Lamp);", rung.Element("Text")!.Value);
         Assert.Equal("Starts the lamp", rung.Element("Comment")!.Value);
 

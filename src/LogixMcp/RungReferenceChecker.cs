@@ -36,10 +36,17 @@ public static class ReferenceCheckKinds
     public const string UndefinedMember = "UndefinedMember";
 
     /// <summary>
-    /// Retained for callers that still reference it. <see cref="RungReferenceChecker.Check"/> no longer refuses
-    /// for an unfamiliar instruction name (it warns); it never returns this kind.
+    /// An instruction name that is not in the known-instruction list and is not an Add-On Instruction of the project.
+    /// A warning finding (<see cref="ReferenceCheckResult.WarningFindings"/>): <see cref="RungReferenceChecker.Check"/>
+    /// never refuses for it, so this is never the <see cref="ReferenceCheckResult.Kind"/>.
     /// </summary>
     public const string UnknownInstruction = "UnknownInstruction";
+
+    /// <summary>
+    /// A common instruction is written with the wrong number of operands, for example <c>XIC(A,B)</c> (one operand
+    /// expected). Logix rejects the rung at import; it is refused at stage.
+    /// </summary>
+    public const string OperandCountMismatch = "OperandCountMismatch";
 
     /// <summary>
     /// A write instruction (OTE, OTL, OTU) names another program's Output parameter as its destination, for example
@@ -101,13 +108,18 @@ public sealed record ReferenceFinding(
 /// References to programs that do not exist (<see cref="ReferenceCheckKinds.UnknownProgram"/>). They are let through
 /// with a warning by <see cref="RungReferenceChecker.Check"/>; the caller decides whether to refuse (verifyOnStage).
 /// </param>
+/// <param name="WarningFindings">
+/// Findings that never refuse: instructions that are neither known nor Add-On Instructions
+/// (<see cref="ReferenceCheckKinds.UnknownInstruction"/>). <c>null</c> or empty when there are none.
+/// </param>
 public sealed record ReferenceCheckResult(
     string? Kind,
     IReadOnlyList<ReferenceFinding> Findings,
     string? Message,
     IReadOnlyList<string> Warnings,
     string? Hint = null,
-    IReadOnlyList<ReferenceFinding>? UnknownPrograms = null)
+    IReadOnlyList<ReferenceFinding>? UnknownPrograms = null,
+    IReadOnlyList<ReferenceFinding>? WarningFindings = null)
 {
     /// <summary><c>true</c> when the rungs must be refused.</summary>
     public bool Refused => Kind is not null;
@@ -190,7 +202,7 @@ public static class RungReferenceChecker
     /// </para>
     /// <para>
     /// NOTE: the <c>help/clinset/</c> index was not present in the sandbox where this list was last extended,
-    /// so completeness against it is unverified; the v38 names from task logix-mcp-r7k0.3 (ISINF, ISNAN, ATAN2,
+    /// so completeness against it is unverified; the v38 names from an earlier change (ISINF, ISNAN, ATAN2,
     /// HMIBC, LV, ASO and the safety/drives names) were added from that task's list.
     /// </para>
     /// </summary>
@@ -265,6 +277,30 @@ public static class RungReferenceChecker
         "FFL", "FFU", "LFL", "LFU", "SQI", "SQO", "SQL",
         "JSR", "SBR", "RET", "FOR", "MSG",
     };
+
+    /// <summary>
+    /// Operand counts for the common instructions: minimum and maximum (<c>null</c> maximum: no upper bound). Only
+    /// what Logix certainly rejects is listed (a JSR carries its routine name, an input count and the parameters; a
+    /// RET carries any number of return parameters). An Add-On Instruction that shares a name is never checked.
+    /// </summary>
+    internal static readonly IReadOnlyDictionary<string, (int Min, int? Max)> OperandCounts =
+        new Dictionary<string, (int Min, int? Max)>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["XIC"] = (1, 1), ["XIO"] = (1, 1), ["OTE"] = (1, 1), ["OTL"] = (1, 1), ["OTU"] = (1, 1),
+            ["ONS"] = (1, 1),
+            ["TON"] = (3, 3), ["TOF"] = (3, 3), ["RTO"] = (3, 3), ["CTU"] = (3, 3), ["CTD"] = (3, 3),
+            ["RES"] = (1, 1),
+            ["MOV"] = (2, 2), ["MOVE"] = (2, 2),
+            ["ADD"] = (3, 3), ["SUB"] = (3, 3), ["MUL"] = (3, 3), ["DIV"] = (3, 3),
+            ["EQU"] = (2, 2), ["NEQ"] = (2, 2), ["GRT"] = (2, 2), ["GEQ"] = (2, 2), ["LES"] = (2, 2), ["LEQ"] = (2, 2),
+            ["JSR"] = (1, null), ["RET"] = (0, null),
+            ["CPT"] = (2, 2), ["CLR"] = (1, 1),
+        };
+
+    private static string DescribeCount((int Min, int? Max) range) =>
+        range.Max is null ? $"at least {range.Min}"
+        : range.Min == range.Max ? $"{range.Min}"
+        : $"{range.Min} to {range.Max}";
 
     /// <summary>Instructions whose operand text is an arithmetic expression.</summary>
     private static readonly HashSet<string> ExpressionInstructions = new(StringComparer.OrdinalIgnoreCase)
@@ -509,6 +545,8 @@ public static class RungReferenceChecker
             ? null
             : new HashSet<string>(symbols.AoiNames, StringComparer.OrdinalIgnoreCase);
         var unlistedInstructions = new SortedSet<string>(StringComparer.OrdinalIgnoreCase);
+        var unknownInstructionFindings = new List<ReferenceFinding>();
+        var operandMismatches = new List<ReferenceFinding>();
         var undefinedTags = new List<ReferenceFinding>();
         var notPublic = new List<ReferenceFinding>();
         var undefinedMembers = new List<ReferenceFinding>();
@@ -536,7 +574,21 @@ public static class RungReferenceChecker
                 {
                     // Not refused: the list may lag a Logix release, and Logix is the final check at publish.
                     if (symbols.AoiNames is null) unverifiableInstructions.Add(name);
-                    else unlistedInstructions.Add(name);
+                    else
+                    {
+                        unlistedInstructions.Add(name);
+                        unknownInstructionFindings.Add(new ReferenceFinding(i, name, name,
+                            ReferenceCheckKinds.UnknownInstruction));
+                    }
+                }
+
+                if (!isAoi && OperandCounts.TryGetValue(name, out var range))
+                {
+                    int count = string.IsNullOrWhiteSpace(args) ? 0 : SplitOperands(args).Count;
+                    if (count < range.Min || count > range.Max)
+                        operandMismatches.Add(new ReferenceFinding(i, name, $"{name}({args.Trim()})",
+                            ReferenceCheckKinds.OperandCountMismatch,
+                            $"{name} takes {DescribeCount(range)} operand(s); {count} given."));
                 }
 
                 // Instructions with plain tag/number operands, AOI calls and unknown instructions have their
@@ -586,7 +638,7 @@ public static class RungReferenceChecker
             warnings.Add("Instruction(s) not checked because the project's Add-On Instruction list could not be read: " +
                          string.Join(", ", unverifiableInstructions) + ".");
         if (unlistedInstructions.Count > 0)
-            warnings.Add("Instruction(s) not in the known-instruction list and not Add-On Instructions in this " +
+            warnings.Add("UnknownInstruction: instruction(s) not in the known-instruction list and not Add-On Instructions in this " +
                          "project: " + string.Join(", ", unlistedInstructions) + ". They were let through; " +
                          "Logix checks them at import/publish.");
         foreach (var f in unknownPrograms)
@@ -595,9 +647,10 @@ public static class RungReferenceChecker
             warnings.Add("Tag reference(s) not checked because they could not be resolved from the export: " +
                          string.Join(", ", unverifiableTags.Take(10)) + (unverifiableTags.Count > 10 ? ", ..." : "") + ".");
 
-        if (undefinedTags.Count + notPublic.Count + undefinedMembers.Count + crossOutputs.Count > 0)
+        if (undefinedTags.Count + notPublic.Count + undefinedMembers.Count + crossOutputs.Count + operandMismatches.Count > 0)
         {
-            var findings = undefinedTags.Concat(notPublic).Concat(undefinedMembers).Concat(crossOutputs).ToList();
+            var findings = undefinedTags.Concat(notPublic).Concat(undefinedMembers).Concat(crossOutputs)
+                .Concat(operandMismatches).ToList();
             var parts = new List<string>();
             string? hint = null;
             string kind = ReferenceCheckKinds.UndefinedTag;
@@ -642,12 +695,23 @@ public static class RungReferenceChecker
                           "parameter can write it; other programs may read it.");
                 hint ??= CrossProgramOutputHint;
             }
+            if (operandMismatches.Count > 0)
+            {
+                if (undefinedTags.Count + notPublic.Count + undefinedMembers.Count + crossOutputs.Count == 0)
+                    kind = ReferenceCheckKinds.OperandCountMismatch;
+                parts.Add(string.Join("; ", operandMismatches.Select(f =>
+                              $"rung {f.RungIndex}: {f.Name} - {f.Detail}")));
+                hint ??= "Write the instruction with the operands Logix expects (for example XIC(Tag), TON(Timer,Preset,Accum), " +
+                         "MOV(Source,Dest)); check the instruction's operand list in the Logix help.";
+            }
 
             return new ReferenceCheckResult(kind, findings,
-                string.Join(" ", parts) + " Nothing was imported or staged.", warnings, hint, unknownPrograms);
+                string.Join(" ", parts) + " Nothing was imported or staged.", warnings, hint, unknownPrograms,
+                unknownInstructionFindings);
         }
 
-        return new ReferenceCheckResult(null, [], null, warnings, UnknownPrograms: unknownPrograms);
+        return new ReferenceCheckResult(null, [], null, warnings, UnknownPrograms: unknownPrograms,
+            WarningFindings: unknownInstructionFindings);
     }
 
     /// <summary>
@@ -678,6 +742,9 @@ public static class RungReferenceChecker
                 "the tag is not Public in its program, so another program cannot reference it",
             ReferenceCheckKinds.UndefinedMember => "the tag's data type has no such member",
             ReferenceCheckKinds.UnknownProgram => "the program does not exist in the controller",
+            ReferenceCheckKinds.UnknownInstruction =>
+                "the instruction is not in the known-instruction list and is not an Add-On Instruction of this project",
+            ReferenceCheckKinds.OperandCountMismatch => "the instruction has the wrong number of operands",
             ReferenceCheckKinds.CrossProgramOutputNotWritable =>
                 "it is another program's Output parameter and only that program can write it (" +
                 ReferenceCheckKinds.DirectWriteOutputMnemonic + "); reads are allowed",

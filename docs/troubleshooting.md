@@ -64,11 +64,28 @@ runtime is not bundled with lgx-mcp. After installing it, a connect to an
 address with nothing listening returns `ConnectionFailed` (see the previous
 entry).
 
-## `logix_import_datatype` returns `NewDatatypeUnsupported`
+## `logix_import_datatype` returns `ImportNotApplied`
 
-This tool changes existing data types only; it cannot create one. A dry run
-previews the fragment and reports `willCreate: true`. Create the type in
-Studio 5000, then use this tool for later changes to it.
+**Symptom:** a real run ends with `kind: "ImportNotApplied"`, `expectedMembers`,
+`actualMembers` and a `reason`; nothing is at `saveAs`.
+
+**Cause:** the SDK import ran but the type re-exported from the result does not
+have the requested members. `collision: Discard` on an existing type keeps the
+existing type (the `reason` says so). `sdkMessages` carries what the SDK said
+during the import, when it said anything.
+
+**Fix:** to replace an existing type wholesale, pass `collision: Overwrite`. If
+the members already match, the run succeeds with the note "the type already had
+these members".
+
+## `logix_import_datatype` returns `ImportCancelledOnCollision`
+
+`collision: Cancel` met an existing type, so the SDK aborted the import
+(`XMLSrv_E_IMPORT_ABORTED_NO_CHANGES`). Nothing was written. Use `Overwrite` to
+replace the type or `Discard` to keep it.
+
+A type that does not exist yet is created by the import (dry run:
+`willCreate: true`), so there is no refusal for new types.
 
 ## `logix_import_datatype` returns `TargetExists`
 
@@ -322,6 +339,23 @@ kinds are listed in [`docs/errors.md`](errors.md#pending-state-errors-logix_pend
 Without the switch, accept or cancel the pending edits in Logix Designer
 (Logic → Online Edits).
 
+## A read tool says the controller image is stale
+
+**Symptom:** `logix_get_routine` or another read tool flags `imageStale: true`
+and its note carries an export error.
+
+**Cause:** the session image follows the controller by re-exporting the
+program after every publish, accept, assemble, cancel, finalize,
+clear_staged and create_routine, and the read tools refresh it before
+answering. A stale flag therefore means the refresh itself failed (for
+example the controller or SDK service dropped); the note carries the export
+error.
+
+**Fix:** a reconnect is needed only when the refresh itself fails. Read the
+export error in the note, fix that cause (see `logix_doctor`), then call
+`logix_connect` again. When no export error is reported, the image is current
+and no reconnect is needed.
+
 ## Got a different error?
 
 Check [`docs/errors.md`](errors.md) for the `kind` taxonomy, then open an
@@ -343,3 +377,21 @@ treat `debugMode` in the status word as forces (it only adds a note to check
 in Studio).
 
 **Fix:** Look at the Forces indicator in Studio 5000 (online), or add logic: GSV Module ForceStatus into a DINT tag (bit 0 = forces installed, bit 1 = forces enabled), then read that tag with `logix_read`.
+
+## Build and import errors say only that something failed
+
+**Symptom:** a build or import raises an SDK exception with no reason in it.
+
+**Cause:** the SDK's exceptions carry no reason. The reasons arrive at an
+`IOperationEvent` handler as error and status messages: `RxCMP_` and `RxSTX_`
+build errors with locations, and, after an import, the ImportLog XML with
+`<Summary Warnings= Errors=>` and `<Exception>` entries. lgx-mcp attaches a
+handler per operation on the C# project handle. That is where `importLog`,
+`build_verify` and `rejectReasons` in tool responses come from.
+
+**Fix (porting to the Python SDK):** only `open_logix_project`,
+`create_new_project`, `convert` and `upload_to_new_project` accept a listener.
+`build()`, `partial_import_from_xml_file()` and `save_as()` do not, so attach
+one at open and keep it for the session.
+
+_Last verified against master 34714d4 on 2026-10-14._

@@ -40,8 +40,8 @@ public class PublicDocsScopeTests
     {
         "AlreadyTested", "AmbiguousInput", "BuildFailedEditPending", "CancelNotApplicable", "ClearIncomplete", "DeleteNeedsExplicitEmptyRungs",
         "DeleteNeedsLive", "DeleteWithTags", "EmptyRoutineEnvelope", "EnvelopeIncomplete", "ExpectedRungTextRequired",
-        "ExternalAccessChangeRefused", "InvalidRungText", "InvalidTag", "LiveFinalizeNotConfirmed", "NotTested",
-        "PendingEditsBlockImport", "PendingZoneExists", "PendingZoneStudioOnly", "PostImportCheckInconclusive", "PublishInProgress", "PublishMismatch", "PublishMismatchUnresolved", "StagedRungsPresent", "StaleTarget",
+        "ExternalAccessChangeRefused", "InsertPositionOutOfRange", "InvalidRungText", "InvalidTag", "LiveFinalizeNotConfirmed", "NotTested",
+        "PendingEditsBlockImport", "PendingZoneExists", "PendingZoneStudioOnly", "PostImportCheckInconclusive", "PublishInProgress", "PublishMismatch", "PublishMismatchUnresolved", "ReplaceCountOutOfRange", "StagedRungsPresent", "StaleTarget",
         "TestStateNotConfirmed", "UntestNotApplicable", "UntestStateNotConfirmed", "ZoneTested",
     };
 

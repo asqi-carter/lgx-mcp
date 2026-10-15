@@ -3059,15 +3059,17 @@ public class LogixTagToolsTests : IDisposable
     }
 
     [Fact]
-    public async Task PollTagsHandler_CountLessThanOne_Clamps_ToSingleCycle()
+    public async Task PollTagsHandler_CountLessThanOne_IsInvalidArguments_NamingCount()
     {
+        // an earlier change: a count below 1 is refused rather than silently clamped to one cycle.
         var (session, _) = BuildGatedVirtualSession();
 
         var result = await PollTagsHandler.ExecuteAsync(
             ["Cmd_MotorStart"], count: -5, intervalMs: 100, session);
 
-        Assert.IsType<PollResult>(result);
-        Assert.Single(((PollResult) result).Cycles);
+        var err = Assert.IsType<PollError>(result);
+        Assert.Equal(ErrorKinds.InvalidArguments, err.Kind);
+        Assert.Contains("count", err.Error);
     }
 
     [Fact]
@@ -3566,9 +3568,9 @@ public class LogixTagToolsTests : IDisposable
     }
 
     [Fact]
-    public async Task ConnectHandler_SdkBackend_RouteError_HintMentionsSdkCommPath()
+    public async Task ConnectHandler_SdkBackend_RouteError_HintSaysCheckThePath_NotToUseSdkCommPath()
     {
-        // The hint in ConnectSdkRouteError must tell the caller to use sdkCommPath.
+        // The caller already passed the comm path the SDK used, so the hint says to check it, not to use sdkCommPath.
         var projectSvc = new ProjectService();
         var sessionSvc = new TagSessionService();
         var factory    = new UploadFromControllerSdkFactory(
@@ -3582,7 +3584,10 @@ public class LogixTagToolsTests : IDisposable
             controllerReachableProbe: (_, _) => Task.FromResult(true));
 
         Assert.NotNull(result.Hint);
-        Assert.Contains("sdkCommPath", result.Hint, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(
+            "check the comm path (slot and port) and that the controller is reachable; the SDK could not route it",
+            result.Hint);
+        Assert.DoesNotContain("sdkCommPath", result.Hint, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

@@ -8,7 +8,7 @@ using Task = System.Threading.Tasks.Task;
 namespace LogixMcp.Tests;
 
 /// <summary>
-/// logix-mcp-vazn.5 — a <c>target="workstation"</c> stage is held in the session image, which Logix does not
+/// A <c>target="workstation"</c> stage is held in the session image, which Logix does not
 /// check. The result and the audit say so (<c>stagedIn</c> "session-image", <c>verified</c> false, the fixed note)
 /// instead of claiming <c>structural_verify: "online"</c>. The opt-in <c>verifyOnStage</c> replays the fragment
 /// offline (here a fake replay) and reports <c>verified: true</c> or the reject reasons.

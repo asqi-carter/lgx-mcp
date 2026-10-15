@@ -5,7 +5,7 @@ using Task = System.Threading.Tasks.Task;
 namespace LogixMcp.Tests;
 
 /// <summary>
-/// This change requirement 5 (task logix-mcp-64f5.5): the cheap tag and instruction pre-check on every stage and
+/// The cheap tag and instruction pre-check on every stage and
 /// publish (<c>UndefinedTag</c>, <c>UnknownInstruction</c>, never a false refusal), and
 /// <c>buildVerify: "passed-excluding-staged"</c> when the staged rungs were not verified.
 /// </summary>
@@ -73,7 +73,7 @@ public class ReferencePreCheckTests
         Assert.Empty(session.StagedRungBuffer);            // nothing staged
     }
 
-    /// <summary>logix-mcp-qpqy.12: a publish blocked by pending edits also reports the tag and instruction pre-check.</summary>
+    /// <summary>A publish blocked by pending edits also reports the tag and instruction pre-check.</summary>
     [Fact]
     public async Task Publish_BlockedByPendingEdits_ReportsBlockAndPreCheckTogether()
     {

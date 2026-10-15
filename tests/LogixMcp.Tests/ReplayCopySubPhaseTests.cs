@@ -8,7 +8,7 @@ using Task = System.Threading.Tasks.Task;
 namespace LogixMcp.Tests;
 
 /// <summary>
-/// logix-mcp-i3b6.5 — the replay-copy phase of a verifyOnStage stage reports a
+/// The replay-copy phase of a verifyOnStage stage reports a
 /// <c>replay-copy/&lt;step&gt;</c> sub-phase for each distinct SDK or IO step. Instrumentation only: the seven
 /// phases, their names and their order are unchanged.
 /// </summary>

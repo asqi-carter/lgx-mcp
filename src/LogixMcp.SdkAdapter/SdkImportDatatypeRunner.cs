@@ -12,6 +12,7 @@
 using System.Collections.Generic;
 using System.Text;
 using RockwellAutomation.LogixDesigner;
+using RockwellAutomation.LogixDesigner.Logging;
 
 using Task                 = System.Threading.Tasks.Task;
 using ImportCollisionOptions = RockwellAutomation.LogixDesigner.LogixProject.ImportCollisionOptions;
@@ -41,25 +42,78 @@ internal static class SdkImportDatatypeRunner
     /// <paramref name="xpath"/> with the mapped collision option, and saves the
     /// project back to <paramref name="saveAsAcd"/> as an ACD. The handler has
     /// already copied the input ACD to this path, so the input is never touched.
+    /// An <see cref="IOperationEvent"/> capture around the import collects the SDK's status and error
+    /// messages. Returns them; on failure throws <see cref="SdkImportException"/> carrying them (the
+    /// <c>collision: Cancel</c> abort, <c>XMLSrv_E_IMPORT_ABORTED_NO_CHANGES</c>, is surfaced the same way
+    /// and recognised by the handler).
     /// </summary>
-    private static void Import(
+    private static IReadOnlyList<string> Import(
         string saveAsAcd, string l5xToImport, string xpath, ImportCollisionOption collision)
     {
         var sdkCollision = Map(collision);
-        RunSync(async ct =>
+        var capture = new ImportEventCapture();
+        try
         {
-            using var session = new LogixProjectSession();
-            await session.OpenAsync(saveAsAcd, ct).ConfigureAwait(false);
-            await session.ExecuteAsync(
-                p => p.PartialImportFromXmlFileAsync(xpath, l5xToImport, sdkCollision, false, ct),
-                ct).ConfigureAwait(false);
-            // Persist to the caller's path (detailedL5x:false → ACD, force:true → overwrite
-            // the seed copy). SaveAsync() would only save the private working copy, which
-            // is deleted on dispose.
-            await session.ExecuteAsync(
-                p => p.SaveAsAsync(saveAsAcd, true, false, ct),
-                ct).ConfigureAwait(false);
-        });
+            RunSync(async ct =>
+            {
+                using var session = new LogixProjectSession();
+                await session.OpenAsync(saveAsAcd, ct).ConfigureAwait(false);
+                await session.ExecuteAsync(
+                    async p =>
+                    {
+                        p.AddEventHandler(capture);
+                        try
+                        {
+                            await p.PartialImportFromXmlFileAsync(xpath, l5xToImport, sdkCollision, false, ct)
+                                .ConfigureAwait(false);
+                        }
+                        finally
+                        {
+                            try { p.RemoveEventHandler(capture); } catch { /* best effort */ }
+                        }
+                    },
+                    ct).ConfigureAwait(false);
+                // Persist to the caller's path (detailedL5x:false → ACD, force:true → overwrite
+                // the seed copy). SaveAsync() would only save the private working copy, which
+                // is deleted on dispose.
+                await session.ExecuteAsync(
+                    p => p.SaveAsAsync(saveAsAcd, true, false, ct),
+                    ct).ConfigureAwait(false);
+            });
+        }
+        catch (System.Exception ex)
+        {
+            throw new SdkImportException(ex.Message, capture.Messages, ex);
+        }
+        return capture.Messages;
+    }
+
+    /// <summary>
+    /// Collects the importer's status and error callbacks during the one import call so the handler can
+    /// report the SDK's own words (pattern of <c>CreateRoutineHandler.ImportEventCapture</c>).
+    /// </summary>
+    private sealed class ImportEventCapture : IOperationEvent
+    {
+        private readonly List<string> _messages = new();
+
+        /// <summary>Status and error messages in arrival order, blanks dropped.</summary>
+        public IReadOnlyList<string> Messages
+        {
+            get { lock (_messages) return _messages.ToArray(); }
+        }
+
+        private void Add(string? msg)
+        {
+            if (string.IsNullOrWhiteSpace(msg)) return;
+            lock (_messages) _messages.Add(msg.Trim());
+        }
+
+        public void LogProgress(bool logProgressNew) { }
+        public void Progress(string projectFile, int value) { }
+        public void LogStatus(bool logStatusNew) { }
+        public void Status(string projectFile, string msg) => Add(msg);
+        public void LogError(bool logErrorNew) { }
+        public void Error(string projectFile, string msg) => Add(msg);
     }
 
     // ── Re-export + parse ─────────────────────────────────────────────────────

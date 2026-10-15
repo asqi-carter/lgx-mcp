@@ -21,6 +21,10 @@ using L5Sharp.Core;
 /// <c>true</c> when the reference is program-qualified (<c>\Prog.Tag</c>) but the program does not exist or
 /// does not declare the tag, so the reference cannot resolve. Omitted from the JSON when <c>false</c>.
 /// </param>
+/// <param name="State">
+/// With <c>includePending: true</c>, <c>staged</c>, <c>pending</c> or <c>tested</c> when the rung is not yet accepted
+/// controller logic; omitted for an accepted rung.
+/// </param>
 public record CrossRefEntry(
     [property: JsonPropertyName("program")]     string Program,
     [property: JsonPropertyName("routine")]     string Routine,
@@ -32,7 +36,9 @@ public record CrossRefEntry(
     [property: JsonPropertyName("target"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     string? Target = null,
     [property: JsonPropertyName("targetMissing"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
-    bool TargetMissing = false);
+    bool TargetMissing = false,
+    [property: JsonPropertyName("state"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? State = null);
 
 /// <summary>
 /// Strongly-typed success response returned by <see cref="CrossReferenceHandler.Execute"/>.
@@ -147,10 +153,13 @@ public static class CrossReferenceHandler
     {
         var selection = AnalysisImage.Resolve(service, session, includePending);
         if (selection.Project is null)
-            return new CrossRefError("No project loaded. Call logix_open_project first.");
+        {
+            var np = service.NoProjectLoadedError("logix_cross_reference");
+            return new CrossRefError(np.Error) { Kind = np.Kind, Hint = np.Hint };
+        }
 
         if (string.IsNullOrWhiteSpace(tagName))
-            return new CrossRefError("tagName must not be empty.");
+            return new CrossRefError("tagName must not be empty.") { Kind = ErrorKinds.InvalidArguments };
 
         var project   = selection.Project;
         var ambiguous = AmbiguousTagNames.Find(project, tagName);
@@ -168,9 +177,20 @@ public static class CrossReferenceHandler
         var pendingWriters = AnalysisImage.PendingWriters(selection, pending =>
             Find(pending, tagName, WriteClassifier.BuildAoiWriteMap(pending), new List<UnparsedRungEntry>())
                 .Where(r => r.Kind == "write")
-                .Select(r => new PendingWriter(r.Program, r.Routine, r.RungNumber, tagName.Trim())));
+                .Select(r => new PendingWriter(r.Program, r.Routine, r.RungNumber, tagName.Trim())),
+            session is null ? null : session.ZoneTested);
+
+        // includePending: true reads the image with pending rungs applied: label the entries whose rung is not accepted logic.
+        var included = PendingRungStates(selection, session);
+        if (included.Count > 0)
+            results = results.Select(r => included.TryGetValue(StateKey(r.Program, r.Routine, r.RungNumber), out var st)
+                ? r with { State = st } : r).ToList();
 
         var note      = RungParser.OnlyInUnparsedNote(tagName.Trim(), results.Count > 0, unparsed);
+        var includedNote = IncludedPendingNote(results
+            .Where(r => r.State is not null)
+            .Select(r => new PendingWriter(r.Program, r.Routine, r.RungNumber, tagName.Trim(), r.State!)).ToList());
+        if (includedNote is not null) note = note is null ? includedNote : $"{note} {includedNote}";
         var staleNote = AnalysisImage.StaleNote(selection, tagName);
         if (staleNote is not null) note = note is null ? staleNote : $"{note} {staleNote}";
         if (pendingWriters.Count > 0)
@@ -192,6 +212,62 @@ public static class CrossReferenceHandler
             StaleReason            = stale?.StaleReason,
             Hint                   = stale?.Hint,
         };
+    }
+
+    /// <summary>
+    /// With <c>includePending: true</c>, the sentence that names the staged, pending and tested rungs the result
+    /// includes ("Includes 1 staged rung (Main rung 2; not yet sent to the controller); each is labelled with its
+    /// state."), or <c>null</c> when it includes none.
+    /// </summary>
+    /// <param name="labelled">The included rungs, each with its state.</param>
+    internal static string? IncludedPendingNote(IReadOnlyList<PendingWriter> labelled) =>
+        labelled.Count == 0 ? null
+        : $"Includes {AnalysisImage.DescribePending(labelled)}; each is labelled with its state.";
+
+    /// <summary>Key of a rung in <see cref="PendingRungStates"/>: program, routine (case-insensitive) and rung number.</summary>
+    internal static (string Program, string Routine, int Rung) StateKey(string program, string routine, int rung) =>
+        (program.ToUpperInvariant(), routine.ToUpperInvariant(), rung);
+
+    /// <summary>
+    /// For an analysis that reads the session image with pending rungs applied (<c>includePending: true</c>), the state
+    /// of each rung that is not yet accepted controller logic, keyed as <see cref="StateKey"/> by the rung number the
+    /// applied view shows (displaced originals are dropped and the routine renumbered, as
+    /// <see cref="ControllerImageRefresh.PendingApplied"/> does). <c>staged</c> is a rung held on the workstation,
+    /// <c>pending</c> an untested or not-known-tested edit on the controller, <c>tested</c> an edit that executes.
+    /// Empty when the analysis does not read the session image or nothing in it is pending.
+    /// </summary>
+    /// <param name="selection">The chosen image.</param>
+    /// <param name="session">The tag session, or <c>null</c>.</param>
+    /// <returns>State word per pending rung.</returns>
+    internal static IReadOnlyDictionary<(string Program, string Routine, int Rung), string> PendingRungStates(
+        AnalysisImage.Selection selection, TagSessionService? session)
+    {
+        var states = new Dictionary<(string Program, string Routine, int Rung), string>();
+        if (selection.Source != ProjectSourceLabel.SessionImage || session?.ControllerImage is not { } image) return states;
+        System.Xml.Linq.XDocument doc;
+        try { doc = SafeXml.ParseDocument(image.ToString()); }
+        catch (System.Xml.XmlException) { return states; }
+        foreach (var program in doc.Descendants("Program"))
+        {
+            var programName = (string?)program.Attribute("Name") ?? "";
+            foreach (var routine in program.Descendants("Routine"))
+            {
+                var routineName = (string?)routine.Attribute("Name") ?? "";
+                var number = 0;
+                foreach (var rung in routine.Descendants("Rung"))
+                {
+                    var code = (string?)rung.Attribute("Type");
+                    if (code is not null && ControllerImageRefresh.DisplacedOriginalCodes.Contains(code)) continue;
+                    if (code is not null && ControllerImageRefresh.PendingOnlyCodes.Contains(code))
+                        states[StateKey(programName, routineName, number)] =
+                            code is "e" or "er" ? AnalysisImage.StateStaged
+                            : session.ZoneTested(programName) == true ? AnalysisImage.StateTested
+                            : AnalysisImage.StatePending;
+                    number++;
+                }
+            }
+        }
+        return states;
     }
 
     /// <summary>Finds every reference to <paramref name="tagName"/> in <paramref name="project"/>.</summary>

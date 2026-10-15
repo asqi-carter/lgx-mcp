@@ -39,7 +39,16 @@ public record ListModulesResult(
 /// <summary>Error response returned when no project is loaded.</summary>
 /// <param name="Error">Human-readable error message.</param>
 public record ListModulesError(
-    [property: JsonPropertyName("error")] string Error);
+    [property: JsonPropertyName("error")] string Error)
+{
+    /// <summary>Machine-readable error kind (for example <c>NoProjectLoaded</c>); omitted for untyped errors.</summary>
+    [JsonPropertyName("kind"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Kind { get; init; }
+
+    /// <summary>Next step (for example how to recover from <c>NoProjectLoaded</c>); omitted when none.</summary>
+    [JsonPropertyName("hint"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Hint { get; init; }
+}
 
 /// <summary>
 /// Pure handler for the read-only <c>logix_list_modules</c> MCP tool. Never writes,
@@ -75,7 +84,10 @@ public static class ListModulesHandler
     public static object Execute(ProjectService service, TagSessionService? session = null)
     {
         if (!service.IsLoaded)
-            return new ListModulesError("No project loaded. Call logix_open_project first.");
+        {
+            var np = service.NoProjectLoadedError("logix_list_modules");
+            return new ListModulesError(np.Error) { Kind = np.Kind, Hint = np.Hint };
+        }
 
         var modules = ModuleTreeBuilder.Build(service.Project!);
         var source  = ProjectSourceLabel.Resolve(session);

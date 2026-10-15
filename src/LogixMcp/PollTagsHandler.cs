@@ -171,8 +171,18 @@ public static class PollTagsHandler
         if (!session.IsConnected)
             return new PollError("No active session. Call logix_connect first.", Kind: ErrorKinds.NoActiveSession);
 
+        // An empty tag list and a count below 1 are bad arguments, not something to repair: a zero-cycle poll that
+        // silently ran one cycle, or a poll of nothing, would report a result the caller did not ask for.
         if (tags is null || tags.Length == 0)
-            return new PollError("At least one tag name must be supplied.");
+            return new PollError(
+                "tags: At least one tag name must be supplied; the tags list is empty.",
+                Kind: ErrorKinds.InvalidArguments,
+                Hint: "Pass the tag names to poll in 'tags', e.g. [\"Motor_Speed\"].");
+        if (count < 1)
+            return new PollError(
+                $"count: {count} is not a valid number of poll cycles; it must be at least 1 (at most {MaxCount}).",
+                Kind: ErrorKinds.InvalidArguments,
+                Hint: "Omit 'count' for the default of 3 cycles, or pass a value from 1 to " + MaxCount + ".");
 
         // Enforce limits so a poll cannot hammer a live controller's comms.
         if (tags.Length > MaxTags)
@@ -181,9 +191,6 @@ public static class PollTagsHandler
             return LimitError($"count {count} is too large; the maximum is {MaxCount}.");
         if (intervalMs < MinIntervalMs)
             return LimitError($"intervalMs {intervalMs} is too small; the minimum is {MinIntervalMs} ms.");
-
-        // Clamp remaining input to a sensible bound.
-        if (count < 1) count = 1;
 
         // Refuse malformed names up front, before any cycle touches the backend.
         foreach (var name in tags)
@@ -231,6 +238,12 @@ public static class PollTagsHandler
             foreach (var tag in tags)
             {
                 TagValue result;
+
+                if (TagPathProbe.ForRead(svc, tag) is { } refused)
+                {
+                    errors.Add(new TagReadError(tag, $"Read failed for tag '{tag}': {refused.Message} {refused.Hint}", refused.Kind));
+                    continue;
+                }
 
                 try
                 {

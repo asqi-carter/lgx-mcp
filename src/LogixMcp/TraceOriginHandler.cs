@@ -51,6 +51,19 @@ public class TraceOriginResponse
     [JsonPropertyName("staleReason"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public string? StaleReason { get; set; }
     /// <summary>How to narrow a truncated trace.</summary>
     [JsonPropertyName("advice"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public string? Advice { get; set; }
+    /// <summary>
+    /// Pending rungs (staged, pending or tested) that write a tag the trace follows but were left out because
+    /// <c>includePending</c> is false; omitted when none.
+    /// </summary>
+    [JsonPropertyName("pendingWriters"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public IReadOnlyList<PendingWriter>? PendingWriters { get; set; }
+    /// <summary>
+    /// With <c>includePending: true</c>, the rungs of the trace that are not accepted controller logic, each with its
+    /// <c>state</c> (<c>staged</c>, <c>pending</c> or <c>tested</c>); omitted when none are. The write nodes of these
+    /// rungs repeat the state in their <c>note</c>.
+    /// </summary>
+    [JsonPropertyName("pendingIncluded"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public IReadOnlyList<PendingWriter>? PendingIncluded { get; set; }
+    /// <summary>Says which pending rungs were left out and how to include them; omitted when none were.</summary>
+    [JsonPropertyName("note"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public string? Note { get; set; }
     /// <summary>Counts of what the trace found.</summary>
     [JsonPropertyName("summary")] public TraceSummary Summary { get; set; } = new();
     /// <summary>Indented text tree.</summary>
@@ -112,6 +125,8 @@ public static class TraceOriginHandler
     /// <summary>Largest accepted <c>maxChars</c>.</summary>
     public const int MaxCharsLimit = 1_000_000;
 
+    private static readonly Regex RungNumberRegex = new(@"^rung (\d+)$", RegexOptions.Compiled);
+
     private static readonly string[] Formats = { "text", "json", "mermaid", "all" };
 
     /// <summary>Label for an <c>S:</c> status operand (<c>S:FS</c>, <c>S:N</c>, <c>S:Z</c>, <c>S:V</c>, <c>S:C</c>, <c>S:MINOR</c>, ...).</summary>
@@ -136,14 +151,78 @@ public static class TraceOriginHandler
     /// <param name="format"><c>text</c> (default), <c>json</c>, <c>mermaid</c> or <c>all</c>.</param>
     /// <param name="maxChars">Budget for the text output in characters (default 12000).</param>
     /// <param name="session">Optional tag session; a stale session image is flagged on the response.</param>
+    /// <param name="includePending">
+    /// <c>true</c> traces the session's controller image with staged, pending and tested rungs applied; <c>false</c>
+    /// traces accepted logic only and lists the rungs left out under <c>pendingWriters</c>. <c>null</c> (default) is
+    /// <c>true</c> on an SDK-online session and <c>false</c> otherwise (see <see cref="AnalysisImage.Resolve"/>).
+    /// </param>
     /// <returns>A <see cref="TraceOriginResponse"/> or a <see cref="TraceOriginError"/>.</returns>
     public static object Execute(ProjectService service, string tag, int? maxDepth = null, string? focus = null,
-        string? format = null, int? maxChars = null, TagSessionService? session = null)
+        string? format = null, int? maxChars = null, TagSessionService? session = null, bool? includePending = null)
     {
         if (!service.IsLoaded)
-            return new TraceOriginError("No project loaded. Call logix_open_project first.");
-        var result = Execute(service.Project!, tag, maxDepth, focus, format, maxChars);
-        // The trace reads the loaded file; when the session image is stale it may not show the controller's logic.
+        {
+            var np = service.NoProjectLoadedError("logix_trace_origin");
+            return new TraceOriginError(np.Error) { Kind = np.Kind, Hint = np.Hint };
+        }
+        var selection = AnalysisImage.Resolve(service, session, includePending);
+        var result = Execute(selection.Project ?? service.Project!, tag, maxDepth, focus, format, maxChars);
+        if (result is TraceOriginResponse traced)
+        {
+            traced.Source = selection.Source;
+            // Pending rungs left out of the accepted view: report who writes the traced tags, never hide them.
+            var excluded = AnalysisImage.PendingWriters(selection, pendingImage =>
+            {
+                var g = BuildGraph(pendingImage, tag, maxDepth, focus, out _);
+                return g is null
+                    ? Array.Empty<PendingWriter>()
+                    : g.WriteNodes
+                        .Select(n => (Node: n, Rung: RungNumberRegex.Match(n.Location ?? "")))
+                        .Where(x => x.Rung.Success && x.Node.Program is not null && x.Node.Routine is not null)
+                        .Select(x => new PendingWriter(
+                            x.Node.Program!, x.Node.Routine!, int.Parse(x.Rung.Groups[1].Value), x.Node.Target ?? tag.Trim()));
+            }, session is null ? null : session.ZoneTested);
+            if (excluded.Count > 0)
+            {
+                traced.PendingWriters = excluded;
+                var excludedRungs = excluded.Select(w => (w.Program, w.Routine, w.RungIndex)).Distinct().Count();
+                traced.Note = $"{AnalysisImage.DescribePending(excluded)} also {(excludedRungs == 1 ? "writes" : "write")} a tag this trace follows and " +
+                              $"{(excluded.Select(w => (w.Program, w.Routine, w.RungIndex)).Distinct().Count() == 1 ? "was" : "were")} " +
+                              "excluded. Pass includePending:true to include it.";
+            }
+            // includePending: true reads the image with pending rungs applied: label the write nodes whose rung is not accepted.
+            var included = CrossReferenceHandler.PendingRungStates(selection, session);
+            if (included.Count > 0 && BuildGraph(selection.Project ?? service.Project!, tag, maxDepth, focus, out _) is { } includedGraph)
+            {
+                var labelled = new List<PendingWriter>();
+                var jsonNodes = traced.Nodes?.ToDictionary(x => x.Id, StringComparer.Ordinal);
+                foreach (var n in includedGraph.WriteNodes.Where(n => n.Program is not null && n.Routine is not null))
+                {
+                    var m = RungNumberRegex.Match(n.Location ?? "");
+                    if (!m.Success) continue;
+                    var rung = int.Parse(m.Groups[1].Value);
+                    if (!included.TryGetValue(CrossReferenceHandler.StateKey(n.Program!, n.Routine!, rung), out var st)) continue;
+                    var stateText = st switch
+                    {
+                        AnalysisImage.StateStaged => "staged (not sent to the controller)",
+                        AnalysisImage.StateTested => "tested (executing)",
+                        _                         => "pending",
+                    };
+                    if (jsonNodes is not null && jsonNodes.TryGetValue(n.Id, out var shown))
+                        shown.Note = shown.Note is null ? $"This rung is {stateText}." : $"{shown.Note} This rung is {stateText}.";
+                    labelled.Add(new PendingWriter(n.Program!, n.Routine!, rung, n.Target ?? tag.Trim(), st));
+                }
+                if (labelled.Count > 0)
+                {
+                    traced.PendingIncluded = labelled;
+                    var includedNote = CrossReferenceHandler.IncludedPendingNote(labelled);
+                    traced.Note = traced.Note is null ? includedNote : $"{traced.Note} {includedNote}";
+                }
+            }
+            if (selection.ImageNote is not null)
+                traced.Note = traced.Note is null ? selection.ImageNote : $"{traced.Note} {selection.ImageNote}";
+        }
+        // When the session image is stale it may not show the controller's logic.
         if (result is TraceOriginResponse response
             && ProjectFileStaleness.For(session, response.Source, service) is { } stale)
         {
@@ -259,7 +338,7 @@ public static class TraceOriginHandler
             if (focusName is null)
             {
                 error = new TraceOriginError($"focus '{focus}' is not a program in this project.",
-                    ErrorKinds.InvalidValue, "Programs: " + string.Join(", ", index.Programs.Take(30)) +
+                    ErrorKinds.ProgramNotFound, "Programs: " + string.Join(", ", index.Programs.Take(30)) +
                                              (index.Programs.Count > 30 ? ", …" : ""));
                 return null;
             }

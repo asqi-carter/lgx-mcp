@@ -7,7 +7,7 @@ using Task = System.Threading.Tasks.Task;
 namespace LogixMcp.Tests;
 
 /// <summary>
-/// logix-mcp-p999.1 — a controller publish carries the comment each landed rung has on the
+/// A controller publish carries the comment each landed rung has on the
 /// controller (<c>PublishedRoutine.PublishedComments</c>, not serialized), and stage responses list the
 /// <c>replay-copy/&lt;step&gt;</c> sub-phases after <c>replay-copy</c> when verifyOnStage ran the replay.
 /// </summary>

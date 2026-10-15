@@ -306,7 +306,7 @@ public class ProposeRungEditTypedInputTests
         Assert.Equal("XIC(New)OTE(Out);", rung.Element("Text")?.Value);
     }
 
-    // ── Comment preservation on every replace path (logix-mcp-qpqy.1) ─────────
+    // ── Comment preservation on every replace path ─────────
 
     private static async Task<(ProposeRungEditRecordingFake Fake, string Json)> ReplaceOnCommentedRungAsync(
         string target, string? comment)

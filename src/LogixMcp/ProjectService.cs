@@ -1,4 +1,17 @@
+using System.Text.Json.Serialization;
 using L5Sharp.Core;
+
+/// <summary>
+/// The typed "no project is loaded" answer shared by the core readers: <c>{error, kind, hint}</c>.
+/// Built by <see cref="ProjectService.NoProjectLoadedError"/>.
+/// </summary>
+/// <param name="Error">Names the tool and says no project is loaded.</param>
+/// <param name="Kind">Always <see cref="ErrorKinds.NoProjectLoaded"/>.</param>
+/// <param name="Hint">What to do next: reconnect after a closed or displaced session, else open a project.</param>
+public sealed record NoProjectLoadedPayload(
+    [property: JsonPropertyName("error")] string Error,
+    [property: JsonPropertyName("kind")]  string Kind,
+    [property: JsonPropertyName("hint")]  string Hint);
 
 /// <summary>
 /// Singleton service that holds the currently-open Logix L5X project in memory.
@@ -53,6 +66,42 @@ public class ProjectService
     /// <summary>Returns <c>true</c> when a project has been successfully loaded.</summary>
     public bool IsLoaded => _project is not null;
 
+    /// <summary>The offline hint of <see cref="NoProjectLoadedError"/>.</summary>
+    public const string OfflineHint = "call logix_open_project first";
+
+    private DateTimeOffset? _sessionEndedAt;
+
+    /// <summary>
+    /// When a tag session that existed was closed (<c>logix_close_project</c>) or displaced (a failed
+    /// <c>logix_connect</c>), or <c>null</c> when none ended since the last project was loaded.
+    /// </summary>
+    public DateTimeOffset? SessionEndedAt => _sessionEndedAt;
+
+    /// <summary>
+    /// Records that a tag session existed and has just ended, so <see cref="NoProjectLoadedError"/> can say so.
+    /// Cleared when a project is loaded.
+    /// </summary>
+    /// <param name="at">When the session ended; defaults to now (UTC).</param>
+    public void NoteSessionEnded(DateTimeOffset? at = null) => _sessionEndedAt = at ?? DateTimeOffset.UtcNow;
+
+    /// <summary>
+    /// Builds the typed answer every core reader gives when no project is loaded. The hint is the closed or
+    /// displaced-session text with the UTC time when a session existed and ended, otherwise
+    /// "call logix_open_project first".
+    /// </summary>
+    /// <param name="toolName">The tool that was called (for the audit trail; the text is the same for every tool).</param>
+    /// <returns>A payload with <c>error</c>, <c>kind</c> = <see cref="ErrorKinds.NoProjectLoaded"/> and <c>hint</c>.</returns>
+    public NoProjectLoadedPayload NoProjectLoadedError(string toolName)
+    {
+        var hint = _sessionEndedAt is { } at
+            ? "the SDK session was closed by logix_close_project (or displaced by a failed logix_connect) at " +
+              $"{at.UtcDateTime:yyyy-MM-ddTHH:mm:ssZ}; call logix_connect again"
+            : OfflineHint;
+        var action = char.ToUpperInvariant(hint[0]) + hint[1..];
+        return new NoProjectLoadedPayload(
+            $"No project loaded. {action}.", ErrorKinds.NoProjectLoaded, hint);
+    }
+
     /// <summary>
     /// Loads the L5X file at <paramref name="path"/> and stores it as the current project.
     /// Any previously-loaded project is replaced.
@@ -71,6 +120,7 @@ public class ProjectService
         _filePath      = path;
         _uploadedFrom  = null;
         _openedExplicitly = true;
+        _sessionEndedAt = null;
     }
 
     /// <summary>
@@ -107,6 +157,7 @@ public class ProjectService
         _filePath      = acdPath;
         _uploadedFrom  = null;
         _openedExplicitly = true;
+        _sessionEndedAt = null;
     }
 
     /// <summary>
@@ -142,6 +193,7 @@ public class ProjectService
         _filePath      = acdPath;
         _uploadedFrom = commPath;
         _openedExplicitly = false;
+        _sessionEndedAt = null;
     }
 
     /// <summary>

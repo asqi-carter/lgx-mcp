@@ -3,7 +3,7 @@ using Task = System.Threading.Tasks.Task;
 namespace LogixMcp.Tests;
 
 /// <summary>
-/// This change req 3 (G49): a connect waiting for the host-wide upload lease keeps waiting while the owner's connect is
+/// A connect waiting for the host-wide upload lease keeps waiting while the owner's connect is
 /// making progress (its recorded phase or heartbeat advanced in the last 15 s), up to a 120 s ceiling, and gets
 /// ConnectBusy for an owner that stalled or for the ceiling. Every test uses its own isolated <see cref="HostUploadLease"/>
 /// files and a fake clock, so nothing waits in real time and no host-wide state is touched.

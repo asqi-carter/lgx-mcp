@@ -4,7 +4,7 @@
        AssemblyInformationalVersionAttribute (see ServerIdentity); do not repeat
        the literal anywhere under src/. -->
   <PropertyGroup>
-    <Version>1.0.0</Version>
+    <Version>1.0.1</Version>
     <InformationalVersion>$(Version)</InformationalVersion>
   </PropertyGroup>
 

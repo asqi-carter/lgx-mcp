@@ -91,6 +91,22 @@ using Task = System.Threading.Tasks.Task;
 /// The dialog's Static texts other than the verb phrase and the question, in control
 /// order (<c>dialogWarnings</c>), verbatim; <c>null</c> when the driver reported none.
 /// </param>
+/// <param name="ErrorsPaneToggled">
+/// <c>errorsPaneToggled</c>: the driver posted the Errors-pane toggle (WM_COMMAND 32027) at least once;
+/// <c>false</c> when absent (older scripts).
+/// </param>
+/// <param name="RetriedAfterPaneToggle">
+/// <c>retriedAfterPaneToggle</c>: the verb's second post, after the toggle, produced the confirmation dialog;
+/// <c>false</c> when absent.
+/// </param>
+/// <param name="PaneToggleRestored">
+/// <c>paneToggleRestored</c>: the driver posted the toggle a second time to restore the pane after the retry also
+/// failed; <c>false</c> when absent.
+/// </param>
+/// <param name="ErrorsPaneLayout">
+/// <c>errorsPaneLayout</c>: where the driver left the Errors pane after a toggle (<c>auto-hide</c>, <c>docked</c>,
+/// <c>hidden</c> or <c>unknown</c>); <c>null</c> when absent or malformed.
+/// </param>
 /// <param name="Kind">
 /// Typed error kind for a pre-launch refusal (<c>StudioNotRunning</c>,
 /// <c>StudioInOtherSession</c>, <c>StudioElevated</c>); <c>null</c> otherwise.
@@ -115,7 +131,15 @@ public record Session1ScriptResult(
     [property: JsonPropertyName("dialogWarnings")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] IReadOnlyList<string>? DialogWarnings = null,
     [property: JsonPropertyName("kind")]
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Kind = null);
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Kind = null,
+    [property: JsonPropertyName("errorsPaneToggled")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] bool ErrorsPaneToggled = false,
+    [property: JsonPropertyName("retriedAfterPaneToggle")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] bool RetriedAfterPaneToggle = false,
+    [property: JsonPropertyName("paneToggleRestored")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] bool PaneToggleRestored = false,
+    [property: JsonPropertyName("errorsPaneLayout")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? ErrorsPaneLayout = null);
 
 /// <summary>
 /// Verbatim capture of the <c>bench/studio-edits.ps1</c> driver's
@@ -211,6 +235,17 @@ public record CancelPendingEditsDriverInfo(
 /// The dialog's warning texts verbatim, in control order; <c>null</c> (omitted
 /// from the JSON) for the cancel and accept verbs.
 /// </param>
+/// <param name="ErrorsPaneLayout">
+/// The Errors pane layout the driver reported after toggling the pane; <c>null</c> (omitted) when the pane was not toggled.
+/// </param>
+/// <param name="Note">
+/// <see cref="StudioLifecycleHandler.PaneDockedNote"/> when the pane was left docked; <c>null</c> (omitted) otherwise.
+/// </param>
+/// <param name="Foreign">
+/// <c>true</c> (serialised as <c>foreign</c>) when the zone acted on was not published by this server (the
+/// <see cref="ZoneLedger"/> did not know it): an accept / assemble / test that passed <c>acceptForeign</c>, or a cancel.
+/// Omitted otherwise.
+/// </param>
 /// <param name="Cancelled">Per-routine record of what the program-wide cancel took; cancel only.</param>
 /// <param name="LeftoverTags">
 /// Cancel only: tags the cancelled publish created that remain on the controller (cancel does not
@@ -256,7 +291,15 @@ public record CancelPendingEditsResult(
     [property: JsonPropertyName("commentsRestored")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] IReadOnlyList<string>? CommentsRestored = null,
     [property: JsonPropertyName("commentRestoreFailure")]
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? CommentRestoreFailure = null);
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? CommentRestoreFailure = null,
+    [property: JsonPropertyName("errorsPaneToggled")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] bool ErrorsPaneToggled = false,
+    [property: JsonPropertyName("errorsPaneLayout")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? ErrorsPaneLayout = null,
+    [property: JsonPropertyName("note")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Note = null,
+    [property: JsonPropertyName("foreign")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] bool Foreign = false);
 
 /// <summary>
 /// One routine's part in a cancel: what it held before and after Studio's program-wide cancel.
@@ -341,6 +384,9 @@ public record CancelledRoutine(
 /// Machine-readable refusal kind (e.g. <c>"NotTested"</c>); <c>null</c> (omitted from the
 /// JSON) for every error without one.
 /// </param>
+/// <param name="Program">The program of a <c>ForeignPendingZone</c> refusal; <c>null</c> (omitted) otherwise.</param>
+/// <param name="Routines">The live-zone routines the <see cref="ZoneLedger"/> does not know (<c>ForeignPendingZone</c> only).</param>
+/// <param name="PublishedByThisServer">Always <c>false</c> on a <c>ForeignPendingZone</c> refusal; <c>null</c> (omitted) otherwise.</param>
 public record CancelPendingEditsError(
     [property: JsonPropertyName("error")]                 string                        Error,
     [property: JsonPropertyName("before")]                RoutinePendingEditState?      Before                = null,
@@ -361,7 +407,17 @@ public record CancelPendingEditsError(
     [property: JsonPropertyName("kind")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Kind = null,
     [property: JsonPropertyName("hint")]
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Hint = null);
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Hint = null,
+    [property: JsonPropertyName("errorsPaneToggled")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] bool ErrorsPaneToggled = false,
+    [property: JsonPropertyName("errorsPaneLayout")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? ErrorsPaneLayout = null,
+    [property: JsonPropertyName("program")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Program = null,
+    [property: JsonPropertyName("routines")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] IReadOnlyList<string>? Routines = null,
+    [property: JsonPropertyName("publishedByThisServer")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] bool? PublishedByThisServer = null);
 
 // ── CancelPendingEditsHandler ──────────────────────────────────────────────────
 
@@ -496,9 +552,11 @@ public static class CancelPendingEditsHandler
         CancellationToken                                          ct = default,
         Func<(string? LaunchMode, string? RunLevel)>?              planLaunch = null,
         Func<IReadOnlyList<string>>?                               leftoverTagsProvider = null,
-        TagSessionService?                                         imageSession = null) =>
+        TagSessionService?                                         imageSession = null,
+        object?                                                    ledgerSession = null) =>
         StudioLifecycleHandler.ExecuteAsync(
             StudioLifecycleVerb.Cancel, program, routine, confirm, pendingEditsReader,
-            session1Runner, isStudioInstalled, ct, planLaunch, leftoverTagsProvider, imageSession);
+            session1Runner, isStudioInstalled, ct, planLaunch, leftoverTagsProvider, imageSession,
+            ledgerSession: ledgerSession);
 }
 #endif

@@ -90,6 +90,15 @@ public record RoutinePendingEditState(
     /// <summary>Rungs the controller holds in this routine; always equals <see cref="Rungs"/>.</summary>
     [JsonPropertyName("controllerRungs")]
     public int ControllerRungs => Rungs;
+
+    /// <summary>
+    /// Every rung the controller holds in this routine, in export order, as (raw L5X <c>Type</c>, neutral text):
+    /// the same rungs <see cref="Rungs"/> counts (rungs this session staged to the workstation target are
+    /// excluded). Server-side only, never serialised: <see cref="SessionImageState.Reconcile"/> compares it with
+    /// what the session image expects. <c>null</c> for a state built without an export.
+    /// </summary>
+    [JsonIgnore]
+    public IReadOnlyList<(string Type, string Text)>? ExportedRungs { get; init; }
 }
 
 /// <summary>
@@ -205,6 +214,23 @@ public record PendingEditsResult(
     [JsonPropertyName("warnings")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string[]? Warnings { get; init; }
+
+    /// <summary>
+    /// What <c>logix_pending_edits</c> did to the session image this call: <c>accepted</c>, <c>cancelled</c> or
+    /// <c>stale</c> (distinct outcomes joined by a comma when several programs were reconciled). Omitted when
+    /// nothing was reconciled.
+    /// </summary>
+    [JsonPropertyName("reconciled")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Reconciled { get; init; }
+
+    /// <summary>
+    /// Age in milliseconds of the last controller fingerprint probe of this session: how stale the session's
+    /// knowledge of out-of-band controller changes is. Omitted when no probe has run yet.
+    /// </summary>
+    [JsonPropertyName("fingerprintAgeMs")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public long? FingerprintAgeMs { get; init; }
 }
 
 /// <summary>
@@ -558,6 +584,7 @@ public static class PendingEditsHandler
                 var worstZone     = RungEditZone.None;
                 var rungCount     = 0;
                 var stagedCount   = 0;
+                var exportedRungs = new List<(string Type, string Text)>();
 
                 foreach (var rungElem in rllContent?.Elements("Rung") ?? Enumerable.Empty<XElement>())
                 {
@@ -592,6 +619,7 @@ public static class PendingEditsHandler
                     }
 
                     rungCount++;
+                    exportedRungs.Add((type, text));
                     if (zone != RungEditZone.None)
                     {
                         var normalizedText = ProposeRungEditHandler.NormalizeRungText(text);
@@ -622,7 +650,10 @@ public static class PendingEditsHandler
                     State:        ZoneToState(worstZone),
                     ProgramTestedEdits: testedEdits,
                     ZoneState:    ComputeZoneState(pendingRungs.Count > 0, testedEdits),
-                    StagedRungs:  stagedCount));
+                    StagedRungs:  stagedCount)
+                {
+                    ExportedRungs = exportedRungs,
+                });
             }
         }
 
@@ -668,6 +699,22 @@ public static class PendingEditsHandler
 
         // A fatal during this call marks the session faulted: report that, not the wrapped message.
         return result is PendingEditsError && session.IsFaulted ? Faulted(session.FaultedError()) : result;
+    }
+
+    /// <summary>
+    /// Reads the controller's fingerprint for out-of-band change detection: the same one export of every
+    /// program that <see cref="ExecuteAsync"/> reads (<c>Controller/Programs</c>), reduced to the routine names, rung count
+    /// per routine and <c>TestEdits</c> of each program plus the controller's identity. Read-only.
+    /// </summary>
+    /// <param name="session">Open SDK session.</param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <returns>The fingerprint, or <c>null</c> when the session is faulted or the export failed.</returns>
+    internal static async Task<ControllerFingerprint?> ReadFingerprintAsync(LogixProjectSession session, CancellationToken ct = default)
+    {
+        if (session.IsFaulted) return null;
+        using var operation = session.BeginOperation(RockwellErrorHints.OperationPendingRead);
+        var export = await ExportRungsHandler.ExecuteAsync(BuildXPath(null, null), session, ct).ConfigureAwait(false);
+        return export is ExportRungsResult ok ? ControllerFingerprint.FromL5x(ok.L5X) : null;
     }
 
     /// <summary>

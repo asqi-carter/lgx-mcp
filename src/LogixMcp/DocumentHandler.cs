@@ -76,7 +76,16 @@ public record DocumentResult(
 
 /// <summary>Error response of <see cref="DocumentHandler.Execute"/>.</summary>
 public record DocumentError(
-    [property: JsonPropertyName("error")] string Error);
+    [property: JsonPropertyName("error")] string Error)
+{
+    /// <summary>Machine-readable error kind (for example <c>NoProjectLoaded</c>); omitted for untyped errors.</summary>
+    [JsonPropertyName("kind"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Kind { get; init; }
+
+    /// <summary>Next step (for example how to recover from <c>NoProjectLoaded</c>); omitted when none.</summary>
+    [JsonPropertyName("hint"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Hint { get; init; }
+}
 
 /// <summary>
 /// Pure handler for the read-only <c>logix_document</c> MCP tool: deterministic Markdown
@@ -140,7 +149,10 @@ public static class DocumentHandler
         }
 
         if (!service.IsLoaded)
-            return new DocumentError("No project loaded. Call logix_open_project first.");
+        {
+            var np = service.NoProjectLoadedError("logix_document");
+            return new DocumentError(np.Error) { Kind = np.Kind, Hint = np.Hint };
+        }
 
         bool hasProgram = !string.IsNullOrWhiteSpace(program);
         bool hasRoutine = !string.IsNullOrWhiteSpace(routine);
@@ -151,11 +163,14 @@ public static class DocumentHandler
 
         if (effScope is not ("controller" or "program" or "routine"))
             return new DocumentError(
-                $"Unknown scope '{scope}'. Valid scopes: controller, program, routine.");
+                $"Unknown scope '{scope}'. Valid scopes: controller, program, routine.")
+            { Kind = ErrorKinds.InvalidArguments };
         if (effScope != "controller" && !hasProgram)
-            return new DocumentError($"scope '{effScope}' requires the 'program' parameter.");
+            return new DocumentError($"scope '{effScope}' requires the 'program' parameter.")
+            { Kind = ErrorKinds.InvalidArguments };
         if (effScope == "routine" && !hasRoutine)
-            return new DocumentError("scope 'routine' requires the 'routine' parameter.");
+            return new DocumentError("scope 'routine' requires the 'routine' parameter.")
+            { Kind = ErrorKinds.InvalidArguments };
 
         var project = service.Project!;
 
@@ -168,7 +183,8 @@ public static class DocumentHandler
                 var available = string.Join(", ", project.Programs.Select(p => p.Name));
                 return new DocumentError(
                     $"Program '{program}' not found in the open project. " +
-                    $"Available programs: {(available.Length > 0 ? available : "(none)")}.");
+                    $"Available programs: {(available.Length > 0 ? available : "(none)")}.")
+                { Kind = ErrorKinds.ProgramNotFound };
             }
         }
 
@@ -181,7 +197,8 @@ public static class DocumentHandler
                 var available = string.Join(", ", prog.Routines.Select(r => r.Name));
                 return new DocumentError(
                     $"Routine '{routine}' not found in program '{prog.Name}'. " +
-                    $"Available routines: {(available.Length > 0 ? available : "(none)")}.");
+                    $"Available routines: {(available.Length > 0 ? available : "(none)")}.")
+                { Kind = ErrorKinds.RoutineNotFound };
             }
         }
 

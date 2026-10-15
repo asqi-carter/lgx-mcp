@@ -24,9 +24,11 @@ public static class SdkImportDelegates
     /// Performs the real SDK import: opens the ACD at the given save path,
     /// imports the L5X fragment at the datatype XPath with the collision option,
     /// and saves the ACD in place.  Signature: (saveAsAcd, l5xToImport, xpath,
-    /// collision).
+    /// collision).  Returns the status/error messages the SDK reported during the
+    /// import (empty when none); a failed import throws
+    /// <see cref="SdkImportException"/> carrying the messages captured up to the failure.
     /// </summary>
-    public static System.Action<string, string, string, ImportCollisionOption>? SdkImportRunner { get; set; }
+    public static System.Func<string, string, string, ImportCollisionOption, IReadOnlyList<string>>? SdkImportRunner { get; set; }
 
     /// <summary>
     /// Re-exports the datatype from a saved ACD and returns its members.
@@ -48,4 +50,28 @@ public static class SdkImportDelegates
     /// handler falls back to its own <c>IsLockedByStudio</c> probe.
     /// </summary>
     public static System.Func<string, bool>? StudioLockChecker { get; set; }
+}
+
+/// <summary>
+/// Thrown by the SDK import runner when the partial import fails.  Carries the SDK's own status/error
+/// messages captured during the call so the handler can report them (<c>sdkMessages</c>) and recognise
+/// the SDK's abort mnemonics.
+/// </summary>
+public sealed class SdkImportException : System.Exception
+{
+    /// <summary>The SDK mnemonic raised when <c>collision: Cancel</c> meets an existing type.</summary>
+    public const string AbortedNoChangesMnemonic = "XMLSrv_E_IMPORT_ABORTED_NO_CHANGES";
+
+    /// <summary>Status/error messages the SDK reported during the failed import (never null).</summary>
+    public IReadOnlyList<string> SdkMessages { get; }
+
+    /// <summary>Creates the exception.</summary>
+    /// <param name="message">The SDK exception message.</param>
+    /// <param name="sdkMessages">Captured SDK messages; null is treated as empty.</param>
+    /// <param name="inner">The original SDK exception.</param>
+    public SdkImportException(string message, IReadOnlyList<string>? sdkMessages, System.Exception? inner = null)
+        : base(message, inner)
+    {
+        SdkMessages = sdkMessages ?? System.Array.Empty<string>();
+    }
 }

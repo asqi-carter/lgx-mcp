@@ -137,6 +137,11 @@ public static class ReadTagHandler
         try
         {
             TagNameValidator.ThrowIfInvalid(tagName, "Read");
+            if (TagPathProbe.ForRead(session.Service, tagName) is { } refused)
+            {
+                AuditLogger.LogRefusal("logix_read", tagName, refused.Kind, refused.Message);
+                return new ReadTagError(refused.Message, Kind: refused.Kind, Tag: tagName, Hint: refused.Hint);
+            }
             var result = await session.Service!.ReadAsync(tagName, ct);
             if (result.Value is string str && UntrustedWrapper.IsStringFamily(result.DataType))
                 return new ReadTagResult(
@@ -175,7 +180,8 @@ public static class ReadTagHandler
             return new ReadTagError(
                 Error: ex.Error.Message,
                 Kind:  ex.Error.Kind.ToString(),
-                Tag:   ex.Error.TagName);
+                Tag:   ex.Error.TagName,
+                Hint:  ex.Error.Hint);
         }
         catch (Exception ex)
         {
@@ -184,5 +190,209 @@ public static class ReadTagHandler
                 Kind:  TagServiceErrorKind.Unknown.ToString(),
                 Tag:   tagName);
         }
+    }
+}
+
+// ── TagPathProbe ──────────────────────────────────────────────────────────────
+
+/// <summary>A refusal the declared types can name before any controller call.</summary>
+/// <param name="Kind">The error kind (an <see cref="ErrorKinds"/> value).</param>
+/// <param name="Message">What is wrong, naming the tag and the dimension or members involved.</param>
+/// <param name="Hint">The corrective action, with the element or member form to use.</param>
+internal sealed record TagPathFinding(string Kind, string Message, string Hint);
+
+/// <summary>
+/// Checks a tag path against the project's declared types (the session's type lookup) before a read or write goes to
+/// the controller, so the shapes the data path cannot carry are named by kind rather than as a protocol or type
+/// failure: a whole array, an index past a dimension, a member the type does not have, a whole structure written.
+/// Returns <c>null</c> whenever the declarations cannot answer (no lookup, tag not declared, alias, Add-On
+/// Instruction type, a non-numeric index), so the existing path keeps its behaviour.
+/// </summary>
+internal static class TagPathProbe
+{
+    private sealed record Segment(string Name, IReadOnlyList<int?> Indices);
+
+    private sealed record Member(string Type, IReadOnlyList<int> Dimensions);
+
+    /// <summary>The refusal for reading <paramref name="path"/>, or <c>null</c>.</summary>
+    /// <param name="service">The session's service; its declared-type lookup is used when it has one.</param>
+    /// <param name="path">The tag path.</param>
+    internal static TagPathFinding? ForRead(ITagService? service, string path) => Probe(service, path, forWrite: false);
+
+    /// <summary>The refusal for writing <paramref name="path"/>, or <c>null</c>.</summary>
+    /// <param name="service">The session's service; its declared-type lookup is used when it has one.</param>
+    /// <param name="path">The tag path.</param>
+    internal static TagPathFinding? ForWrite(ITagService? service, string path) => Probe(service, path, forWrite: true);
+
+    private static TagPathFinding? Probe(ITagService? service, string path, bool forWrite)
+    {
+        if (string.IsNullOrWhiteSpace(path) || TagRouteResolver.Backend(service) is not ISessionTypeSource types)
+            return null;
+        try
+        {
+            return types.Lookup(project => Walk(project, path.Trim(), forWrite));
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return null; // the declarations could not be read: leave it to the data path
+        }
+    }
+
+    private static bool TryParse(string path, out string? program, out List<Segment> segments)
+    {
+        program  = null;
+        segments = [];
+        var text = path;
+        if (text.StartsWith("Program:", StringComparison.OrdinalIgnoreCase))
+        {
+            var dot = text.IndexOf('.');
+            if (dot <= "Program:".Length) return false;
+            program = text["Program:".Length..dot];
+            text    = text[(dot + 1)..];
+        }
+
+        var parts = new List<string>();
+        int depth = 0, start = 0;
+        for (var i = 0; i < text.Length; i++)
+        {
+            var c = text[i];
+            if (c == '[') depth++;
+            else if (c == ']') depth--;
+            else if (c == '.' && depth == 0) { parts.Add(text[start..i]); start = i + 1; }
+        }
+        parts.Add(text[start..]);
+        if (depth != 0) return false;
+
+        foreach (var part in parts)
+        {
+            var br = part.IndexOf('[');
+            var name = br < 0 ? part : part[..br];
+            if (name.Length == 0) return false;
+            var indices = new List<int?>();
+            if (br >= 0)
+            {
+                if (!part.EndsWith(']')) return false;
+                foreach (var raw in part[(br + 1)..^1].Split(','))
+                    indices.Add(int.TryParse(raw.Trim(), System.Globalization.NumberStyles.AllowLeadingSign,
+                        System.Globalization.CultureInfo.InvariantCulture, out var n) ? n : null);
+            }
+            segments.Add(new Segment(name, indices));
+        }
+        return true;
+    }
+
+    private static TagPathFinding? Walk(L5Sharp.Core.L5X project, string path, bool forWrite)
+    {
+        if (!TryParse(path, out var program, out var segments))
+            return null;
+
+        var root = segments[0];
+        var tag = program is null
+            ? project.Tags.FirstOrDefault(t => string.Equals(t.Name.ToString(), root.Name, StringComparison.OrdinalIgnoreCase))
+            : project.Programs.FirstOrDefault(p => string.Equals(p.Name, program, StringComparison.OrdinalIgnoreCase))
+                ?.Tags.FirstOrDefault(t => string.Equals(t.Name.ToString(), root.Name, StringComparison.OrdinalIgnoreCase));
+        if (tag is null || tag.Serialize().Attribute("AliasFor") is not null)
+            return null;
+
+        var typeName = DeclaredMemberTypes.DeclaredTypeOf(tag);
+        IReadOnlyList<int> dims = FindTagsHandler.DimensionsOf(tag) ?? (IReadOnlyList<int>)[];
+        var walked = new System.Text.StringBuilder();
+        if (program is not null) walked.Append("Program:").Append(program).Append('.');
+        string verb = forWrite ? "write" : "read";
+
+        for (var i = 0; i < segments.Count; i++)
+        {
+            var seg = segments[i];
+            if (i > 0) walked.Append('.');
+            walked.Append(seg.Name);
+            bool last = i == segments.Count - 1;
+
+            if (seg.Indices.Count > 0 && dims.Count > 0)
+            {
+                if (seg.Indices.Count != dims.Count)
+                    return null;
+                for (var k = 0; k < dims.Count; k++)
+                {
+                    if (seg.Indices[k] is { } idx && (idx < 0 || idx >= dims[k]))
+                        return new TagPathFinding(ErrorKinds.IndexOutOfRange,
+                            $"Cannot {verb} '{path}': index {idx} is out of range for '{walked}', whose " +
+                            (dims.Count == 1 ? "dimension is " : $"dimension {k + 1} is ") + $"{dims[k]} " +
+                            $"(valid indices 0 to {dims[k] - 1}).",
+                            $"Use an index from 0 to {dims[k] - 1}; the declared dimension of '{walked}' is [{string.Join(",", dims)}].");
+                }
+                walked.Append('[').Append(string.Join(",", seg.Indices.Select(n => n?.ToString() ?? "?"))).Append(']');
+                dims = [];
+            }
+            else if (seg.Indices.Count == 0 && dims.Count > 0)
+            {
+                if (!last) return null;
+                var element = $"{walked}[{string.Join(",", dims.Select(_ => "0"))}]";
+                var kind = forWrite ? ErrorKinds.StructureWriteUnsupported : TagServiceErrorKind.StructureReadUnsupported.ToString();
+                return new TagPathFinding(kind,
+                    $"Cannot {verb} '{path}' as a whole: it is an array {typeName}[{string.Join(",", dims)}]. " +
+                    $"A whole array is not carried by {(forWrite ? "writes" : "reads")}.",
+                    $"{(forWrite ? "Write" : "Read")} one element at a time, for example {element} " +
+                    $"(valid indices 0 to {dims[0] - 1}).");
+            }
+            else if (seg.Indices.Count > 0)
+            {
+                return null; // indexed but not an array: the resolver names that
+            }
+
+            if (last) break;
+
+            var next = segments[i + 1];
+            if (CipTypeResolver.IsAtomic(typeName))
+                return null; // a bit selector or a path the resolver names
+
+            var members = MembersOf(project, typeName);
+            if (members is null)
+                return null; // an Add-On Instruction or an unknown type: not judged here
+
+            if (!members.TryGetValue(next.Name, out var member))
+            {
+                var list = string.Join(", ", members.Keys);
+                return new TagPathFinding(ErrorKinds.MemberNotFound,
+                    $"Cannot {verb} '{path}': type {typeName} of '{walked}' has no member '{next.Name}'. Members: {list}.",
+                    $"Use one of the members of {typeName}: {list}.");
+            }
+
+            typeName = member.Type;
+            dims     = member.Dimensions;
+        }
+
+        if (forWrite && !CipTypeResolver.IsAtomic(typeName) && MembersOf(project, typeName) is { } own)
+        {
+            var list = string.Join(", ", own.Keys);
+            return new TagPathFinding(ErrorKinds.StructureWriteUnsupported,
+                $"Cannot write '{path}' as a whole: it is a structure or STRING (type {typeName}). Members: {list}.",
+                $"Write one member at a time, for example {path}.{own.Keys.FirstOrDefault()}. Members: {list}.");
+        }
+
+        return null;
+    }
+
+    private static Dictionary<string, Member>? MembersOf(L5Sharp.Core.L5X project, string typeName)
+    {
+        var dt = project.DataTypes.FirstOrDefault(d => string.Equals(d.Name, typeName, StringComparison.OrdinalIgnoreCase));
+        if (dt is not null)
+        {
+            var map = new Dictionary<string, Member>(StringComparer.OrdinalIgnoreCase);
+            foreach (var m in dt.Members.Where(m => !m.Hidden))
+            {
+                var type = string.Equals(m.DataType, "BIT", StringComparison.OrdinalIgnoreCase) ? "BOOL" : m.DataType;
+                IReadOnlyList<int> dims = m.Dimension.IsEmpty
+                    ? []
+                    : new[] { (int)m.Dimension.X, (int)m.Dimension.Y, (int)m.Dimension.Z }
+                        .Take((int)m.Dimension.Rank).ToList();
+                map[m.Name] = new Member(type, dims);
+            }
+            return map;
+        }
+
+        if (DeclaredMemberTypes.PredefinedMembers.TryGetValue(typeName, out var predefined))
+            return predefined.ToDictionary(kv => kv.Key, kv => new Member(kv.Value, []), StringComparer.OrdinalIgnoreCase);
+
+        return null;
     }
 }

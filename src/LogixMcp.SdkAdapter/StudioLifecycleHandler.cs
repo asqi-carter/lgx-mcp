@@ -76,6 +76,13 @@ using Task = System.Threading.Tasks.Task;
 /// A wrong after-state is an error of kind <paramref name="StateNotConfirmedKind"/>.
 /// </param>
 /// <param name="StateNotConfirmedKind">The <c>kind</c> of the after-state-wrong error.</param>
+/// <param name="AuditFailure">
+/// Writes the audit line of a call that failed after the pre-launch checks:
+/// <c>(verb, program, routine, kind, reason, beforeState, afterState)</c>, outcome <c>"error"</c>.
+/// <c>null</c> (a verb built without an audit trail) writes no failure and no refusal line; the shipped
+/// verbs use <see cref="AuditLogger.LogLifecycleFailure"/>. Pre-launch refusals go through
+/// <see cref="AuditLogger.LogToolRefused"/> whenever this is set.
+/// </param>
 public sealed record StudioLifecycleVerb(
     string Verb,
     string ToolName,
@@ -98,7 +105,8 @@ public sealed record StudioLifecycleVerb(
     string? RefusalKind          = null,
     string? RefusalMessage       = null,
     string? RequireAfterZoneState = null,
-    string? StateNotConfirmedKind = null)
+    string? StateNotConfirmedKind = null,
+    Action<string, string, string, string, string?, string?, string?>? AuditFailure = null)
 {
     /// <summary>The <c>cancel</c> verb — byte-identical to the pre-0098 handler's wording.</summary>
     public static StudioLifecycleVerb Cancel { get; } = new(
@@ -112,6 +120,8 @@ public sealed record StudioLifecycleVerb(
         Consequence:      "cancelling discards the controller's pending rung edits",
         RequireAfterNone: true,
         Audit:            AuditLogger.LogCancelPendingEdits,
+        AuditFailure:     AuditLogger.LogLifecycleFailure,
+        PassDialogInfo:   true,
         NotApplicableMessage:
             "Cancel Accepted is not applicable in Studio's current state: Studio showed no confirmation " +
             "dialog although the zone is not tested, so the tested state is not the cause. Look for an open " +
@@ -144,6 +154,8 @@ public sealed record StudioLifecycleVerb(
         Consequence:      "accepting assembles the pending rung edits so they execute on a running controller",
         RequireAfterNone: true,
         Audit:            AuditLogger.LogAcceptPendingEdits,
+        AuditFailure:     AuditLogger.LogLifecycleFailure,
+        PassDialogInfo:   true,
         NotApplicableMessage:
             "Accept is not applicable in Studio's current state: Studio showed no confirmation dialog " +
             "although the zone has pending edits. Look for an open or late Studio dialog (see the screenshots), " +
@@ -167,6 +179,7 @@ public sealed record StudioLifecycleVerb(
         Consequence:      "testing makes the new logic execute on a running controller",
         RequireAfterNone: false,
         Audit:            AuditLogger.LogTestPendingEdits,
+        AuditFailure:     AuditLogger.LogLifecycleFailure,
         RequireAfterPending: true,
         PassDialogInfo:   true,
         NotApplicableMessage:
@@ -201,6 +214,7 @@ public sealed record StudioLifecycleVerb(
         Consequence:      "untesting reverts the tested logic on a running controller to the original",
         RequireAfterNone: false,
         Audit:            AuditLogger.LogUntestPendingEdits,
+        AuditFailure:     AuditLogger.LogLifecycleFailure,
         RequireAfterPending: true,
         PassDialogInfo:   true,
         NotApplicableMessage:
@@ -234,6 +248,7 @@ public sealed record StudioLifecycleVerb(
         Consequence:      "assembling is irreversible and finalizes the pending rung edits on a running controller",
         RequireAfterNone: true,
         Audit:            AuditLogger.LogAssemblePendingEdits,
+        AuditFailure:     AuditLogger.LogLifecycleFailure,
         PassDialogInfo:   true,
         NotApplicableMessage: AssembleNeedsTestedMessage,
         NotApplicableTestedMessage:
@@ -368,15 +383,50 @@ public static class StudioLifecycleHandler
         $"or Studio has no routine of program '{program}' open; open one of its routines in Studio and retry";
 
     /// <summary>
+    /// The second known cause of an empty-dialog <c>command_not_applicable</c>: the edits were already
+    /// finalized or cancelled from Logix Designer, so the server's image is stale.
+    /// </summary>
+    internal const string AlreadyFinalizedWording =
+        "or the edits were already finalized or cancelled from Logix Designer " +
+        "(run logix_pending_edits, which reconciles the image)";
+
+    /// <summary>
+    /// The third known cause of an empty-dialog <c>command_not_applicable</c>: after a successful accept Logix
+    /// Designer shows its Errors pane as an auto-hide flyout, which blocks the next confirmation dialog. The driver
+    /// toggles the pane (View > Errors, WM_COMMAND 32027) and retries once before reporting; the wording names the
+    /// manual fallback.
+    /// </summary>
+    internal const string SecondAcceptWording =
+        "or after a successful accept Logix Designer shows its Errors pane as an auto-hide flyout, which blocks the " +
+        "next accept's confirmation (the server toggles that pane via View > Errors and retries once; the pane is " +
+        "then left docked under the ladder view, and its pin (Auto Hide) returns it to auto-hide)";
+
+    /// <summary>
+    /// The note a response carries when the driver left the Errors pane docked.
+    /// </summary>
+    internal const string PaneDockedNote =
+        "Logix Designer's Errors pane was left docked under the ladder view; click its pin (Auto Hide) to return it to auto-hide.";
+
+    /// <summary>
+    /// The Errors pane layout to report: the driver's <c>errorsPaneLayout</c> only when the pane was toggled.
+    /// </summary>
+    /// <param name="r">The driver result.</param>
+    /// <returns>The layout, or <c>null</c> when the pane was not toggled or the driver reported none.</returns>
+    private static string? PaneLayoutOf(Session1ScriptResult r) => r.ErrorsPaneToggled ? r.ErrorsPaneLayout : null;
+
+    /// <summary>
     /// The full <c>NotApplicable</c> hint: <see cref="NotApplicableText(StudioLifecycleVerb, RoutinePendingEditState)"/>
-    /// followed by <see cref="NoRoutineOpenWording"/>. Same wording for cancel, test, untest, assemble and accept.
+    /// followed by the three known causes in order (<see cref="NoRoutineOpenWording"/>,
+    /// <see cref="AlreadyFinalizedWording"/>, <see cref="SecondAcceptWording"/>). Same wording for cancel, test,
+    /// untest, assemble and accept.
     /// </summary>
     /// <param name="verb">The lifecycle verb that got <c>command_not_applicable</c>.</param>
     /// <param name="before">The pending-edit state read before the launch.</param>
     /// <param name="program">The target program name.</param>
     /// <returns>The hint text.</returns>
     internal static string NotApplicableHint(StudioLifecycleVerb verb, RoutinePendingEditState before, string program) =>
-        NotApplicableText(verb, before) + ", " + NoRoutineOpenWording(program);
+        NotApplicableText(verb, before) + ", " + NoRoutineOpenWording(program) + "; " +
+        AlreadyFinalizedWording + "; " + SecondAcceptWording;
 
     /// <summary>
     /// Runs the shared Studio-lifecycle flow for <paramref name="verb"/>. Parameters
@@ -395,10 +445,17 @@ public static class StudioLifecycleHandler
     /// <param name="planLaunch">Optional launch-plan override stamped on pre-launch refusals.</param>
     /// <param name="leftoverTagsProvider">Optional; cancel only. Names of tags the cancelled publish created that remain on the controller.</param>
     /// <param name="imageSession">
-    /// Optional; accept, assemble and cancel only. The session whose controller image follows the result (an earlier change
-    /// requirement 3): a zone this session published is applied to the image (accept, assemble) or the image is
-    /// restored (cancel); any other zone marks the image stale. <c>null</c> leaves the image alone.
+    /// Optional; accept, assemble and cancel only. The session whose controller image follows the result. The handler
+    /// does not touch the image: the calling tool marks the program stale and refreshes the image from the
+    /// controller export, so this is accepted for the call sites' sake only.
     /// </param>
+    /// <param name="acceptForeign">
+    /// Accept, assemble and test only. The live zone is compared with the <see cref="ZoneLedger"/>: a routine the ledger
+    /// does not know was published by another session or by Studio, and the verb is refused with
+    /// <see cref="ZoneLedger.ForeignPendingZoneKind"/> unless this is <c>true</c>, in which case it proceeds and the result
+    /// carries <c>foreign: true</c>. Cancel is never refused on this ground.
+    /// </param>
+    /// <param name="ledgerSession">The controller session the <see cref="ZoneLedger"/> is keyed by; <c>null</c> for the default key.</param>
     /// <returns>A <see cref="CancelPendingEditsResult"/> or a <see cref="CancelPendingEditsError"/>.</returns>
     public static async Task<object> ExecuteAsync(
         StudioLifecycleVerb                                         verb,
@@ -411,7 +468,9 @@ public static class StudioLifecycleHandler
         CancellationToken                                           ct = default,
         Func<(string? LaunchMode, string? RunLevel)>?               planLaunch = null,
         Func<IReadOnlyList<string>>?                                leftoverTagsProvider = null,
-        TagSessionService?                                          imageSession = null)
+        TagSessionService?                                          imageSession = null,
+        bool                                                        acceptForeign = false,
+        object?                                                     ledgerSession = null)
     {
         ArgumentNullException.ThrowIfNull(verb);
         ArgumentNullException.ThrowIfNull(pendingEditsReader);
@@ -424,8 +483,11 @@ public static class StudioLifecycleHandler
         // Every refusal that happens before the runner is invoked reports how the
         // runner WOULD launch (launchMode, plus runLevel in task mode) and
         // launched=false. PlanLaunch never throws; the guard is for injected plans.
-        CancelPendingEditsError NotLaunched(string error, RoutinePendingEditState? before = null)
+        // Each one also writes its single audit line: a tool_refused event carrying the refusal kind.
+        CancelPendingEditsError NotLaunched(
+            string error, string auditKind, RoutinePendingEditState? before = null)
         {
+            AuditOutcome(verb, "refused", auditKind, program, routine, null, before?.State, null);
             var (mode, level) = SafePlan(planLaunch);
             return new CancelPendingEditsError(
                 error, Before: before, LaunchMode: mode, RunLevel: level, Launched: false);
@@ -435,20 +497,23 @@ public static class StudioLifecycleHandler
         if (string.IsNullOrWhiteSpace(program))
             return NotLaunched(
                 "program must not be empty. " + tool + " requires both " +
-                "program and routine to identify a single routine's edit zone.");
+                "program and routine to identify a single routine's edit zone.",
+                ErrorKinds.InvalidArguments);
 
         if (string.IsNullOrWhiteSpace(routine))
             return NotLaunched(
                 "routine must not be empty. " + tool + " requires both " +
-                "program and routine to identify a single routine's edit zone.");
+                "program and routine to identify a single routine's edit zone.",
+                ErrorKinds.InvalidArguments);
 
         if (StudioPreLaunch.CheckNames(program, routine) is { } badName)
-            return NotLaunched(badName);
+            return NotLaunched(badName, ErrorKinds.InvalidArguments);
 
         if (program.Contains('\'') || routine.Contains('\''))
             return NotLaunched(
                 "program and routine must not contain a single-quote character — " +
-                "it cannot be safely embedded in the SDK XPath used by logix_pending_edits.");
+                "it cannot be safely embedded in the SDK XPath used by logix_pending_edits.",
+                ErrorKinds.InvalidArguments);
 
         // ── (1) Capability-honesty gate: refuse when Studio 5000 does not appear
         //     to be installed on this host. Checked before the confirm gate so the
@@ -460,7 +525,8 @@ public static class StudioLifecycleHandler
                 $"the Studio 5000 GUI ({verb.GestureMenu}) " +
                 "in the interactive desktop session via desktop automation — it has no SDK " +
                 "equivalent and cannot function without a Studio 5000 install on the host " +
-                "running this server.");
+                "running this server.",
+                HostWithoutStudioKind);
 
         // ── (2) Confirm gate — before any pending-edit read or session-1 call. ──
         if (!confirm)
@@ -468,7 +534,8 @@ public static class StudioLifecycleHandler
                 $"{tool} refused for '{program}'/'{routine}': {verb.Consequence} " +
                 $"by driving Studio 5000's GUI ({verb.GestureMenu}) in the interactive " +
                 "desktop session — this is desktop automation, not a reviewable SDK call. " +
-                "Pass confirm=true to acknowledge this risk and proceed.");
+                "Pass confirm=true to acknowledge this risk and proceed.",
+                ConfirmRequiredKind);
 
         // ── (3) Read pending-edit state first; refuse when there is nothing to do ──
         var beforeResult = await pendingEditsReader(program, routine, ct).ConfigureAwait(false);
@@ -477,7 +544,8 @@ public static class StudioLifecycleHandler
             // A read that failed because the SDK server faulted keeps its kind and hint (G45).
             return NotLaunched(
                 $"Failed to read pending-edit state for '{program}'/'{routine}' before " +
-                $"{verb.Gerund}: {beforeError.Error}") with
+                $"{verb.Gerund}: {beforeError.Error}",
+                beforeError.Kind ?? PendingEditsReadFailedKind) with
             {
                 Kind = beforeError.Kind == ErrorKinds.SdkServerFaulted ? beforeError.Kind : null,
                 Hint = beforeError.Kind == ErrorKinds.SdkServerFaulted ? beforeError.Hint : null,
@@ -492,16 +560,15 @@ public static class StudioLifecycleHandler
             return NotLaunched(
                 $"Routine '{routine}' in program '{program}' was not found while reading " +
                 "pending-edit state. Check the program and routine names, and that the " +
-                "routine's Type is RLL.");
+                "routine's Type is RLL.",
+                RoutineNotFoundKind);
 
         // Studio's cancel acts on the whole program's edit zone, so a routine with no
         // pending edits of its own does not make a cancel pointless while another routine of the
         // same program is pending. Check the program before refusing (cancel only).
         // N11: the program-scope read is kept (cancel only) so the result can say, per routine, what was cancelled.
         IReadOnlyList<RoutinePendingEditState>? programBefore = null;
-        // The same read tells accept / assemble which routines of the program the gesture will resolve, so the
-        // session image can follow it; it is only made when an image session was handed in.
-        if (verb.Verb == "cancel" || (imageSession is not null && verb.Verb is ("accept" or "assemble")))
+        if (verb.Verb == "cancel")
             programBefore = await ReadProgramRoutinesAsync(pendingEditsReader, program, ct).ConfigureAwait(false);
 
         if (beforeRoutine.State == "none" && verb.Verb == "cancel" &&
@@ -514,6 +581,7 @@ public static class StudioLifecycleHandler
                 $"{tool} refused for '{program}'/'{routine}': " +
                 "logix_pending_edits reports state='none' — there is nothing pending to " +
                 $"{verb.Verb}.",
+                ErrorKinds.NothingPending,
                 before: beforeRoutine) with { Kind = ErrorKinds.NothingPending };
 
         // ── (3a) State precondition: the zone's tested state is decided from the
@@ -527,8 +595,53 @@ public static class StudioLifecycleHandler
                 $"zoneState='{beforeRoutine.ZoneState}', programTestedEdits=" +
                 $"{FormatTestedEdits(beforeRoutine.ProgramTestedEdits)}; " +
                 "no Studio command was sent.)",
+                verb.RefusalKind ?? ErrorKinds.InvalidArguments,
                 before: beforeRoutine);
             return refused with { Kind = verb.RefusalKind };
+        }
+
+        // ── (3b) Foreign-zone gate: the live zone is the program's pending routines; any routine the
+        //     ZoneLedger holds no publish for was published by another session or by Studio. accept / assemble / test
+        //     refuse it before any Studio command unless acceptForeign; cancel is never refused, it only reports it. ──
+        var foreign = false;
+        var ledger = ZoneLedger.For(ledgerSession);
+        if (verb.Verb is "accept" or "assemble" or "test" or "cancel")
+        {
+            // The before-read names the target routine; when the ledger knows all of what it shows, read the whole
+            // program too (the routine-scoped read cannot see a sibling routine of the same zone).
+            var pendingRoutines = beforePending.Routines
+                .Where(r => r.State != "none" && string.Equals(r.Program, program, StringComparison.OrdinalIgnoreCase))
+                .Select(r => r.Routine)
+                .ToList();
+            if (beforeRoutine.State != "none") pendingRoutines.Add(beforeRoutine.Routine);
+            var unknown = ledger.Unknown(program, pendingRoutines.Distinct(StringComparer.OrdinalIgnoreCase));
+            if (unknown.Count == 0)
+            {
+                var liveZone = programBefore ?? await ReadProgramRoutinesAsync(pendingEditsReader, program, ct).ConfigureAwait(false);
+                if (liveZone is not null)
+                {
+                    pendingRoutines.AddRange(liveZone.Where(r => r.State != "none").Select(r => r.Routine));
+                    unknown = ledger.Unknown(program, pendingRoutines.Distinct(StringComparer.OrdinalIgnoreCase));
+                }
+            }
+            foreign = unknown.Count > 0;
+            if (foreign && verb.Verb != "cancel" && !acceptForeign)
+            {
+                var refusal = NotLaunched(
+                    $"{tool} refused for '{program}'/'{routine}': the pending zone in program '{program}' " +
+                    $"(routines {string.Join(", ", unknown.Select(u => $"'{u}'"))}) was not published by this server. " +
+                    "No Studio command was sent.",
+                    ZoneLedger.ForeignPendingZoneKind,
+                    before: beforeRoutine);
+                return refusal with
+                {
+                    Kind = ZoneLedger.ForeignPendingZoneKind,
+                    Hint = ForeignPendingZoneHint,
+                    Program = program,
+                    Routines = unknown,
+                    PublishedByThisServer = false,
+                };
+            }
         }
 
         // ── (4) Invoke bench/studio-edits.ps1 -Verb <verb> through the runner ──
@@ -540,6 +653,7 @@ public static class StudioLifecycleHandler
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             var (planMode, planLevel) = SafePlan(planLaunch);
+            AuditOutcome(verb, "error", ScriptInvocationFailedKind, program, routine, ex.Message, beforeRoutine.State, null);
             return new CancelPendingEditsError(
                 $"session-1 script invocation failed for '{program}'/'{routine}': " +
                 $"{ex.Message}",
@@ -558,7 +672,19 @@ public static class StudioLifecycleHandler
             Malformed:      scriptResult.Malformed);
 
         // Error carrying the runner's full outcome; used for every post-launch failure.
-        CancelPendingEditsError Failed(string error, string? kind = null, string? hint = null) => new(
+        // It also writes the call's single audit line: outcome "error" with the response kind (or auditKind
+        // when the response carries none) and the driver reason. afterState is the re-read state, once there is one.
+        CancelPendingEditsError Failed(
+            string error, string? kind = null, string? hint = null,
+            string? auditKind = null, string? reason = null, string? afterState = null)
+        {
+            AuditOutcome(
+                verb, "error", kind ?? auditKind ?? UnclassifiedKind, program, routine, reason,
+                beforeRoutine.State, afterState, scriptResult.ErrorsPaneToggled, PaneLayoutOf(scriptResult));
+            return Build(error, kind, hint);
+        }
+
+        CancelPendingEditsError Build(string error, string? kind, string? hint) => new(
             error,
             Before:                beforeRoutine,
             Screenshots:           scriptResult.Screenshots,
@@ -573,18 +699,26 @@ public static class StudioLifecycleHandler
             DialogText:            verb.PassDialogInfo ? scriptResult.DialogText : null,
             DialogWarnings:        verb.PassDialogInfo ? DialogWarningsOf(scriptResult) : null,
             Kind:                  kind,
-            Hint:                  hint);
+            Hint:                  hint,
+            ErrorsPaneToggled:     scriptResult.ErrorsPaneToggled,
+            ErrorsPaneLayout:      PaneLayoutOf(scriptResult));
 
         // ── (4a) A RESULT_JSON line that could not be parsed is a driver defect —
         //     refuse regardless of what Ok says. ──────────────────────────────
         if (scriptResult.Malformed)
             return Failed(
                 $"bench/studio-edits.ps1 -Verb {verb.Verb} produced a RESULT_JSON line for " +
-                $"'{program}'/'{routine}' that could not be parsed: {scriptResult.Reason}");
+                $"'{program}'/'{routine}' that could not be parsed: {scriptResult.Reason}",
+                auditKind: DriverResultMalformedKind, reason: scriptResult.Reason);
 
         // ── (4b) The runner refused before starting the driver: say so -- the
         //     script never ran. (No LastTaskResult fields; Launched=false.) ──
         if (!scriptResult.Ok && !scriptResult.Launched)
+        {
+            var notLaunchedKind = scriptResult.Kind ?? Session1ScriptRunner.PreLaunchKindOf(scriptResult.Reason);
+            AuditOutcome(
+                verb, "refused", notLaunchedKind ?? NotLaunchedKind, program, routine,
+                scriptResult.Reason, beforeRoutine.State, null);
             return new CancelPendingEditsError(
                 $"Not launched: bench/studio-edits.ps1 -Verb {verb.Verb} was not started for " +
                 $"'{program}'/'{routine}' because the pre-launch check refused: {scriptResult.Reason}",
@@ -598,7 +732,8 @@ public static class StudioLifecycleHandler
                 GestureTier:           scriptResult.GestureTier,
                 DialogText:            verb.PassDialogInfo ? scriptResult.DialogText : null,
                 DialogWarnings:        verb.PassDialogInfo ? DialogWarningsOf(scriptResult) : null,
-                Kind:                  scriptResult.Kind ?? Session1ScriptRunner.PreLaunchKindOf(scriptResult.Reason));
+                Kind:                  notLaunchedKind);
+        }
 
         // ── (4c0) A Studio dialog is already open: the driver posted nothing. ──
         if (!scriptResult.Ok &&
@@ -609,7 +744,8 @@ public static class StudioLifecycleHandler
                 StudioModalOpenHint +
                 $" (driver reason: studio_modal_open; the zone is unchanged, state='{beforeRoutine.State}').",
                 kind: StudioModalOpenKind,
-                hint: StudioModalOpenHint);
+                hint: StudioModalOpenHint,
+                reason: scriptResult.Reason);
 
         // ── (4c) Studio is not running / is offline: typed errors with the before-state.
         //     The driver never launches Studio or goes online through it. ──
@@ -625,7 +761,8 @@ public static class StudioLifecycleHandler
                 }) +
                 StudioEngineerMessage +
                 $" (driver reason: {scriptResult.Reason}; the zone is unchanged, state='{beforeRoutine.State}').",
-                kind: studioKind);
+                kind: studioKind,
+                reason: scriptResult.Reason);
 
         // G10: Studio had nothing to confirm because the controller holds nothing to cancel (the before-read was
         // stale or came from the session image). Say NothingPending, with no Studio-dialog hint.
@@ -636,7 +773,8 @@ public static class StudioLifecycleHandler
                 $"{tool} found nothing pending for '{program}'/'{routine}': a fresh logix_pending_edits read " +
                 $"reports state='none' for the program, so there is nothing pending to {verb.Verb}. " +
                 "The Studio command changed nothing.",
-                kind: ErrorKinds.NothingPending);
+                kind: ErrorKinds.NothingPending,
+                reason: scriptResult.Reason);
 
         if (!scriptResult.Ok &&
             verb.NotApplicableMessage is not null &&
@@ -647,12 +785,14 @@ public static class StudioLifecycleHandler
                 $"programTestedEdits={FormatTestedEdits(beforeRoutine.ProgramTestedEdits)}; " +
                 $"the zone is unchanged, state='{beforeRoutine.State}').",
                 kind: verb.NotApplicableKind,
-                hint: NotApplicableHint(verb, beforeRoutine, program));
+                hint: NotApplicableHint(verb, beforeRoutine, program),
+                reason: scriptResult.Reason);
 
         if (!scriptResult.Ok)
             return Failed(
                 $"bench/studio-edits.ps1 -Verb {verb.Verb} reported failure for " +
-                $"'{program}'/'{routine}': {scriptResult.Reason}");
+                $"'{program}'/'{routine}': {scriptResult.Reason}",
+                auditKind: DriverFailedKind, reason: scriptResult.Reason);
 
         // ── (5) Re-read pending-edit state and return before/after ──────────
         // Studio's finalize / cancel / assemble can still be landing on the controller
@@ -710,11 +850,10 @@ public static class StudioLifecycleHandler
         if (afterResult is PendingEditsError afterError)
             return Failed(
                 $"{verb.CapitalVerb} gesture for '{program}'/'{routine}' was sent, but reading " +
-                $"pending-edit state afterward failed: {afterError.Error}") with
-            {
-                Kind = afterError.Kind == ErrorKinds.SdkServerFaulted ? afterError.Kind : null,
-                Hint = afterError.Kind == ErrorKinds.SdkServerFaulted ? afterError.Hint : null,
-            };
+                $"pending-edit state afterward failed: {afterError.Error}",
+                kind: afterError.Kind == ErrorKinds.SdkServerFaulted ? afterError.Kind : null,
+                hint: afterError.Kind == ErrorKinds.SdkServerFaulted ? afterError.Hint : null,
+                auditKind: afterError.Kind ?? PendingEditsReadFailedKind);
 
         var afterPending = (PendingEditsResult)afterResult;
         var afterRoutine = afterPending.Routines.FirstOrDefault(r =>
@@ -724,7 +863,8 @@ public static class StudioLifecycleHandler
         if (afterRoutine is null)
             return Failed(
                 $"{verb.CapitalVerb} gesture for '{program}'/'{routine}' was sent, but the routine could " +
-                "not be found while re-reading pending-edit state afterward.");
+                "not be found while re-reading pending-edit state afterward.",
+                auditKind: RoutineNotFoundKind);
 
         // Never claim success on the gesture alone: when the verb requires the
         // zone to be gone, a still-pending after-state is an error naming both states.
@@ -732,7 +872,8 @@ public static class StudioLifecycleHandler
             return Failed(
                 $"{verb.CapitalVerb} gesture for '{program}'/'{routine}' reported success, but " +
                 $"logix_pending_edits afterward still reports state='{afterRoutine.State}' " +
-                $"(was state='{beforeRoutine.State}') — the edits were not {verb.Status}.");
+                $"(was state='{beforeRoutine.State}') — the edits were not {verb.Status}.",
+                auditKind: StillPendingKind, afterState: afterRoutine.State);
 
         if (verb.Verb == "cancel" && programAfter is not null && programAfter.Any(r => r.State != "none"))
         {
@@ -741,7 +882,8 @@ public static class StudioLifecycleHandler
             return Failed(
                 $"{verb.CapitalVerb} gesture for '{program}'/'{routine}' reported success, but " +
                 $"logix_pending_edits afterward still reports pending edits in program '{program}': {left} " +
-                "— the edits were not cancelled.");
+                "— the edits were not cancelled.",
+                auditKind: StillPendingKind, afterState: afterRoutine.State);
         }
 
         // test / untest close the dialog and leave the zone in place: a vanished zone
@@ -751,7 +893,8 @@ public static class StudioLifecycleHandler
                 $"{verb.CapitalVerb} gesture for '{program}'/'{routine}' reported success, but " +
                 $"logix_pending_edits afterward reports state='none' " +
                 $"(was state='{beforeRoutine.State}') — {verb.Verb} leaves the edit zone in place, " +
-                "so the zone was resolved by something else. Verify with logix_pending_edits and logix_read.");
+                "so the zone was resolved by something else. Verify with logix_pending_edits and logix_read.",
+                auditKind: ZoneResolvedElsewhereKind, afterState: afterRoutine.State);
 
         // Success is the program's TestEdits state, never the gesture alone.
         if (verb.RequireAfterZoneState is not null &&
@@ -763,7 +906,8 @@ public static class StudioLifecycleHandler
                 $"'{verb.RequireAfterZoneState}' (was zoneState='{beforeRoutine.ZoneState}', " +
                 $"programTestedEdits={TestEditsText(beforeRoutine.ProgramTestedEdits)}, " +
                 $"state='{beforeRoutine.State}'; now state='{afterRoutine.State}').",
-                kind: verb.StateNotConfirmedKind);
+                kind: verb.StateNotConfirmedKind,
+                auditKind: WrongAfterStateKind, afterState: afterRoutine.State);
 
         var cancelled = verb.Verb == "cancel"
             ? BuildCancelledRoutines(beforeRoutine, afterRoutine, programBefore, programAfter)
@@ -780,12 +924,16 @@ public static class StudioLifecycleHandler
             if (names.Count > 0) leftoverTags = names;
         }
 
-        // ── (5a) Session image: follow the resolved zone or mark the image stale ──
-        if (imageSession is not null)
-            FollowZoneInImage(imageSession, verb, program, programBefore);
+        // The session image is not followed here: the calling tool marks the program stale and refreshes it.
+
+        // The zone is resolved: accept, assemble and cancel forget the program's ledger entry.
+        if (verb.Verb is "accept" or "assemble" or "cancel")
+            ledger.ClearProgram(program);
 
         // ── (6) Audit ─────────────────────────────────────────────────────
-        verb.Audit(program, routine, verb.Status, beforeRoutine.State, afterRoutine.State);
+        AuditOutcome(
+            verb, verb.Status, null, program, routine, null, beforeRoutine.State, afterRoutine.State,
+            scriptResult.ErrorsPaneToggled, PaneLayoutOf(scriptResult));
 
         return new CancelPendingEditsResult(
             Status:      verb.Status,
@@ -817,40 +965,94 @@ public static class StudioLifecycleHandler
             DialogWarnings:        verb.PassDialogInfo ? DialogWarningsOf(scriptResult) : null,
             Cancelled:             cancelled,
             LeftoverTags:          leftoverTags,
-            LeftoverTagsNote:      leftoverTags is null ? null : LeftoverTagsNoteText);
+            LeftoverTagsNote:      leftoverTags is null ? null : LeftoverTagsNoteText,
+            ErrorsPaneToggled:     scriptResult.ErrorsPaneToggled,
+            ErrorsPaneLayout:      PaneLayoutOf(scriptResult),
+            Note:                  string.Equals(PaneLayoutOf(scriptResult), "docked", StringComparison.Ordinal) ? PaneDockedNote : null,
+            Foreign:               foreign);
     }
 
+    /// <summary><c>kind</c> audited when Studio 5000 is not installed on the host.</summary>
+    internal const string HostWithoutStudioKind = "StudioNotInstalled";
+
+    /// <summary>The <c>hint</c> of the <see cref="ZoneLedger.ForeignPendingZoneKind"/> refusal (lives here: it names Studio, the no-SDK build carries no Studio text).</summary>
+    internal const string ForeignPendingZoneHint =
+        "another session or Studio published these edits; review them in logix_pending_edits and pass " +
+        "acceptForeign: true to finalize them anyway, or cancel them";
+
+    /// <summary><c>kind</c> audited when the <c>confirm</c> gate refuses the call.</summary>
+    internal const string ConfirmRequiredKind = "ConfirmRequired";
+    /// <summary><c>kind</c> audited when reading <c>logix_pending_edits</c> failed.</summary>
+    internal const string PendingEditsReadFailedKind = "PendingEditsReadFailed";
+    /// <summary><c>kind</c> audited when the target routine is not in the pending-edit read.</summary>
+    internal const string RoutineNotFoundKind = "RoutineNotFound";
+    /// <summary><c>kind</c> audited when the session-1 runner threw.</summary>
+    internal const string ScriptInvocationFailedKind = "ScriptInvocationFailed";
+    /// <summary><c>kind</c> audited when the driver's RESULT_JSON line could not be parsed.</summary>
+    internal const string DriverResultMalformedKind = "DriverResultMalformed";
+    /// <summary><c>kind</c> audited when the runner refused before starting the driver and named no kind.</summary>
+    internal const string NotLaunchedKind = "NotLaunched";
+    /// <summary><c>kind</c> audited for a driver failure that has no typed response kind.</summary>
+    internal const string DriverFailedKind = "DriverFailed";
+    /// <summary><c>kind</c> audited when the zone is still pending after the settle attempts.</summary>
+    internal const string StillPendingKind = "StillPending";
+    /// <summary><c>kind</c> audited when a test / untest gesture left no pending zone behind.</summary>
+    internal const string ZoneResolvedElsewhereKind = "ZoneResolvedElsewhere";
+    /// <summary><c>kind</c> audited when a failure carries no kind at all.</summary>
+    internal const string UnclassifiedKind = "Unclassified";
+    private const string WrongAfterStateKind = "StateNotConfirmed";
+
     /// <summary>
-    /// Brings the session's controller image in line with a zone the gesture just resolved: accept and assemble apply
-    /// the change set this session published, cancel restores the image from before the publish; whatever cannot be
-    /// done marks the image stale. Test and untest leave the zone in place and change nothing. Never throws.
+    /// Writes the one audit line of a lifecycle call; every return site of <see cref="ExecuteAsync"/> goes through here.
+    /// <c>outcome="refused"</c> is a pre-launch refusal (<see cref="AuditLogger.LogToolRefused"/>, kind required);
+    /// <c>outcome="error"</c> is a post-launch failure (<see cref="StudioLifecycleVerb.AuditFailure"/>, with the driver
+    /// <paramref name="reason"/>); any other outcome is the verb's success status, written through
+    /// <see cref="StudioLifecycleVerb.Audit"/> exactly as before. A failure line never carries a success outcome.
+    /// A verb with no <see cref="StudioLifecycleVerb.AuditFailure"/> writes no refusal or failure line.
     /// </summary>
-    private static void FollowZoneInImage(
-        TagSessionService imageSession, StudioLifecycleVerb verb, string program,
-        IReadOnlyList<RoutinePendingEditState>? programBefore)
+    /// <param name="verb">The lifecycle verb being run.</param>
+    /// <param name="outcome"><c>"refused"</c>, <c>"error"</c>, or the verb's success status.</param>
+    /// <param name="kind">Refusal / failure kind; ignored for a success.</param>
+    /// <param name="program">Program the call targeted.</param>
+    /// <param name="routine">Routine the call targeted.</param>
+    /// <param name="reason">The driver's reason, when there is one.</param>
+    /// <param name="beforeState">Pending-edit state read before the gesture, if any.</param>
+    /// <param name="afterState">Pending-edit state re-read after the gesture, if any.</param>
+    /// <param name="errorsPaneToggled">
+    /// The driver toggled the Errors pane. A post-launch line of a shipped verb (one with an
+    /// <see cref="StudioLifecycleVerb.AuditFailure"/>) then also carries <c>errors_pane_toggled:true</c>; the field is
+    /// omitted when false.
+    /// </param>
+    /// <param name="errorsPaneLayout">
+    /// The layout the driver reported after the toggle; written as <c>errors_pane_layout</c> only when non-null.
+    /// </param>
+    private static void AuditOutcome(
+        StudioLifecycleVerb verb, string outcome, string? kind, string program, string routine,
+        string? reason, string? beforeState, string? afterState, bool errorsPaneToggled = false,
+        string? errorsPaneLayout = null)
     {
-        try
+        if (errorsPaneToggled && outcome != "refused" && verb.AuditFailure is not null)
         {
-            IReadOnlyList<SessionImageState.ZoneRoutine>? zone = programBefore?
-                .Where(r => r.State != "none")
-                .Select(r => new SessionImageState.ZoneRoutine(
-                    r.Routine, r.PendingRungs.Select(p => (p.Type, p.Text)).ToList()))
-                .ToList();
-            switch (verb.Verb)
-            {
-                case "accept":
-                case "assemble":
-                    SessionImageState.OnAccepted(imageSession, program, zone, verb.Status);
-                    break;
-                case "cancel":
-                    SessionImageState.OnCancelled(imageSession, program, zone);
-                    break;
-            }
+            AuditLogger.LogLifecycleWithPaneToggle(
+                verb.Verb, program, routine, outcome,
+                outcome == "error" ? kind ?? UnclassifiedKind : null, reason, beforeState, afterState,
+                errorsPaneLayout);
+            return;
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+
+        switch (outcome)
         {
-            // The gesture already happened: failing here would misreport it. Say the image is unreliable instead.
-            SessionImageState.MarkStale(imageSession, $"{verb.Status} pending edits in program '{program}' ({ex.Message}); the session image was not updated");
+            case "refused":
+                if (verb.AuditFailure is not null)
+                    AuditLogger.LogToolRefused(verb.ToolName, kind ?? UnclassifiedKind, program: program, routine: routine);
+                break;
+            case "error":
+                verb.AuditFailure?.Invoke(
+                    verb.Verb, program, routine, kind ?? UnclassifiedKind, reason, beforeState, afterState);
+                break;
+            default:
+                verb.Audit(program, routine, outcome, beforeState, afterState);
+                break;
         }
     }
 

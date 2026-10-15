@@ -1,6 +1,6 @@
 # lgx-mcp
 
-Version 1.0.0. Verified on FactoryTalk Logix Echo only; not verified on a physical controller. See docs/verified-on.md.
+Version 1.0.1. Verified on FactoryTalk Logix Echo only; not verified on a physical controller. See docs/verified-on.md.
 
 MCP server for Allen-Bradley/Logix PLCs. Static `.L5X` analysis, live tag
 access over CIP (EtherNet/IP), and **write permissions derived from your own
@@ -291,6 +291,7 @@ or the `env` block of your client's config).
 | `LGX_ENABLE_LIVE_FINALIZE` | off | `1`, `true` or `yes` allows `logix_propose_rung_edit` with `target="live"`, which publishes and finalizes a rung in one call so it executes at once. Each call also needs `confirmedByUser=true` (even when `LGX_PUBLISH_MODE=auto`) and `LGX_ENABLE_LIVE_WRITES=1`. **SDK lane.** |
 | `LGX_ENABLE_CONTROLLER_DOWNLOAD` | off | `1`, `true` or `yes` lets `logix_connect` download the open project to the controller when you pass `allowControllerDownload=true` (`backend="sdk"`, `sdkMode="online"`, no comm path). A download stops the running controller (PROGRAM mode), permanently overwrites the program stored in it, goes online and returns the controller to RUN; it also disconnects other Logix Designer sessions online with it. **Off by default**, and it is a last resort for a controller that is empty or holds an unrelated program, where upload cannot correlate the project. Even when set, it needs `LGX_ENABLE_LIVE_WRITES=1` and an explicit `confirmedByUser=true` on that call, which you pass only after the user approves; the server cannot verify the approval. Without the flag or the confirmation the call is refused before anything reaches the controller. **SDK lane.** |
 | `LGX_PUBLISH_MODE` | `confirm` | `auto` publishes staged rung edits without a confirmation step; anything else means `confirm`. **SDK lane.** |
+| `LGX_IMAGE_FINGERPRINT_TTL_S` | `5` | Seconds a controller fingerprint probe stays valid. A session-image read older than this probes the controller (routine names, rung counts, `TestEdits`, name and serial) to notice changes made outside this session, and refreshes the changed programs; reads within it cost no probe. `0` probes on every read; unset, unparsable or negative values use the default. `logix_diff_against_controller` always probes. **SDK lane.** |
 | `LOGIX_SDK_PATH` | unset | Directory searched first for the Logix Designer SDK assemblies. **SDK lane.** |
 | `XDG_STATE_HOME` | `~/.local/state` | Linux and macOS only: the log directory is `$XDG_STATE_HOME/logix-mcp/logs/`. Ignored on Windows, which uses `%LOCALAPPDATA%\logix-mcp\logs\`. |
 | `WINDIR` | set by Windows | Read by `logix_import_datatype` to refuse a `saveAs` path inside the Windows directory. Not for you to set. |

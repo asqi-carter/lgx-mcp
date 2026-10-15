@@ -108,6 +108,10 @@ public record LintError(
     /// </summary>
     [JsonPropertyName("kind"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? Kind { get; init; }
+
+    /// <summary>Next step (for example how to recover from <c>NoProjectLoaded</c>); omitted when none.</summary>
+    [JsonPropertyName("hint"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Hint { get; init; }
 }
 
 /// <summary>One rung of a ladder routine, as handed to lint rules.</summary>
@@ -274,9 +278,14 @@ public static class LintHandler
     {
         // An SDK-online session lints its controller image (the result is labelled 'session-image'), so a change
         // made in this session shows once the image is refreshed; otherwise the opened project file is linted.
-        var sessionImage = session is { IsLiveController: true } ? session.ControllerImage : null;
+        var sessionImage = session is { IsLiveController: true } && session.ControllerImage is { } raw
+            ? ControllerImageRefresh.PendingApplied(raw)
+            : null;
         if (!service.IsLoaded && sessionImage is null)
-            return new LintError("No project loaded. Call logix_open_project first.");
+        {
+            var np = service.NoProjectLoadedError("logix_lint");
+            return new LintError(np.Error) { Kind = np.Kind, Hint = np.Hint };
+        }
 
         var project = sessionImage ?? service.Project!;
         bool hasProgram = !string.IsNullOrWhiteSpace(program);
@@ -335,7 +344,9 @@ public static class LintHandler
         if (hasRoutine && !routineSeen)
             return new LintError(
                 $"Routine '{routine}' not found" +
-                (hasProgram ? $" in program '{program}'." : " in the open project."));
+                (hasProgram ? $" in program '{program}'." : " in the open project.") +
+                $" Available routines: {AvailableRoutines(project, hasProgram ? program : null)}.")
+            { Kind = ErrorKinds.RoutineNotFound };
 
         var context  = new LintContext(project, ladder, hasRoutine);
         var findings = new List<LintFinding>();
@@ -471,6 +482,15 @@ public static class LintHandler
             .ThenBy(f => f.Rule, StringComparer.Ordinal)
             .ThenBy(f => f.Message, StringComparer.Ordinal)
             .ToList();
+
+    private static string AvailableRoutines(L5Sharp.Core.L5X project, string? program)
+    {
+        var names = project.Programs
+            .Where(p => program is null || Same(p.Name, program))
+            .SelectMany(p => p.Routines.Select(r => program is null ? $"{p.Name}/{r.Name}" : r.Name))
+            .ToList();
+        return names.Count > 0 ? string.Join(", ", names) : "(none)";
+    }
 
     private static bool Same(string a, string b) =>
         string.Equals(a, b, StringComparison.OrdinalIgnoreCase);

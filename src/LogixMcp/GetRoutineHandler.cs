@@ -20,7 +20,7 @@ public record RungEntry(
 /// <c>"project-file"</c>: the rungs above were read from the
 /// opened or uploaded project file on disk, not from the live controller and not
 /// from any pending (unsaved) edit. <c>"session-image"</c>: this session applied an accepted or
-/// assembled edit to the routine, so the rungs come from the session image, which follows that edit. For the live routine content including
+/// assembled edit to the routine, so the rungs come from the session image, which follows that edit; a routine created this session (the image holds it, the project file does not) is also read from the image and carries <c>createdThisSession: true</c>. For the live routine content including
 /// pending edits, call <c>logix_export_rungs</c> instead.
 /// </param>
 public record GetRoutineResult(
@@ -32,6 +32,10 @@ public record GetRoutineResult(
     /// <summary><c>true</c> when the session image is marked stale and this response may not show the controller's current logic; omitted otherwise.</summary>
     [JsonPropertyName("imageStale"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public bool? ImageStale { get; init; }
+
+    /// <summary><c>true</c> when the routine was created this session and only the session image holds it (the project file lacks it); omitted otherwise.</summary>
+    [JsonPropertyName("createdThisSession"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public bool? CreatedThisSession { get; init; }
 
     /// <summary>UTC time (ISO 8601) the image was marked stale; set with <see cref="ImageStale"/>.</summary>
     [JsonPropertyName("staleSince"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
@@ -52,7 +56,16 @@ public record GetRoutineResult(
 /// </summary>
 /// <param name="Error">Human-readable error message.</param>
 public record GetRoutineError(
-    [property: JsonPropertyName("error")] string Error);
+    [property: JsonPropertyName("error")] string Error)
+{
+    /// <summary>Machine-readable error kind (for example <c>NoProjectLoaded</c>); omitted for untyped errors.</summary>
+    [JsonPropertyName("kind"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Kind { get; init; }
+
+    /// <summary>Next step (for example how to recover from <c>NoProjectLoaded</c>); omitted when none.</summary>
+    [JsonPropertyName("hint"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Hint { get; init; }
+}
 
 /// <summary>
 /// Pure handler for the <c>logix_get_routine</c> MCP tool.
@@ -84,10 +97,14 @@ public static class GetRoutineHandler
     public static object Execute(ProjectService service, string program, string routine, TagSessionService? session = null)
     {
         if (!service.IsLoaded)
-            return new GetRoutineError("No project loaded. Call logix_open_project first.");
+        {
+            var np = service.NoProjectLoadedError("logix_get_routine");
+            return new GetRoutineError(np.Error) { Kind = np.Kind, Hint = np.Hint };
+        }
 
         // A routine this session changed through an accepted or assembled edit is read from the session image,
-        // which follows the edit; the project file still holds the old rungs.
+        // which follows the edit; the project file still holds the old rungs. The tool wrapper
+        // (LogixProjectTools.GetRoutine) refreshed a stale image first (AnalysisImage.PrepareAsync).
         var image   = ProjectFileStaleness.ImageFor(session, service, program, routine);
         var project = image ?? service.Project!;
         var source  = image is null ? ProjectSourceLabel.ProjectFile : ProjectSourceLabel.SessionImage;
@@ -101,7 +118,8 @@ public static class GetRoutineHandler
             var available = string.Join(", ", project.Programs.Select(p => p.Name));
             return new GetRoutineError(
                 $"Program '{program}' not found in the open project. " +
-                $"Available programs: {(available.Length > 0 ? available : "(none)")}.");
+                $"Available programs: {(available.Length > 0 ? available : "(none)")}.")
+            { Kind = ErrorKinds.ProgramNotFound };
         }
 
         // Locate the routine within the program (case-insensitive)
@@ -113,7 +131,8 @@ public static class GetRoutineHandler
             var available = string.Join(", ", prog.Routines.Select(r => r.Name));
             return new GetRoutineError(
                 $"Routine '{routine}' not found in program '{prog.Name}'. " +
-                $"Available routines: {(available.Length > 0 ? available : "(none)")}.");
+                $"Available routines: {(available.Length > 0 ? available : "(none)")}.")
+            { Kind = ErrorKinds.RoutineNotFound };
         }
 
         // Only ladder routines have rungs. Enumerating Rungs on an FBD/SFC/ST
@@ -138,13 +157,15 @@ public static class GetRoutineHandler
                     : UntrustedWrapper.WrapRungComment(rung.Comment)))
             .ToList();
 
-        var stale = ProjectFileStaleness.For(session, source, service);
+        var created = image is not null && ProjectFileStaleness.IsCreatedThisSession(session, service, prog.Name, rtn.Name);
+        var stale   = ProjectFileStaleness.For(session, source, service);
         return new GetRoutineResult(
             Program: prog.Name,
             Routine: rtn.Name,
             Rungs:   rungs,
             Source:  source)
         {
+            CreatedThisSession = created ? true : null,
             ImageStale  = stale is null ? null : true,
             StaleSince  = stale?.StaleSince,
             StaleReason = stale?.StaleReason,

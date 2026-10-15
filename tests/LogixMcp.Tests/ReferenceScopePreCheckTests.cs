@@ -1,7 +1,7 @@
 namespace LogixMcp.Tests;
 
 /// <summary>
-/// Task logix-mcp-r7k0.6 (N6): the reference pre-check also catches a bare tag that lives in another program
+/// The reference pre-check also catches a bare tag that lives in another program
 /// (<c>UndefinedTag</c> with a hint), a non-Public <c>\Prog.Tag</c> (<c>TagNotPublic</c>) and a missing member of a
 /// known type (<c>UndefinedMember</c>). Pure checker tests: they need no SDK.
 /// </summary>
@@ -141,7 +141,7 @@ public class ReferenceScopePreCheckTests
         Assert.Equal("REAL", RungReferenceChecker.DataTypeMembersFromExport(types)!["pump"]["speed"]);
     }
 
-    // ── N7 (logix-mcp-r7k0.7): every category in one list ─────────────────
+    // ── N7: every category in one list ─────────────────
 
     [Fact]
     public void RungWithSeveralErrorCategories_ReportsAllOfThemInOneFindingList()

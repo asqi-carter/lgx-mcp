@@ -905,4 +905,72 @@ public class WriteTagHandlerTests
         Assert.Null(fake.LastWriteTagPath);
     }
 #endif  // LOGIX_SDK
+
+    // ── Declared-type refusals ─────────────────────────────────
+
+    [Theory]
+    [InlineData("U", "Speed", "Count")]
+    [InlineData("T1", "PRE", "ACC")]
+    [InlineData("S1", "LEN", "DATA")]
+    public async Task Write_WholeStructure_IsStructureWriteUnsupported_ListingTheMembers(string tag, string m1, string m2)
+    {
+        var (session, svc) = ReadTagHandlerTests.TypedSession();
+
+        var err = Assert.IsType<WriteTagError>(await WriteTagHandler.ExecuteAsync(tag, "1", session));
+
+        Assert.Equal("StructureWriteUnsupported", err.Kind);
+        Assert.Contains(m1, err.Error);
+        Assert.Contains(m2, err.Error);
+        Assert.NotEqual("StructureReadUnsupported", err.Kind);
+        Assert.Empty(svc.Writes);
+    }
+
+    [Fact]
+    public async Task Write_WholeArray_IsStructureWriteUnsupported_WithElementHint()
+    {
+        var (session, svc) = ReadTagHandlerTests.TypedSession();
+
+        var err = Assert.IsType<WriteTagError>(await WriteTagHandler.ExecuteAsync("Arr", "1", session));
+
+        Assert.Equal("StructureWriteUnsupported", err.Kind);
+        Assert.Contains("Arr[0]", err.Hint);
+        Assert.Empty(svc.Writes);
+    }
+
+    [Fact]
+    public async Task Write_IndexPastDimension_IsIndexOutOfRange()
+    {
+        var (session, svc) = ReadTagHandlerTests.TypedSession();
+
+        var err = Assert.IsType<WriteTagError>(await WriteTagHandler.ExecuteAsync("Arr[5]", "1", session));
+
+        Assert.Equal("IndexOutOfRange", err.Kind);
+        Assert.Empty(svc.Writes);
+    }
+
+    [Fact]
+    public async Task Write_MissingMember_IsMemberNotFound()
+    {
+        var (session, svc) = ReadTagHandlerTests.TypedSession();
+
+        var err = Assert.IsType<WriteTagError>(await WriteTagHandler.ExecuteAsync("U.Nope", "1", session));
+
+        Assert.Equal("MemberNotFound", err.Kind);
+        Assert.Contains("Speed", err.Error);
+        Assert.Empty(svc.Writes);
+    }
+
+    [Theory]
+    [InlineData("U.Count")]
+    [InlineData("Arr[3]")]
+    [InlineData("T1.PRE")]
+    [InlineData("Plain")]
+    public async Task Write_ValidPaths_ReachTheService(string path)
+    {
+        var (session, svc) = ReadTagHandlerTests.TypedSession();
+
+        await WriteTagHandler.ExecuteAsync(path, "1", session);
+
+        Assert.Contains(path, svc.Writes);
+    }
 }

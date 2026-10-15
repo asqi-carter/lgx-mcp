@@ -1,4 +1,4 @@
-Rung 1 [pending insert, untested]  Line_A/Edits
+Rung 1 [pending insert]  Line_A/Edits
 // New latch rung.
 ║                 Guard door                ║
 ║ Operator start  closed and  Fill sequence ║

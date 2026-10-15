@@ -29,13 +29,13 @@ public static class ControllerImageRefresh
     /// Rung <c>Type</c> codes of rungs that exist only as staged or pending content: they are not part of the
     /// controller's accepted logic. Insert (<c>e</c>, <c>I</c>) and replacement (<c>er</c>, <c>IR</c>) rungs.
     /// </summary>
-    private static readonly HashSet<string> PendingOnlyCodes = new(StringComparer.Ordinal) { "e", "er", "I", "IR" };
+    internal static readonly HashSet<string> PendingOnlyCodes = new(StringComparer.Ordinal) { "e", "er", "I", "IR" };
 
     /// <summary>
     /// Rung <c>Type</c> codes of originals that a pending edit displaces or removes: they are still accepted
     /// logic until the edit is published, so the accepted image keeps them as ordinary rungs.
     /// </summary>
-    private static readonly HashSet<string> DisplacedOriginalCodes = new(StringComparer.Ordinal) { "rN", "dN", "R", "D" };
+    internal static readonly HashSet<string> DisplacedOriginalCodes = new(StringComparer.Ordinal) { "rN", "dN", "R", "D" };
 
     /// <summary>
     /// Replaces the named program of <paramref name="image"/> with the same-named program of the export, or adds it.
@@ -91,6 +91,36 @@ public static class ControllerImageRefresh
             else rung.Remove();
         }
         return any ? SafeXml.ToL5x(doc) : null;
+    }
+
+    /// <summary>
+    /// Derives the view of a session image as it will be once every pending edit is applied: originals that a pending
+    /// edit displaces or removes (<c>rN</c>, <c>dN</c>, <c>R</c>, <c>D</c>) are dropped, staged and pending-zone
+    /// inserts and replacements (<c>e</c>, <c>er</c>, <c>I</c>, <c>IR</c>) become ordinary rungs, and the rungs of
+    /// every touched routine are renumbered. Returns <paramref name="sessionImage"/> itself when it holds nothing pending.
+    /// </summary>
+    /// <param name="sessionImage">The session image, staged rungs included. It is not modified.</param>
+    /// <returns>The pending-applied image: a copy, or the argument when nothing was pending.</returns>
+    public static L5X PendingApplied(L5X sessionImage)
+    {
+        ArgumentNullException.ThrowIfNull(sessionImage);
+        var doc = SafeXml.ParseDocument(sessionImage.ToString());
+        var touched = false;
+        foreach (var rung in doc.Descendants("Rung").ToList())
+        {
+            var code = (string?)rung.Attribute("Type");
+            if (code is null) continue;
+            if (DisplacedOriginalCodes.Contains(code)) { rung.Remove(); touched = true; }
+            else if (PendingOnlyCodes.Contains(code)) { rung.SetAttributeValue("Type", "N"); touched = true; }
+        }
+        if (!touched) return sessionImage;
+
+        foreach (var content in doc.Descendants("RLLContent"))
+        {
+            var n = 0;
+            foreach (var rung in content.Elements("Rung")) rung.SetAttributeValue("Number", n++);
+        }
+        return SafeXml.ToL5x(doc);
     }
 
     /// <summary>

@@ -7,7 +7,7 @@ using Task = System.Threading.Tasks.Task;
 namespace LogixMcp.Tests;
 
 /// <summary>
-/// logix-mcp-vazn.1: envelope builders open a self-closed
+/// Envelope builders open a self-closed
 /// <c>&lt;Routine Use="Target" … Type="RLL"/&gt;</c> into a full element with an
 /// <c>RLLContent</c>, and an import that should add rungs but landed none fails with
 /// <c>ImportAddedNoRungs</c>. Fixtures are hand-written.

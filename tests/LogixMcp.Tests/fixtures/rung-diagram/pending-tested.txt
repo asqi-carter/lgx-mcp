@@ -1,4 +1,4 @@
-Rung 5 [staged locally (not on controller)]  Line_A/Edits
+Rung 5 [staged (not sent to the controller)]  Line_A/Edits
 ║ Fill valve Line run      ║
 ║  solenoid   output       ║
 ║ Fill_Valve Run_Out       ║

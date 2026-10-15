@@ -128,6 +128,25 @@ public class PublicDocsTests
             $"SdkToolNames.All is missing registered SDK tools: {string.Join(", ", unlisted)}");
     }
 
+    /// <summary>
+    /// The connect-status, pending-edits, lint and cross-reference rows describe the
+    /// merged behaviour (finished connects, reconcile, pending-applied analysis view).
+    /// </summary>
+    [Fact]
+    public void ToolReference_DescribesConnectStatusReconcileAndPendingAppliedBehaviour()
+    {
+        var text = File.ReadAllText(Path.Combine(PublicRoot, "docs", "tool-reference.md"));
+        string Row(string tool) => Regex.Match(text, @"^\|\s*`" + tool + @"`\s*\|.*$", RegexOptions.Multiline).Value;
+
+        Assert.Contains("finished or in progress", Row("logix_connect_status"));
+        var pending = Row("logix_pending_edits");
+        Assert.Contains("reconciled", pending);
+        Assert.Contains("session image", pending);
+        Assert.Contains("read-only", pending);
+        Assert.Contains("pending-applied", Row("logix_lint"));
+        Assert.Contains("pending-applied", Row("logix_cross_reference"));
+    }
+
     [Fact]
     public void ToolReference_EveryRowHasFourPopulatedColumns()
     {

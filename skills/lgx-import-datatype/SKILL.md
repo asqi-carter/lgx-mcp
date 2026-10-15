@@ -10,10 +10,10 @@ touches the controller: its real run writes an **L5X fragment** (`saveAs` ending
 engineer imports in Logix Designer (Logic > Import Component, or Tools > Import). An `.ACD` `saveAs`
 is refused with `SdkRequired`; nothing is written.
 
-**Existing types only.** The type must already exist in the open project. If it does not, a real run
-is refused with `NewDatatypeUnsupported` (nothing is written), and a dry run shows `willCreate: true`
-plus a `warnings` entry. Create new types in Logix Designer, export the project to L5X, then use this
-skill for later changes.
+**New or existing types.** A type that is not in the open project is created by the import: a dry run
+shows `willCreate: true` plus a `warnings` entry ("this real run will create the type"), and the real run
+writes the fragment for it. Say so to the user before the real run, since every member of a new type is
+an addition.
 
 1. `logix_open_project(path)` with the project's `.L5X` export. The delta is computed against this
    open project, so open it first.

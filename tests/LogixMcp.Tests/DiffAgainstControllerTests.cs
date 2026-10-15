@@ -1,5 +1,6 @@
 using System.Text.Json;
 using L5Sharp.Core;
+using Task = System.Threading.Tasks.Task;
 
 namespace LogixMcp.Tests;
 
@@ -206,5 +207,120 @@ public class DiffAgainstControllerTests
         Assert.Equal("changed", r0.Change);
         Assert.StartsWith("<untrusted source=\"rung-text\">", r0.Before);
         Assert.StartsWith("<untrusted source=\"rung-text\">", r0.After);
+    }
+
+    private const string PendingRungXml =
+        "<Rung Number=\"2\" Type=\"I\"><Text><![CDATA[XIC(Pending)OTE(Run);]]></Text></Rung>";
+
+    /// <summary>Demo.L5X with a pending insert rung (Type I) appended to MainRoutine: a zone is pending.</summary>
+    private static TagSessionService SessionWithPendingZone()
+    {
+        var xml = File.ReadAllText(DemoPath).Replace("</RLLContent>", PendingRungXml + "</RLLContent>");
+        var session = new TagSessionService();
+        session.Attach(new VirtualTagService(), isVirtual: false, isLiveController: true);
+        session.SetControllerImage(L5X.Parse(xml), DateTimeOffset.UtcNow);
+        return session;
+    }
+
+    [Fact]
+    public void FileEqualToAcceptedLogic_DiffsClean_WhileZonePending_AndPendingZonesNamesIt()
+    {
+        var result = Assert.IsType<DiffAgainstControllerResult>(
+            DiffAgainstControllerHandler.Execute(DemoPath, SessionWithPendingZone()));
+
+        Assert.Empty(result.Routines);
+        Assert.Empty(result.Tags);
+        Assert.Equal(["MainProgram/MainRoutine"], result.PendingZones);
+        Assert.Equal(
+            "pending edits are not part of this diff; accept or cancel them, or use logix_pending_edits",
+            result.PendingZonesNote);
+        Assert.False(result.Stale);
+    }
+
+    [Fact]
+    public void PendingZonesJson_PresentOnlyWhenAZoneIsPending()
+    {
+        var pending = new LogixProjectTools(new ProjectService(), SessionWithPendingZone())
+            .GetDiffAgainstControllerResponse(DemoPath);
+        using (var doc = JsonDocument.Parse(pending))
+        {
+            Assert.Equal("MainProgram/MainRoutine", doc.RootElement.GetProperty("pendingZones")[0].GetString());
+            Assert.Contains("logix_pending_edits", doc.RootElement.GetProperty("pendingZonesNote").GetString());
+        }
+
+        var clean = new LogixProjectTools(new ProjectService(), OnlineSession(DemoPath))
+            .GetDiffAgainstControllerResponse(DemoPath);
+        using var cleanDoc = JsonDocument.Parse(clean);
+        Assert.False(cleanDoc.RootElement.TryGetProperty("pendingZones", out _));
+    }
+
+    [Fact]
+    public void ImageMarkedStale_IsStale_EvenWithoutALiveEdit()
+    {
+        var session = OnlineSession(DemoPath);
+        session.MarkImageStale("MainProgram");
+
+        var result = Assert.IsType<DiffAgainstControllerResult>(
+            DiffAgainstControllerHandler.Execute(DemoPath, session));
+
+        Assert.True(result.Stale);
+        Assert.Equal(DiffAgainstControllerHandler.StaleHint, result.Hint);
+    }
+
+    [Fact]
+    public void SessionImageStalenessMark_MakesDiffStale()
+    {
+        var session = OnlineSession(DemoPath);
+        SessionImageState.MarkStale(session, "an accepted edit could not be applied");
+        Assert.False(session.IsImageStale);
+
+        var result = Assert.IsType<DiffAgainstControllerResult>(
+            DiffAgainstControllerHandler.Execute(DemoPath, session));
+
+        Assert.True(result.Stale);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_WithoutFingerprintSource_ReturnsTheSameResultAsExecute()
+    {
+        var session = OnlineSession(DemoPath);
+
+        var result = Assert.IsType<DiffAgainstControllerResult>(
+            await DiffAgainstControllerHandler.ExecuteAsync(DemoPath, session));
+
+        Assert.Empty(result.Routines);
+        Assert.Null(result.ImageRefreshedBecause);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_ProbesEvenWithinTheTtl()
+    {
+        var session = OnlineSession(DemoPath);
+        var probes  = 0;
+        session.ImageFingerprintTtl = TimeSpan.FromHours(1);
+        session.ControllerFingerprintSource = _ =>
+        {
+            probes++;
+            return Task.FromResult<ControllerFingerprint?>(ControllerFingerprint.FromL5x(L5X.Load(DemoPath).ToString()));
+        };
+
+        await DiffAgainstControllerHandler.ExecuteAsync(DemoPath, session);
+        await DiffAgainstControllerHandler.ExecuteAsync(DemoPath, session);
+
+        Assert.Equal(2, probes);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_ChangedController_ReturnsControllerChangedError()
+    {
+        var session = OnlineSession(DemoPath);
+        session.ControllerFingerprintSource = _ => Task.FromResult<ControllerFingerprint?>(
+            new ControllerFingerprint(new ControllerIdentity("SomeOtherController", 1u), []));
+
+        var error = Assert.IsType<DiffAgainstControllerError>(
+            await DiffAgainstControllerHandler.ExecuteAsync(DemoPath, session));
+
+        Assert.Equal(ErrorKinds.ControllerChanged, error.Kind);
+        Assert.Contains("logix_connect", error.Hint);
     }
 }

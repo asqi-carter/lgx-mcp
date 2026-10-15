@@ -972,6 +972,79 @@ public class Session1ScriptRunnerTests
         var without = Session1ScriptRunner.ParseResultJson(ResultLine + "\n");
         Assert.Null(without!.GestureTier);
     }
+
+    /// <summary>
+    /// The Errors-pane toggle fields are parsed when present (true and false) and default to false when an
+    /// older script omits them.
+    /// </summary>
+    [Fact]
+    public void ParseResultJson_ParsesErrorsPaneToggleFields_PresentTrue()
+    {
+        var r = Session1ScriptRunner.ParseResultJson(
+            "RESULT_JSON: {\"ok\":true,\"reason\":\"x\",\"screenshots\":[]," +
+            "\"errorsPaneToggled\":true,\"retriedAfterPaneToggle\":true,\"paneToggleRestored\":true}\n");
+        Assert.True(r!.ErrorsPaneToggled);
+        Assert.True(r.RetriedAfterPaneToggle);
+        Assert.True(r.PaneToggleRestored);
+    }
+
+    [Fact]
+    public void ParseResultJson_ParsesErrorsPaneToggleFields_PresentFalse()
+    {
+        var r = Session1ScriptRunner.ParseResultJson(
+            "RESULT_JSON: {\"ok\":false,\"reason\":\"command_not_applicable\",\"screenshots\":[]," +
+            "\"errorsPaneToggled\":false,\"retriedAfterPaneToggle\":false,\"paneToggleRestored\":false}\n");
+        Assert.False(r!.ErrorsPaneToggled);
+        Assert.False(r.RetriedAfterPaneToggle);
+        Assert.False(r.PaneToggleRestored);
+    }
+
+    [Fact]
+    public void ParseResultJson_ErrorsPaneToggleFields_DefaultToFalseWhenAbsent()
+    {
+        var r = Session1ScriptRunner.ParseResultJson(ResultLine + "\n");
+        Assert.False(r!.ErrorsPaneToggled);
+        Assert.False(r.RetriedAfterPaneToggle);
+        Assert.False(r.PaneToggleRestored);
+    }
+
+    /// <summary><c>errorsPaneLayout</c> is parsed when present, absent when missing, and absent when malformed.</summary>
+    [Theory]
+    [InlineData("auto-hide")]
+    [InlineData("docked")]
+    [InlineData("hidden")]
+    [InlineData("unknown")]
+    public void ParseResultJson_ParsesErrorsPaneLayout_Present(string layout)
+    {
+        var r = Session1ScriptRunner.ParseResultJson(
+            "RESULT_JSON: {\"ok\":true,\"reason\":\"x\",\"screenshots\":[]," +
+            "\"errorsPaneToggled\":true,\"errorsPaneLayout\":\"" + layout + "\"}\n");
+        Assert.Equal(layout, r!.ErrorsPaneLayout);
+    }
+
+    [Fact]
+    public void ParseResultJson_ErrorsPaneLayout_AbsentWhenMissing()
+    {
+        var r = Session1ScriptRunner.ParseResultJson(ResultLine + "\n");
+        Assert.Null(r!.ErrorsPaneLayout);
+    }
+
+    [Theory]
+    [InlineData("5")]
+    [InlineData("true")]
+    [InlineData("null")]
+    [InlineData("{\"a\":1}")]
+    [InlineData("\"sideways\"")]
+    [InlineData("\"\"")]
+    public void ParseResultJson_ErrorsPaneLayout_MalformedIsAbsent(string rawValue)
+    {
+        var r = Session1ScriptRunner.ParseResultJson(
+            "RESULT_JSON: {\"ok\":true,\"reason\":\"x\",\"screenshots\":[],\"errorsPaneLayout\":" + rawValue + "}\n");
+        Assert.NotNull(r);
+        Assert.False(r!.Malformed);
+        Assert.Null(r.ErrorsPaneLayout);
+    }
+
     // ── The runner carries test / untest / assemble ───────────────
 
     /// <summary>

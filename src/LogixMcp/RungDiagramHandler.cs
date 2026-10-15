@@ -116,13 +116,21 @@ public static class RungDiagramHandler
     /// Label of a rung that exists only in the workstation-staged buffer (an <c>e</c>-typed insert from
     /// <c>logix_propose_rung_edit</c> that has not been published); the controller does not have it yet.
     /// </summary>
-    public const string StagedLocallyLabel = "staged locally (not on controller)";
+    public const string StagedLocallyLabel = "staged (not sent to the controller)";
 
     /// <summary>
     /// Label of an <c>er</c> rung in the session image: the replacement a workstation-target replace staged.
     /// It is not a controller edit, so it is not described as a tested pending replace.
     /// </summary>
-    public const string StagedReplacementLabel = "staged replacement (workstation)";
+    public const string StagedReplacementLabel = "staged (not sent to the controller)";
+
+    /// <summary>
+    /// The hint for a rung the served view lacks but the controller may have: <c>logix_pending_edits</c> reconciles
+    /// the session image, then <c>logix_get_routine</c> with <c>source: "session-image"</c> reads it.
+    /// </summary>
+    public const string MissingRungHint =
+        "If the rung exists on the controller but not in this view, call logix_pending_edits to reconcile, " +
+        "then logix_get_routine with source:\"session-image\".";
 
     /// <summary>Draws rungs of the opened project (file mode).</summary>
     /// <param name="service">The project singleton.</param>
@@ -139,11 +147,14 @@ public static class RungDiagramHandler
         TagSessionService? session = null)
     {
         if (!service.IsLoaded)
-            return new RungDiagramError("No project loaded. Call logix_open_project first.",
-                Hint: "Or call logix_connect to draw rungs from a live SDK session.");
+        {
+            var np = service.NoProjectLoadedError("logix_get_rung_diagram");
+            return new RungDiagramError(np.Error) { Kind = np.Kind, Hint = np.Hint + ". Or call logix_connect to draw rungs from a live SDK session." };
+        }
+        // The tool wrapper refreshed a stale session image first (AnalysisImage.PrepareAsync); a failed refresh shows as the stale stamp.
         var image  = ProjectFileStaleness.ImageFor(session, service, program, routine);
         var source = image is null ? ProjectSourceLabel.ProjectFile : ProjectSourceLabel.SessionImage;
-        var drawn  = Execute((image ?? service.Project!).Content.Serialize(), source, program, routine, rung, format);
+        var drawn  = Execute((image ?? service.Project!).Content.Serialize(), source, program, routine, rung, format, session is null ? null : session.ZoneTested);
         if (drawn is RungDiagramResult result && ProjectFileStaleness.For(session, source, service) is { } stale)
             return result with
             {
@@ -163,7 +174,7 @@ public static class RungDiagramHandler
     /// <param name="ct">Cancellation token.</param>
     public static async Task<object> ExecuteAsync(
         IRoutineL5xSource source, string program, string routine, string rung, string? format,
-        CancellationToken ct = default)
+        CancellationToken ct = default, Func<string, bool?>? zoneTested = null)
     {
         // Reject bad input before the export round trip.
         if (!TryParseRange(rung, out _, out _, out var rangeError))
@@ -189,7 +200,7 @@ public static class RungDiagramHandler
         {
             return new RungDiagramError($"The SDK export was not readable L5X: {ex.Message}");
         }
-        return Execute(root, SourceSdkSession, program, routine, rung, format);
+        return Execute(root, SourceSdkSession, program, routine, rung, format, zoneTested);
     }
 
     /// <summary>Draws rungs from an L5X document (a full project or a program or routine export).</summary>
@@ -199,8 +210,13 @@ public static class RungDiagramHandler
     /// <param name="routine">Routine name (case-insensitive).</param>
     /// <param name="rung">A rung number or inclusive range of at most 10.</param>
     /// <param name="format"><c>text</c> (default), <c>svg</c> or <c>both</c>.</param>
+    /// <param name="zoneTested">
+    /// Reads whether a program's pending-edits zone is tested (<c>true</c>), untested (<c>false</c>) or unknown
+    /// (<c>null</c>), so a pending rung is worded <c>tested</c> or <c>untested</c> only when that is known.
+    /// </param>
     public static object Execute(
-        XElement root, string source, string program, string routine, string rung, string? format)
+        XElement root, string source, string program, string routine, string rung, string? format,
+        Func<string, bool?>? zoneTested = null)
     {
         var fmt = (format ?? "text").Trim().ToLowerInvariant();
         if (fmt.Length == 0) fmt = "text";
@@ -218,7 +234,7 @@ public static class RungDiagramHandler
         {
             var names = root.Descendants("Program").Select(p => (string?)p.Attribute("Name")).Where(n => n is not null);
             return new RungDiagramError(
-                $"Program '{program}' not found. Available programs: {Join(names!)}.");
+                $"Program '{program}' not found. Available programs: {Join(names!)}.", ErrorKinds.ProgramNotFound);
         }
 
         var routines = prog.Element("Routines")?.Elements().ToList() ?? new List<XElement>();
@@ -229,7 +245,7 @@ public static class RungDiagramHandler
             var names = routines.Select(r => (string?)r.Attribute("Name")).Where(n => n is not null);
             return new RungDiagramError(
                 $"Routine '{routine}' not found in program '{(string?)prog.Attribute("Name")}'. " +
-                $"Available routines: {Join(names!)}.");
+                $"Available routines: {Join(names!)}.", ErrorKinds.RoutineNotFound);
         }
 
         var programName = (string?)prog.Attribute("Name") ?? program;
@@ -256,7 +272,8 @@ public static class RungDiagramHandler
             return new RungDiagramError(
                 $"Rung {(first == last ? first.ToString() : $"{first}-{last}")} not found in " +
                 $"{programName}/{routineName}. " +
-                (numbers.Count == 0 ? "The routine has no rungs." : $"The routine has rungs {numbers.Min()} to {numbers.Max()}."));
+                (numbers.Count == 0 ? "The routine has no rungs." : $"The routine has rungs {numbers.Min()} to {numbers.Max()}."),
+                Hint: source == SourceSdkSession ? null : MissingRungHint);
         }
 
         var ctx = new ProjectRungContext(root, prog);
@@ -269,7 +286,7 @@ public static class RungDiagramHandler
             var el = picked[i];
             var number = RungNumberOf(el);
             var code = ((string?)el.Attribute("Type") ?? "N").Trim();
-            var edit = EditLabel(code, el, picked, i);
+            var edit = EditLabel(code, el, picked, i, zoneTested?.Invoke(programName));
             var neutral = el.Element("Text")?.Value ?? string.Empty;
             var comment = Sanitize(el.Element("Comment")?.Value ?? string.Empty, keepLineBreaks: true);
 
@@ -364,17 +381,21 @@ public static class RungDiagramHandler
     /// <c>rR</c>/<c>rI</c>/<c>rN</c> accepted edits waiting to be assembled. An unrecognised code is shown
     /// as a pending edit rather than dropped.
     /// </summary>
-    internal static string? EditLabel(string code, XElement rung, IReadOnlyList<XElement> picked, int index)
+    internal static string? EditLabel(
+        string code, XElement rung, IReadOnlyList<XElement> picked, int index, bool? zoneTested = null)
     {
+        // The export marks a tested and an untested zone alike (Type="I"), so the word comes from the
+        // program's TestEdits when the session knows it; otherwise the label says only "pending".
+        var state = zoneTested switch { true => ", tested", false => ", untested", null => "" };
         switch (code)
         {
             case "N":
             case "":
                 return null;
-            case "I": return "pending insert, untested";
-            case "D": return "pending delete, untested";
-            case "R": return "pending replace, untested: old rung";
-            case "IR": return "pending replace, untested: new rung";
+            case "I": return "pending insert" + state;
+            case "D": return "pending delete" + state;
+            case "R": return "pending replace" + (state.Length == 0 ? ": old rung" : state + ": old rung");
+            case "IR": return "pending replace" + (state.Length == 0 ? ": new rung" : state + ": new rung");
             case "e": return IsReplacementOfPrevious(picked, index) ? "pending replace, tested: new rung" : StagedLocallyLabel;
             case "er": return StagedReplacementLabel;
             case "dN": return "pending delete, tested";

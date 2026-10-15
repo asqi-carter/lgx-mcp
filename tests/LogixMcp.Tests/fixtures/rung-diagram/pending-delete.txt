@@ -1,4 +1,4 @@
-Rung 4 [pending delete, untested]  Line_A/Edits
+Rung 4 [pending delete]  Line_A/Edits
 ║ Operator stop             ║
 ║  pushbutton,              ║
 ║   normally    Drain valve ║

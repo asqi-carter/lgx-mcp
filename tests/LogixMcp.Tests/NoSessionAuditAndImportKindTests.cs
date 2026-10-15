@@ -6,7 +6,7 @@ using Task = System.Threading.Tasks.Task;
 namespace LogixMcp.Tests;
 
 /// <summary>
-/// logix-mcp-r7k0.8 (N8, N9): a NoActiveSession refusal leaves a <c>refused</c> audit line; the self-closed
+/// A NoActiveSession refusal leaves a <c>refused</c> audit line; the self-closed
 /// raw-fragment refusal carries kind <c>EmptyRoutineEnvelope</c>; raw SDK import mnemonics map to kinds on every path.
 /// </summary>
 [Collection("AuditLoggerDir")]
@@ -245,6 +245,44 @@ public class NoSessionAuditAndImportKindTests : IDisposable
         Assert.Equal("ImportRejectedByImporter",
             RockwellErrorHints.ImportFailureKind("XMLSrv_E_IMPORT_ABORTED_NO_CHANGES - x"));
         Assert.Null(RockwellErrorHints.ImportFailureKind("some other failure"));
+    }
+
+    // ── A NothingPending Studio-lifecycle refusal leaves a tool_refused line ──────────
+
+    [Theory]
+    [InlineData("cancel",   "logix_cancel_pending_edits")]
+    [InlineData("accept",   "logix_accept_pending_edits")]
+    [InlineData("assemble", "logix_assemble_pending_edits")]
+    public async Task NothingPending_StudioLifecycleRefusal_WritesToolRefusedLine_WithKindNothingPending(
+        string verbName, string tool)
+    {
+        var verb = verbName switch
+        {
+            "cancel" => StudioLifecycleVerb.Cancel,
+            "accept" => StudioLifecycleVerb.Accept,
+            _        => StudioLifecycleVerb.Assemble,
+        };
+        var none = new RoutinePendingEditState("MainProgram", "MainRoutine", 2, [], "none");
+        var launched = false;
+
+        var result = await StudioLifecycleHandler.ExecuteAsync(
+            verb, "MainProgram", "MainRoutine", true,
+            (_, _, _) => System.Threading.Tasks.Task.FromResult<object>(new PendingEditsResult(
+                true, "Run", null, [none], new StagedEditsState(0, []), DateTimeOffset.UtcNow)),
+            (_, _) => { launched = true; return System.Threading.Tasks.Task.FromResult(new Session1ScriptResult(true, "x", [])); },
+            () => true, planLaunch: () => ("direct", null));
+
+        var err = Assert.IsType<CancelPendingEditsError>(result);
+        Assert.Equal(ErrorKinds.NothingPending, err.Kind);
+        Assert.False(launched);
+
+        var line = Assert.Single(AuditLines());
+        Assert.Equal("tool_refused", line.GetProperty("event").GetString());
+        Assert.Equal(tool, line.GetProperty("operation").GetString());
+        Assert.Equal("refused", line.GetProperty("outcome").GetString());
+        Assert.Equal("NothingPending", line.GetProperty("kind").GetString());
+        Assert.Equal("MainProgram", line.GetProperty("program").GetString());
+        Assert.Equal("MainRoutine", line.GetProperty("routine").GetString());
     }
 }
 #endif

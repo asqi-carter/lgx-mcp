@@ -321,9 +321,9 @@ public class NonTargetKindHintAbsenceTests
     // ══════════════════════════════════════════════════════════════════════════
 
     [Fact]
-    public async Task ConnectError_NoProject_HintAbsentFromJson()
+    public async Task ConnectError_NoProject_CarriesNoProjectLoadedKindAndHint()
     {
-        // useVirtual=true without a loaded project → ConnectError, no hint.
+        // useVirtual=true without a loaded project → ConnectError of kind NoProjectLoaded with a hint.
         var result = await ConnectHandler.ExecuteAsync(
             gateway:        "192.0.2.1",
             path:           "1,0",
@@ -332,8 +332,8 @@ public class NonTargetKindHintAbsenceTests
             sessionService: new TagSessionService());
 
         using var doc = Serialize(result);
-        Assert.False(HasHintKey(doc),
-            "hint must not appear in JSON for ConnectError (no-project path).");
+        Assert.True(HasHintKey(doc), "the no-project ConnectError must carry a hint.");
+        Assert.Equal(ErrorKinds.NoProjectLoaded, doc.RootElement.GetProperty("kind").GetString());
     }
 
     [Fact]

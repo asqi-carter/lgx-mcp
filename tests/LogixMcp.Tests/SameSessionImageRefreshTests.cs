@@ -276,7 +276,9 @@ public class SameSessionImageRefreshTests
         var included = XRef(svc, "Jog_Out", session, includePending: true);
         Assert.Single(included.References);
         Assert.Null(included.PendingWritersExcluded);
-        Assert.Null(included.Note);
+        // includePending: true labels the pending rung and the note names it.
+        Assert.Equal("pending", included.References.Single().State);
+        Assert.Contains("1 pending rung (Main rung 1)", included.Note);
 
         // A tag with no pending writer keeps its wording.
         Assert.Null(XRef(svc, "Jog_Cmd", session, includePending: false).PendingWritersExcluded);
@@ -315,5 +317,54 @@ public class SameSessionImageRefreshTests
 
         var plain = Image(["A", "B"], "XIC(A)OTE(B);");
         Assert.Same(plain, ControllerImageRefresh.Accepted(plain));
+    }
+
+    [Fact]
+    public void PendingApplied_DropsDisplacedOriginals_ConvertsPendingRungsAndRenumbers()
+    {
+        var session = Image(["A", "B"], ("XIC(A)OTE(B);", "N"), ("OTE(B);", "e"), ("XIC(B)OTE(A);", "rN"),
+            ("XIC(A)OTE(A);", "IR"), ("XIC(B)OTE(B);", "R"), ("NOP();", "D"), ("NOP();", "dN"), ("NOP();", "I"));
+        var applied = ControllerImageRefresh.PendingApplied(session);
+
+        var rungs = applied.Programs.Single().Routines.Single().Rungs.ToList();
+        Assert.Equal(["XIC(A)OTE(B);", "OTE(B);", "XIC(A)OTE(A);", "NOP();"], rungs.Select(r => r.Text.ToString()).ToArray());
+        Assert.All(rungs, r => Assert.Equal("N", r.Type!.ToString()));
+        Assert.Equal([0, 1, 2, 3], rungs.Select(r => (int)r.Number).ToArray());
+
+        // The argument is untouched, and an image with nothing pending is returned as is.
+        Assert.Equal(8, session.Programs.Single().Routines.Single().Rungs.Count());
+        var plain = Image(["A", "B"], "XIC(A)OTE(B);");
+        Assert.Same(plain, ControllerImageRefresh.PendingApplied(plain));
+    }
+
+    [Fact]
+    public void AfterAPublishedReplace_CrossReferenceListsTheSharedOutputOnceAtTheNewRung()
+    {
+        string[] tags = ["A", "B", "C"];
+        // Replace rung 0 with a rung that writes the same output: the controller's export, and so the image, holds [IR, R, N].
+        var connected = Image(tags, ("XIC(C)OTE(B);", "IR"), ("XIC(A)OTE(B);", "R"), ("XIC(A)OTE(C);", "N"));
+        var session = OnlineSession(connected);
+        var svc = new ProjectService();
+
+        var xref = XRef(svc, "B", session, includePending: true);
+        Assert.Equal("session-image", xref.Source);
+        var writer = Assert.Single(xref.References);   // the replaced original is not listed as a second writer
+        Assert.Equal(0, writer.RungNumber);
+        Assert.Equal("write", writer.Kind);
+    }
+
+    [Fact]
+    public void IncludePendingFalse_StillReportsThePendingWriterOfAReplace_AsPending()
+    {
+        string[] tags = ["A", "B", "Z"];
+        // The export after a publish replacing rung 0: [IR, R].
+        var connected = Image(tags, ("XIC(A)OTE(Z);", "IR"), ("XIC(A)OTE(B);", "R"));
+        var session = OnlineSession(connected);
+        var svc = new ProjectService();
+
+        var excluded = XRef(svc, "Z", session, includePending: false);
+        Assert.Empty(excluded.References);
+        Assert.Single(excluded.PendingWritersExcluded!);
+        Assert.Contains("1 pending rung", excluded.Note);
     }
 }
